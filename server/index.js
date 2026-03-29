@@ -15,7 +15,8 @@ import { ensureDbSchema } from './db/ensureSchema.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const app = express()
-const PORT = process.env.PORT || 7598
+// v2: API on 7608 so v1 can keep 7598. Set PORT in .env if needed.
+const PORT = process.env.PORT || 7608
 
 // Middleware
 app.use(cors())

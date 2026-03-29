@@ -8,16 +8,18 @@ export default defineConfig({
     tailwindcss(),
   ],
   server: {
-    host: '0.0.0.0',
-    port: 7597,
-    allowedHosts: ['iachat-v1.pulse7.ooo.ovh'],
+    host: '127.0.0.1',
+    port: 7598,
+    strictPort: true,
+    allowedHosts: ['iachat-v2.pulse7.ooo.ovh', 'localhost'],
     hmr: {
-      host: 'iachat-v1.pulse7.ooo.ovh',
+      host: 'iachat-v2.pulse7.ooo.ovh',
       protocol: 'wss',
+      clientPort: 443,
     },
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:7598',
+        target: 'http://127.0.0.1:7608',
         changeOrigin: true,
       },
     },

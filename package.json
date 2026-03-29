@@ -1,14 +1,14 @@
 {
-  "name": "iachat-v1",
+  "name": "iachat-v2",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"vite --port 7597\" \"node --watch --watch-path=./server server/index.js\"",
-    "dev:api": "node --watch --watch-path=./server server/index.js",
+    "dev": "concurrently \"vite --host 127.0.0.1 --port 7598\" \"PORT=7608 node --watch --watch-path=./server server/index.js\"",
+    "dev:api": "PORT=7608 node --watch --watch-path=./server server/index.js",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview --port 4188 --host 127.0.0.1"
   },
   "dependencies": {
     "@qdrant/js-client-rest": "^1.17.0",

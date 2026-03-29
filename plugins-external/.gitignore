@@ -1,0 +1,5 @@
+# Clone third-party plugins here: git clone <url> <plugin-id>/
+# Ignored so the core repo stays small; each plugin is its own Git repo.
+*
+!.gitignore
+!README.md

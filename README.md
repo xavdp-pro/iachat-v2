@@ -9,6 +9,23 @@
 
 Longer product and plugin vision: [`mds/interface-vision-plugins.md`](mds/interface-vision-plugins.md).
 
+### IAChat v2 (this tree)
+
+This copy is **deployed from the v1 GitHub repo** (`git clone`) with **different ports** so v1 and v2 run together:
+
+| Service | v1 | v2 (this folder) |
+|--------|-----|------------------|
+| Vite dev | `7597` | `7598` |
+| API (Express) | `7598` | `7608` |
+
+- Copy [`.env.example`](.env.example) to `.env`; ensure MariaDB user/database **`iachat-v2`** exist (or set `DB_*` in `.env`).
+- Password file convention: `/apps/iachat-v2/etc/mysql/localhost/passwd` (see [`mds/stack.md`](mds/stack.md)).
+- **`npm install`** then **`npm run dev`** — installs dependencies and starts both processes.
+- **External plugins:** clone into [`plugins-external/`](plugins-external/) (see README there). Spec: [`mds/plugin-modular-architecture.md`](mds/plugin-modular-architecture.md).
+- Nginx + Vite HMR: [`mds/vite-behind-nginx.md`](mds/vite-behind-nginx.md).
+
+Git: `origin` may still point at the v1 repo; rename to `upstream` and add your own `origin` when you publish v2 (`git remote rename origin upstream`).
+
 ## What you get today
 
 | Area | Capabilities |
