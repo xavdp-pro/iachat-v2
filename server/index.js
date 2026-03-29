@@ -3,6 +3,7 @@ import express from 'express'
 import cors from 'cors'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
+import { mkdirSync } from 'fs'
 
 import authRoutes from './routes/auth.js'
 import adminRoutes from './routes/admin.js'
@@ -23,8 +24,14 @@ app.use(cors())
 app.use(express.json({ limit: '50mb' }))
 app.use(express.urlencoded({ extended: true, limit: '50mb' }))
 
-// Static uploads
-app.use('/uploads', express.static(process.env.UPLOAD_DIR))
+// Static uploads (default under app tmp when UPLOAD_DIR unset)
+const uploadDir = process.env.UPLOAD_DIR || join(__dirname, '../tmp/uploads')
+try {
+  mkdirSync(uploadDir, { recursive: true })
+} catch {
+  /* ignore */
+}
+app.use('/uploads', express.static(uploadDir))
 
 // Routes
 app.use('/api/auth', authRoutes)
