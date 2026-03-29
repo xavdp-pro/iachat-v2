@@ -1,16 +1,10 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Loader2, Sparkles, Sun, Moon, Eye, EyeOff, Languages } from 'lucide-react'
+import { Loader2, Sparkles, Sun, Moon, Eye, EyeOff } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useTranslation } from 'react-i18next'
 import { useAuthStore } from '../store/useAuthStore.js'
 import { useThemeStore } from '../store/useThemeStore.js'
-
-const LANG_OPTIONS = [
-  { code: 'fr', label: 'Français' },
-  { code: 'en', label: 'English' },
-  { code: 'es', label: 'Español' },
-]
 
 export default function Login() {
   const { t, i18n } = useTranslation()
@@ -19,25 +13,13 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-  const [isLangOpen, setIsLangOpen] = useState(false)
 
   const navigate = useNavigate()
   const { login } = useAuthStore()
   const { darkMode, toggleDarkMode } = useThemeStore()
 
-  useEffect(() => {
-    if (!isLangOpen) return
-    const onDoc = (e) => {
-      if (!e.target.closest?.('.login-lang-wrap')) setIsLangOpen(false)
-    }
-    document.addEventListener('mousedown', onDoc)
-    return () => document.removeEventListener('mousedown', onDoc)
-  }, [isLangOpen])
-
   const changeLanguage = (lng) => {
     i18n.changeLanguage(lng)
-    localStorage.setItem('lng', lng)
-    setIsLangOpen(false)
   }
 
   const handleSubmit = async (e) => {
@@ -57,44 +39,19 @@ export default function Login() {
   return (
     <div className="login-page">
       <div className="login-toolbar">
-        <div className="login-lang-wrap">
-          <button
-            type="button"
-            className="login-toolbar-btn"
-            aria-label={t('login.language')}
-            aria-expanded={isLangOpen}
-            onClick={() => setIsLangOpen((v) => !v)}
-          >
-            <Languages size={18} strokeWidth={2} />
-          </button>
-          <AnimatePresence>
-            {isLangOpen && (
-              <motion.div
-                initial={{ opacity: 0, y: -4 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -4 }}
-                transition={{ duration: 0.15 }}
-                className="login-lang-popover"
-                role="listbox"
-                onClick={(e) => e.stopPropagation()}
-              >
-                {LANG_OPTIONS.map(({ code, label }) => (
-                  <button
-                    key={code}
-                    type="button"
-                    role="option"
-                    aria-selected={i18n.language === code}
-                    onClick={() => changeLanguage(code)}
-                    style={{
-                      color: i18n.language.startsWith(code) ? 'var(--color-primary)' : undefined,
-                    }}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </motion.div>
-            )}
-          </AnimatePresence>
+        <div className="chat-sidebar-lang login-toolbar-lang" role="group" aria-label={t('login.language')}>
+          {(['fr', 'en', 'es']).map((lng) => (
+            <button
+              key={lng}
+              type="button"
+              className={`chat-sidebar-lang-btn ${i18n.language.startsWith(lng) ? 'chat-sidebar-lang-btn--active' : ''}`}
+              onClick={() => changeLanguage(lng)}
+              aria-pressed={i18n.language.startsWith(lng)}
+              aria-label={t(`chat.locale${lng.charAt(0).toUpperCase()}${lng.slice(1)}`)}
+            >
+              {lng.toUpperCase()}
+            </button>
+          ))}
         </div>
         <button
           type="button"

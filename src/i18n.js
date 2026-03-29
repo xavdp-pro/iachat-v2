@@ -340,15 +340,50 @@ const resources = {
   }
 };
 
+/** UI languages we ship (ISO 639-1). */
+const SUPPORTED_LANGS = ['fr', 'en', 'es']
+
+/**
+ * Map navigator.language(s) to a supported code, or fallback.
+ */
+function languageFromNavigator() {
+  if (typeof navigator === 'undefined') return 'en'
+  const candidates = [...(navigator.languages || []), navigator.language].filter(Boolean)
+  for (const tag of candidates) {
+    const base = String(tag).split('-')[0].toLowerCase()
+    if (SUPPORTED_LANGS.includes(base)) return base
+  }
+  return 'en'
+}
+
+/**
+ * Prefer saved choice (localStorage), else browser, else English.
+ */
+function getInitialLanguage() {
+  if (typeof localStorage === 'undefined') return languageFromNavigator()
+  const saved = localStorage.getItem('lng')
+  if (saved && SUPPORTED_LANGS.includes(saved)) return saved
+  if (saved) localStorage.removeItem('lng')
+  return languageFromNavigator()
+}
+
 i18n
   .use(initReactI18next)
   .init({
     resources,
-    lng: localStorage.getItem('lng') || 'fr',
+    lng: getInitialLanguage(),
+    supportedLngs: SUPPORTED_LANGS,
     fallbackLng: 'en',
     interpolation: {
       escapeValue: false
     }
-  });
+  })
 
-export default i18n;
+// Persist any language change (single place; keeps localStorage in sync with i18n)
+i18n.on('languageChanged', (lng) => {
+  if (typeof localStorage === 'undefined') return
+  const base = String(lng).split('-')[0].toLowerCase()
+  if (SUPPORTED_LANGS.includes(base)) localStorage.setItem('lng', base)
+})
+
+export default i18n

@@ -154,7 +154,6 @@ export default function Chat() {
 
   const changeLanguage = (lng) => {
     i18n.changeLanguage(lng)
-    localStorage.setItem('lng', lng)
   }
 
   const handleSaveProject = async (e) => {
