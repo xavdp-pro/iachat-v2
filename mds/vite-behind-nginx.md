@@ -40,3 +40,20 @@ export default defineConfig({
 ```
 
 Adjust `allowedHosts` / `hmr.host` if the public hostname changes.
+
+## Production note: 502 Bad Gateway
+
+Nginx returns **502** if nothing listens on **7598**. Either run `npm run dev` manually or use the host **systemd** unit:
+
+```bash
+sudo systemctl enable --now iachat-v2.service
+sudo systemctl status iachat-v2.service
+```
+
+Unit file: `/etc/systemd/system/iachat-v2.service` (user `iachat-v2`, `WorkingDirectory=/apps/iachat-v2/app`).
+
+Ensure the app tree is owned by `iachat-v2` so Vite can write `node_modules/.vite/`:
+
+```bash
+sudo chown -R iachat-v2:www-data /apps/iachat-v2/app
+```
