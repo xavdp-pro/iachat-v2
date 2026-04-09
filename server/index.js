@@ -12,7 +12,9 @@ import pluginsRoutes from './routes/plugins.js'
 import projectsRoutes from './routes/projects.js'
 import discussionsRoutes from './routes/discussions.js'
 import messagesRoutes from './routes/messages.js'
+import ttsRoutes from './routes/tts.js'
 import { ensureDbSchema } from './db/ensureSchema.js'
+import { warmupMemory } from './services/memory.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -41,16 +43,23 @@ app.use('/api/plugins', pluginsRoutes)
 app.use('/api/projects', projectsRoutes)
 app.use('/api/discussions', discussionsRoutes)
 app.use('/api/messages', messagesRoutes)
+app.use('/api/tts', ttsRoutes)
 
-// Health check
+// Health check (capabilities help verify deploy: admin Ollama UI needs GET/PUT /api/admin/ollama-settings)
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', version: '1.0.0', timestamp: new Date().toISOString() })
+  res.json({
+    status: 'ok',
+    version: '1.1.0',
+    timestamp: new Date().toISOString(),
+    capabilities: { adminOllamaSettings: true },
+  })
 })
 
 ensureDbSchema()
   .then(() => {
     app.listen(PORT, '127.0.0.1', () => {
       console.log(`🚀 Express API running on :${PORT}`)
+      warmupMemory() // pré-charge le modèle d'embedding fastembed
     })
   })
   .catch((err) => {

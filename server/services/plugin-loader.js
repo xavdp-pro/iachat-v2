@@ -1,7 +1,9 @@
 import { readdirSync, existsSync, readFileSync } from 'fs'
-import { join } from 'path'
+import { dirname, join } from 'path'
+import { fileURLToPath } from 'url'
 
-const PLUGINS_DIR = process.env.PLUGINS_DIR || '/apps/iachat-v1/app/plugins'
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const PLUGINS_DIR = process.env.PLUGINS_DIR || join(__dirname, '../../plugins')
 
 /**
  * Scan a plugin type folder and load all manifest.json files.

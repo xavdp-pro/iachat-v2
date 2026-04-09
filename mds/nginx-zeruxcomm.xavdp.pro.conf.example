@@ -1,0 +1,63 @@
+# Example nginx vhost for https://zeruxcomm.xavdp.pro/ → front on 127.0.0.1:7598
+# Copy to sites-available, adjust ssl_certificate paths, then enable + reload nginx.
+#
+# 502 Bad Gateway = nginx cannot reach the upstream. Fix:
+#   - Dev:  cd iachat-v2 && npm run dev   (Vite 7598 + API 7608; Vite proxies /api → 7608)
+#   - Prod build on same port as nginx:  npm run build && npm run start:stack
+#     (preview:nginx on 7598 + API 7608). Do not use default `vite preview` (4188) with this file.
+#   - Or:  npm run build && pm2 start ecosystem.config.cjs  (auto-restart on crash)
+#   - On the server: ss -tlnp | grep -E '7598|7608'   → both listeners for HTTPS + API.
+#
+# Route /api and /uploads directly to Node (7608). The SPA still needs Vite on 7598, but XHR
+# no longer depends on Vite's dev proxy (fewer moving parts; API keeps working if Vite restarts).
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name zeruxcomm.xavdp.pro;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name zeruxcomm.xavdp.pro;
+
+    # Replace with your cert paths (e.g. certbot or Cloudflare origin cert)
+    ssl_certificate     /etc/ssl/certs/your-fullchain.pem;
+    ssl_certificate_key /etc/ssl/private/your-key.pem;
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:7608;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 86400;
+        client_max_body_size 50m;
+    }
+
+    location /uploads/ {
+        proxy_pass http://127.0.0.1:7608;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 86400;
+        client_max_body_size 50m;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:7598;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 86400;
+    }
+}

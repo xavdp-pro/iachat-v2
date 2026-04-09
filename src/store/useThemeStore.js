@@ -17,17 +17,18 @@ export const useThemeStore = create((set, get) => ({
     }
   },
 
-  // Apply a skin by injecting its CSS into <head>
+  // Apply a skin: default is bundled in main.jsx; others load via /api
   applySkin: (slug) => {
     const existing = document.getElementById('iachat-skin')
     if (existing) existing.remove()
 
-    const link = document.createElement('link')
-    link.id = 'iachat-skin'
-    link.rel = 'stylesheet'
-    const ts = Date.now()
-    link.href = `/api/skins/${slug}/theme.css?t=${ts}`
-    document.head.appendChild(link)
+    if (slug !== 'default') {
+      const link = document.createElement('link')
+      link.id = 'iachat-skin'
+      link.rel = 'stylesheet'
+      link.href = `/api/skins/${slug}/theme.css?t=${Date.now()}`
+      document.head.appendChild(link)
+    }
 
     localStorage.setItem('skin', slug)
     set({ activeSkin: slug })
@@ -44,16 +45,16 @@ export const useThemeStore = create((set, get) => ({
   // Init both skin and dark mode on app load
   init: () => {
     const { activeSkin, darkMode } = get()
-    // Apply dark mode
     document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light')
-    // Apply skin CSS
     const existing = document.getElementById('iachat-skin')
     if (existing) existing.remove()
-    const link = document.createElement('link')
-    link.id = 'iachat-skin'
-    link.rel = 'stylesheet'
-    const ts = Date.now()
-    link.href = `/api/skins/${activeSkin}/theme.css?t=${ts}`
-    document.head.appendChild(link)
+    // Non-default skins only: default theme is imported in main.jsx
+    if (activeSkin !== 'default') {
+      const link = document.createElement('link')
+      link.id = 'iachat-skin'
+      link.rel = 'stylesheet'
+      link.href = `/api/skins/${activeSkin}/theme.css?t=${Date.now()}`
+      document.head.appendChild(link)
+    }
   },
 }))

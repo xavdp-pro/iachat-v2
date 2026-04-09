@@ -1,9 +1,12 @@
 import { Router } from 'express'
 import { readdirSync, existsSync, readFileSync } from 'fs'
-import { join } from 'path'
+import { dirname, join } from 'path'
+import { fileURLToPath } from 'url'
 
 const router = Router()
-const SKINS_DIR = process.env.SKINS_DIR || '/apps/iachat-v1/app/skins'
+const __dirname = dirname(fileURLToPath(import.meta.url))
+// Default: iachat-v2/skins next to server/ (portable; override with SKINS_DIR)
+const SKINS_DIR = process.env.SKINS_DIR || join(__dirname, '../../skins')
 
 // GET /api/skins — list available skins
 router.get('/', (req, res) => {

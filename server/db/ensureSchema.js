@@ -43,6 +43,38 @@ export async function ensureDbSchema() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `)
     console.log('✅ DB: message_attachments table ready')
+
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS app_settings (
+        setting_key   VARCHAR(64) NOT NULL PRIMARY KEY,
+        setting_value TEXT NOT NULL,
+        updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `)
+    console.log('✅ DB: app_settings table ready')
+
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS ollama_models_cache (
+        id         INT AUTO_INCREMENT PRIMARY KEY,
+        name       VARCHAR(200) NOT NULL UNIQUE,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `)
+    console.log('✅ DB: ollama_models_cache table ready')
+
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS project_members (
+        project_id INT NOT NULL,
+        user_id    INT NOT NULL,
+        role       ENUM('admin','member') NOT NULL DEFAULT 'member',
+        joined_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (project_id, user_id),
+        CONSTRAINT fk_pm_project FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+        CONSTRAINT fk_pm_user    FOREIGN KEY (user_id)    REFERENCES users(id)    ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `)
+    console.log('✅ DB: project_members table ready')
   } catch (err) {
     console.error('ensureDbSchema:', err.message)
     throw err

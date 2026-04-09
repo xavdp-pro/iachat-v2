@@ -5,6 +5,8 @@ import {
   Send, Bot, Sparkles, Settings,
   MoreVertical, Archive, ArchiveRestore,
   Menu, X, Paperclip, Mic, MicOff, FileText, ZoomIn,
+  Volume2, VolumeX, Copy, Check,
+  Users, UserPlus,
 } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/useAuthStore.js'
@@ -12,9 +14,10 @@ import { useThemeStore } from '../store/useThemeStore.js'
 import { useProjectStore } from '../store/useProjectStore.js'
 import { useTranslation } from 'react-i18next'
 import { motion, AnimatePresence } from 'framer-motion'
+import { MarkdownRenderer } from '../components/MarkdownRenderer.jsx'
 
 export default function Chat() {
-  const { t, i18n } = useTranslation()
+  const { t } = useTranslation()
   const navigate = useNavigate()
   const { user, logout } = useAuthStore()
   const { darkMode, toggleDarkMode } = useThemeStore()
@@ -24,6 +27,9 @@ export default function Chat() {
     createProject, createDiscussion, updateDiscussion, deleteDiscussion,
     updateProject, deleteProject,
     messages, sendMessage, updateMessage, deleteMessage, loading,
+    streaming, streamingContent,
+    ollamaError, clearOllamaError,
+    projectMembers, fetchProjectMembers, addProjectMember, removeProjectMember,
   } = useProjectStore()
 
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false)
@@ -39,6 +45,9 @@ export default function Chat() {
   const [inputMessage, setInputMessage] = useState('')
   const [pendingAttachments, setPendingAttachments] = useState([])
   const [isRecording, setIsRecording] = useState(false)
+  const [ttsEnabled, setTtsEnabled] = useState(() => localStorage.getItem('tts_enabled') !== 'false')
+  const [ttsPlaying, setTtsPlaying] = useState(false)
+  const [copiedId, setCopiedId] = useState(null)
   const [lightboxSrc, setLightboxSrc] = useState(null)
   const [editingMessageId, setEditingMessageId] = useState(null)
   const [editingMessageContent, setEditingMessageContent] = useState('')
@@ -47,10 +56,18 @@ export default function Chat() {
   const [layoutDesktop, setLayoutDesktop] = useState(
     () => typeof window !== 'undefined' && window.matchMedia('(min-width: 1024px)').matches
   )
+  const [membersProjectTarget, setMembersProjectTarget] = useState(null)
+  const [memberInviteEmail, setMemberInviteEmail] = useState('')
+  const [memberInviteError, setMemberInviteError] = useState('')
+  const [memberInviteLoading, setMemberInviteLoading] = useState(false)
   const messagesEndRef = useRef(null)
   const textareaRef = useRef(null)
   const fileInputRef = useRef(null)
   const speechRef = useRef(null)
+  const mediaRecorderRef = useRef(null)
+  const audioChunksRef = useRef([])
+  const ttsAudioRef = useRef(null)
+  const prevStreamingRef = useRef(false)
 
   const closeMobileSidebar = () => {
     if (typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches) {
@@ -91,6 +108,20 @@ export default function Chat() {
     }
   }, [sidebarOpen])
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
+  useEffect(() => {
+    if (streaming) messagesEndRef.current?.scrollIntoView({ behavior: 'instant' })
+  }, [streamingContent, streaming])
+
+  // Lecture TTS automatique quand le streaming se termine
+  useEffect(() => {
+    const wasStreaming = prevStreamingRef.current
+    prevStreamingRef.current = streaming
+    if (!wasStreaming || streaming) return
+    if (!ttsEnabled) return
+    const lastMsg = [...messages].reverse().find((m) => m.role === 'assistant')
+    if (lastMsg?.content) synthesizeAndPlay(lastMsg.content)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streaming])
 
   useEffect(() => {
     if (projectMenuId == null && discussionMenuId == null) return
@@ -110,6 +141,7 @@ export default function Chat() {
   useEffect(() => {
     const onKeyDown = (e) => {
       if (e.key !== 'Escape') return
+      if (membersProjectTarget) { closeMembersModal(); return }
       if (isProjectModalOpen) { closeProjectModal(); return }
       if (confirmDeleteProject) { setConfirmDeleteProject(null); return }
       if (discussionRenameTarget) { closeRenameDiscussionModal(); return }
@@ -119,7 +151,7 @@ export default function Chat() {
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [isProjectModalOpen, confirmDeleteProject, discussionRenameTarget, confirmDeleteDiscussion, confirmDeleteMessage, editingMessageId])
+  }, [isProjectModalOpen, confirmDeleteProject, discussionRenameTarget, confirmDeleteDiscussion, confirmDeleteMessage, editingMessageId, membersProjectTarget])
 
   const isProjectArchived = (p) => Number(p?.archived) === 1
   const activeProjects = projects.filter((p) => !isProjectArchived(p))
@@ -152,10 +184,6 @@ export default function Chat() {
     navigate('/login')
   }
 
-  const changeLanguage = (lng) => {
-    i18n.changeLanguage(lng)
-  }
-
   const handleSaveProject = async (e) => {
     e.preventDefault()
     if (!newProjectName.trim()) return
@@ -183,6 +211,42 @@ export default function Chat() {
     if (!confirmDeleteProject) return
     await deleteProject(confirmDeleteProject.id)
     setConfirmDeleteProject(null)
+  }
+
+  const openMembersModal = async (p) => {
+    setProjectMenuId(null)
+    setMembersProjectTarget(p)
+    setMemberInviteEmail('')
+    setMemberInviteError('')
+    try { await fetchProjectMembers(p.id) } catch { /* handled */ }
+  }
+
+  const closeMembersModal = () => {
+    setMembersProjectTarget(null)
+    setMemberInviteEmail('')
+    setMemberInviteError('')
+  }
+
+  const handleInviteMember = async (e) => {
+    e.preventDefault()
+    if (!memberInviteEmail.trim() || memberInviteLoading) return
+    setMemberInviteLoading(true)
+    setMemberInviteError('')
+    try {
+      await addProjectMember(membersProjectTarget.id, memberInviteEmail.trim())
+      setMemberInviteEmail('')
+    } catch (err) {
+      const msg = err?.error || ''
+      if (msg.includes('Already')) setMemberInviteError(t('chat.memberAlreadyMember'))
+      else if (msg.includes('not found')) setMemberInviteError(t('chat.memberNotFound'))
+      else setMemberInviteError(msg || t('admin.error'))
+    } finally {
+      setMemberInviteLoading(false)
+    }
+  }
+
+  const handleRemoveMember = async (memberId) => {
+    try { await removeProjectMember(membersProjectTarget.id, memberId) } catch { /* api */ }
   }
 
   const openRenameDiscussionModal = (d) => {
@@ -303,40 +367,117 @@ export default function Chat() {
     addFilesAsAttachments(imageItems.map((it) => it.getAsFile()))
   }, [addFilesAsAttachments])
 
-  // ── Microphone / Speech-to-text ────────────────────────────────────────────
+  // ── Microphone / STT (faster-whisper) ─────────────────────────────────────
 
-  const langToSTT = { fr: 'fr-FR', en: 'en-US', es: 'es-ES' }
-
-  const toggleMic = useCallback(() => {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition
-    if (!SR) {
-      alert('La reconnaissance vocale n\'est pas supportée par ce navigateur.')
+  const toggleMic = useCallback(async () => {
+    if (isRecording) {
+      mediaRecorderRef.current?.stop()
       return
     }
 
-    if (isRecording && speechRef.current) {
-      speechRef.current.stop()
+    // Arrêter la lecture TTS en cours avant d'enregistrer
+    if (ttsAudioRef.current) {
+      ttsAudioRef.current.pause()
+      ttsAudioRef.current = null
+      setTtsPlaying(false)
+    }
+
+    let stream
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    } catch {
+      alert(t('chat.ttsMicNoAccess'))
       return
     }
 
-    const recognition = new SR()
-    const baseLng = i18n.language.slice(0, 2)
-    recognition.lang = langToSTT[baseLng] || 'fr-FR'
-    recognition.continuous = false
-    recognition.interimResults = true
+    audioChunksRef.current = []
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus'
+      : MediaRecorder.isTypeSupported('audio/webm')
+      ? 'audio/webm'
+      : ''
+    const mr = new MediaRecorder(stream, mimeType ? { mimeType } : {})
 
-    recognition.onstart = () => setIsRecording(true)
-    recognition.onend = () => { setIsRecording(false); speechRef.current = null }
-    recognition.onerror = () => { setIsRecording(false); speechRef.current = null }
-    recognition.onresult = (ev) => {
-      const transcript = Array.from(ev.results).map((r) => r[0].transcript).join('')
-      setInputMessage(transcript)
-      setTimeout(autoResizeTextarea, 0)
+    mr.ondataavailable = (e) => {
+      if (e.data.size > 0) audioChunksRef.current.push(e.data)
     }
 
-    speechRef.current = recognition
-    recognition.start()
-  }, [isRecording, i18n.language])
+    mr.onstop = async () => {
+      stream.getTracks().forEach((track) => track.stop())
+      setIsRecording(false)
+      const blob = new Blob(audioChunksRef.current, { type: mr.mimeType || 'audio/webm' })
+      const formData = new FormData()
+      formData.append('audio', blob, 'recording.webm')
+      try {
+        const token = localStorage.getItem('token') || ''
+        const resp = await fetch('/api/tts/stt', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+          body: formData,
+        })
+        const data = await resp.json()
+        if (data.text) {
+          setInputMessage((prev) => (prev ? `${prev} ${data.text}` : data.text))
+          setTimeout(autoResizeTextarea, 0)
+        }
+      } catch { /* ignore */ }
+    }
+
+    mr.start()
+    mediaRecorderRef.current = mr
+    setIsRecording(true)
+  }, [isRecording, t])
+
+  // ── TTS (Kokoro) ───────────────────────────────────────────────────────────
+
+  const synthesizeAndPlay = useCallback(async (text) => {
+    if (!text?.trim()) return
+    if (ttsAudioRef.current) {
+      ttsAudioRef.current.pause()
+      ttsAudioRef.current = null
+    }
+    setTtsPlaying(true)
+    try {
+      const token = localStorage.getItem('token') || ''
+      const voice = localStorage.getItem('tts_voice') || 'ff_siwis'
+      const resp = await fetch('/api/tts/synthesize', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ text: text.slice(0, 3000), voice }),
+      })
+      if (!resp.ok) { setTtsPlaying(false); return }
+      const blob = await resp.blob()
+      const url = URL.createObjectURL(blob)
+      const audio = new Audio(url)
+      ttsAudioRef.current = audio
+      const cleanup = () => {
+        setTtsPlaying(false)
+        URL.revokeObjectURL(url)
+        ttsAudioRef.current = null
+      }
+      audio.onended = cleanup
+      audio.onerror = cleanup
+      audio.play()
+    } catch {
+      setTtsPlaying(false)
+    }
+  }, [])
+
+  const toggleTts = useCallback(() => {
+    if (ttsEnabled && ttsAudioRef.current) {
+      ttsAudioRef.current.pause()
+      ttsAudioRef.current = null
+      setTtsPlaying(false)
+    }
+    setTtsEnabled((prev) => {
+      const next = !prev
+      localStorage.setItem('tts_enabled', String(next))
+      return next
+    })
+  }, [ttsEnabled])
 
   // ── Message submit ─────────────────────────────────────────────────────────
 
@@ -430,22 +571,9 @@ export default function Chat() {
             <div className="chat-sidebar-brand-mark">
               <Sparkles size={16} strokeWidth={2} />
             </div>
-            <p className="chat-sidebar-brand-text">IAChat</p>
+            <p className="chat-sidebar-brand-text">{t('common.appName')}</p>
           </div>
-          <div className="chat-sidebar-lang" role="group" aria-label={t('login.language')}>
-            {(['fr', 'en', 'es']).map((lng) => (
-              <button
-                key={lng}
-                type="button"
-                className={`chat-sidebar-lang-btn ${i18n.language.startsWith(lng) ? 'chat-sidebar-lang-btn--active' : ''}`}
-                onClick={() => changeLanguage(lng)}
-                aria-pressed={i18n.language.startsWith(lng)}
-                aria-label={t(`chat.locale${lng.charAt(0).toUpperCase()}${lng.slice(1)}`)}
-              >
-                {lng.toUpperCase()}
-              </button>
-            ))}
-          </div>
+
         </div>
 
         <div className="chat-sidebar-primary">
@@ -497,6 +625,10 @@ export default function Chat() {
                           <button type="button" role="menuitem" onClick={() => openEditProjectModal(p)}>
                             <Edit2 size={14} strokeWidth={2} />
                             {t('chat.renameProject')}
+                          </button>
+                          <button type="button" role="menuitem" onClick={() => openMembersModal(p)}>
+                            <Users size={14} strokeWidth={2} />
+                            {t('chat.manageMembers')}
                           </button>
                           <button type="button" role="menuitem" onClick={() => handleArchiveToggle(p)}>
                             <Archive size={14} strokeWidth={2} />
@@ -559,6 +691,10 @@ export default function Chat() {
                               <button type="button" role="menuitem" onClick={() => openEditProjectModal(p)}>
                                 <Edit2 size={14} strokeWidth={2} />
                                 {t('chat.renameProject')}
+                              </button>
+                              <button type="button" role="menuitem" onClick={() => openMembersModal(p)}>
+                                <Users size={14} strokeWidth={2} />
+                                {t('chat.manageMembers')}
                               </button>
                               <button type="button" role="menuitem" onClick={() => handleArchiveToggle(p)}>
                                 <ArchiveRestore size={14} strokeWidth={2} />
@@ -695,6 +831,14 @@ export default function Chat() {
       </aside>
 
       <div className="chat-main-column">
+        {ollamaError && (
+          <div className="chat-ollama-error" role="alert">
+            <span className="chat-ollama-error-text">{ollamaError}</span>
+            <button type="button" className="chat-ollama-error-dismiss" onClick={clearOllamaError}>
+              {t('chat.ollamaErrorDismiss')}
+            </button>
+          </div>
+        )}
         <header className="chat-top-navbar">
           <button
             type="button"
@@ -716,7 +860,7 @@ export default function Chat() {
                 <p className="chat-top-navbar-sub">{t('chat.pickDiscussion')}</p>
               </>
             ) : (
-              <p className="chat-top-navbar-title">IAChat</p>
+              <p className="chat-top-navbar-title">{t('common.appName')}</p>
             )}
           </div>
           <div className="chat-top-navbar-end">
@@ -763,6 +907,9 @@ export default function Chat() {
                   placeholder={composerPlaceholder}
                   isRecording={isRecording}
                   toggleMic={toggleMic}
+                  ttsEnabled={ttsEnabled}
+                  ttsPlaying={ttsPlaying}
+                  toggleTts={toggleTts}
                   t={t}
                   setLightboxSrc={setLightboxSrc}
                 />
@@ -859,7 +1006,10 @@ export default function Chat() {
                               </div>
                             ) : (
                               <div className={m.role === 'user' ? 'chat-bubble-user' : 'chat-bubble-ai'}>
-                                {m.content}
+                                {m.role === 'assistant'
+                                  ? <MarkdownRenderer content={m.content} />
+                                  : m.content
+                                }
                                 {m.attachments?.length > 0 && (
                                   <div className="chat-msg-attachments">
                                     {m.attachments.map((att, ai) =>
@@ -901,30 +1051,71 @@ export default function Chat() {
                             </div>
                           </div>
 
-                          {/* Action toolbar — visible on hover, owner only */}
-                          {isOwner && !isEditing && (
+                          {/* Action toolbar — visible on hover */}
+                          {!isEditing && (isOwner || m.role === 'assistant') && (
                             <div className="chat-msg-toolbar">
-                              <button
-                                type="button"
-                                className="chat-msg-toolbar-btn"
-                                aria-label={t('common.edit')}
-                                onClick={() => startEditMessage(m)}
-                              >
-                                <Edit2 size={14} strokeWidth={2} />
-                              </button>
-                              <button
-                                type="button"
-                                className="chat-msg-toolbar-btn chat-msg-toolbar-btn--danger"
-                                aria-label={t('common.delete')}
-                                onClick={() => setConfirmDeleteMessage(m)}
-                              >
-                                <Trash2 size={14} strokeWidth={2} />
-                              </button>
+                              {m.role === 'assistant' && (
+                                <button
+                                  type="button"
+                                  className={`chat-msg-toolbar-btn ${copiedId === m.id ? 'chat-msg-toolbar-btn--success' : ''}`}
+                                  aria-label={copiedId === m.id ? t('chat.copied') : t('chat.copy')}
+                                  title={copiedId === m.id ? t('chat.copied') : t('chat.copy')}
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(m.content || '')
+                                    setCopiedId(m.id)
+                                    setTimeout(() => setCopiedId(null), 1500)
+                                  }}
+                                >
+                                  {copiedId === m.id ? <Check size={14} strokeWidth={2.5} /> : <Copy size={14} strokeWidth={2} />}
+                                </button>
+                              )}
+                              {isOwner && (
+                                <>
+                                  <button
+                                    type="button"
+                                    className="chat-msg-toolbar-btn"
+                                    aria-label={t('common.edit')}
+                                    onClick={() => startEditMessage(m)}
+                                  >
+                                    <Edit2 size={14} strokeWidth={2} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="chat-msg-toolbar-btn chat-msg-toolbar-btn--danger"
+                                    aria-label={t('common.delete')}
+                                    onClick={() => setConfirmDeleteMessage(m)}
+                                  >
+                                    <Trash2 size={14} strokeWidth={2} />
+                                  </button>
+                                </>
+                              )}
                             </div>
                           )}
                         </motion.div>
                       )
                     })
+                  )}
+                  {streaming && (
+                    <motion.div
+                      className="chat-msg-row chat-msg-row--ai"
+                      initial={{ opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                    >
+                      <div
+                        className="chat-msg-avatar"
+                        style={{ background: 'var(--color-avatar-ai-bg)', border: '1px solid var(--color-border)', color: 'var(--color-avatar-ai-text)' }}
+                      >
+                        <Bot size={16} />
+                      </div>
+                      <div className="chat-msg-body">
+                        <div className="chat-bubble-ai">
+                          <MarkdownRenderer content={streamingContent} streaming={true} />
+                        </div>
+                        <div className="chat-msg-meta text-left">
+                          {t('chat.assistant')}
+                        </div>
+                      </div>
+                    </motion.div>
                   )}
                   <div ref={messagesEndRef} />
                 </div>
@@ -949,6 +1140,9 @@ export default function Chat() {
                   placeholder={t('chat.messagePlaceholder')}
                   isRecording={isRecording}
                   toggleMic={toggleMic}
+                  ttsEnabled={ttsEnabled}
+                  ttsPlaying={ttsPlaying}
+                  toggleTts={toggleTts}
                   t={t}
                   setLightboxSrc={setLightboxSrc}
                 />
@@ -1175,6 +1369,111 @@ export default function Chat() {
             </motion.div>
           </motion.div>
         )}
+        {membersProjectTarget && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="chat-modal-backdrop"
+            onClick={closeMembersModal}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 8 }}
+              transition={{ duration: 0.2 }}
+              className="chat-modal"
+              style={{ maxWidth: 440 }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="chat-modal-header">
+                <h2 className="chat-modal-title">
+                  <Users size={17} strokeWidth={2} style={{ display: 'inline', marginRight: 6, verticalAlign: 'middle' }} />
+                  {t('chat.membersModalTitle')} — {membersProjectTarget.name}
+                </h2>
+                <button type="button" className="chat-modal-close" onClick={closeMembersModal} aria-label={t('common.close')}>
+                  <X size={18} strokeWidth={2} />
+                </button>
+              </div>
+
+              {/* Member list */}
+              <div style={{ maxHeight: 220, overflowY: 'auto', marginBottom: 16 }}>
+                {projectMembers.length === 0 ? (
+                  <p style={{ color: 'var(--color-text-3)', fontSize: 13, padding: '8px 0' }}>{t('chat.membersEmpty')}</p>
+                ) : (
+                  projectMembers.map((m) => {
+                    const isOwner = Number(m.user_id) === Number(membersProjectTarget.owner_id)
+                    return (
+                      <div key={m.user_id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0', borderBottom: '1px solid var(--color-border)' }}>
+                        <div style={{ width: 30, height: 30, borderRadius: '50%', background: isOwner ? 'var(--color-primary)' : 'var(--color-text-3)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontWeight: 600, fontSize: 13, flexShrink: 0 }}>
+                          {(m.name || m.email || '?')[0].toUpperCase()}
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <p style={{ margin: 0, fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.name || m.email}</p>
+                          <p style={{ margin: 0, fontSize: 11, color: 'var(--color-text-3)' }}>{m.email}</p>
+                        </div>
+                        <span style={{ fontSize: 11, color: 'var(--color-text-3)', flexShrink: 0 }}>
+                          {isOwner ? t('chat.memberOwner') : t('chat.memberMember')}
+                        </span>
+                        {!isOwner && Number(membersProjectTarget.owner_id) === Number(user?.id) && (
+                          <button
+                            type="button"
+                            title={t('chat.memberRemove')}
+                            onClick={() => handleRemoveMember(m.user_id)}
+                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-danger, #e53e3e)', padding: 4, flexShrink: 0 }}
+                          >
+                            <Trash2 size={14} strokeWidth={2} />
+                          </button>
+                        )}
+                      </div>
+                    )
+                  })
+                )}
+              </div>
+
+              {/* Invite form (owner only) */}
+              {Number(membersProjectTarget.owner_id) === Number(user?.id) && (
+                <form onSubmit={handleInviteMember}>
+                  <div className="chat-modal-field">
+                    <label className="chat-modal-label" htmlFor="member-invite-email">
+                      <UserPlus size={13} strokeWidth={2} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} />
+                      {t('chat.memberInviteLabel')}
+                    </label>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <input
+                        id="member-invite-email"
+                        type="email"
+                        value={memberInviteEmail}
+                        onChange={(e) => { setMemberInviteEmail(e.target.value); setMemberInviteError('') }}
+                        className="chat-modal-input"
+                        placeholder="email@exemple.com"
+                        autoComplete="off"
+                        style={{ flex: 1 }}
+                      />
+                      <button
+                        type="submit"
+                        className="chat-modal-btn chat-modal-btn--primary"
+                        disabled={memberInviteLoading || !memberInviteEmail.trim()}
+                        style={{ flexShrink: 0 }}
+                      >
+                        {t('chat.memberInviteSubmit')}
+                      </button>
+                    </div>
+                    {memberInviteError && (
+                      <p style={{ color: 'var(--color-danger, #e53e3e)', fontSize: 12, marginTop: 4 }}>{memberInviteError}</p>
+                    )}
+                  </div>
+                </form>
+              )}
+
+              <div className="chat-modal-actions">
+                <button type="button" className="chat-modal-btn chat-modal-btn--secondary" onClick={closeMembersModal}>
+                  {t('common.close')}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
       </AnimatePresence>
 
       {/* ── Lightbox ── */}
@@ -1221,7 +1520,9 @@ function ComposerField({
   onComposerPaste, onFileInputChange, onComposerKeyDown,
   handleSendMessage, autoResizeTextarea,
   canSend, loading, disabled, placeholder,
-  isRecording, toggleMic, t, setLightboxSrc,
+  isRecording, toggleMic,
+  ttsEnabled, ttsPlaying, toggleTts,
+  t, setLightboxSrc,
 }) {
   return (
     <form className="chat-composer-inner" onSubmit={handleSendMessage}>
@@ -1262,7 +1563,7 @@ function ComposerField({
         className={`chat-composer-field ${disabled ? 'chat-composer-field--disabled' : ''}`}
         onPaste={onComposerPaste}
       >
-        {/* Left tools: paperclip + mic */}
+        {/* Left tools: paperclip + mic + TTS toggle */}
         <div className="chat-composer-tools">
           <button
             type="button"
@@ -1281,6 +1582,15 @@ function ComposerField({
             onClick={toggleMic}
           >
             {isRecording ? <MicOff size={17} strokeWidth={2} /> : <Mic size={17} strokeWidth={2} />}
+          </button>
+          <button
+            type="button"
+            className={`chat-composer-tool-btn ${ttsEnabled ? 'chat-composer-tool-btn--tts-on' : ''} ${ttsPlaying ? 'chat-composer-tool-btn--recording' : ''}`}
+            aria-label={ttsEnabled ? t('chat.ttsToggleOff') : t('chat.ttsToggleOn')}
+            onClick={toggleTts}
+            title={ttsEnabled ? t('chat.ttsToggleOff') : t('chat.ttsToggleOn')}
+          >
+            {ttsEnabled ? <Volume2 size={17} strokeWidth={2} /> : <VolumeX size={17} strokeWidth={2} />}
           </button>
         </div>
 

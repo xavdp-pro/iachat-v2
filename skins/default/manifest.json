@@ -1,9 +1,9 @@
 {
   "name": "Default",
   "slug": "default",
-  "author": "iachat",
+  "author": "Zerux",
   "version": "1.0.0",
-  "description": "Default dark/light theme for iachat",
+  "description": "Default dark/light theme for ZERUX IA",
   "preview": "assets/preview.png",
   "darkMode": true
 }

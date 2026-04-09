@@ -1,13 +1,13 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Loader2, Sparkles, Sun, Moon, Eye, EyeOff } from 'lucide-react'
+import { Loader2, Sun, Moon, Eye, EyeOff } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useTranslation } from 'react-i18next'
 import { useAuthStore } from '../store/useAuthStore.js'
 import { useThemeStore } from '../store/useThemeStore.js'
 
 export default function Login() {
-  const { t, i18n } = useTranslation()
+  const { t } = useTranslation()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
@@ -17,10 +17,6 @@ export default function Login() {
   const navigate = useNavigate()
   const { login } = useAuthStore()
   const { darkMode, toggleDarkMode } = useThemeStore()
-
-  const changeLanguage = (lng) => {
-    i18n.changeLanguage(lng)
-  }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -39,20 +35,6 @@ export default function Login() {
   return (
     <div className="login-page">
       <div className="login-toolbar">
-        <div className="chat-sidebar-lang login-toolbar-lang" role="group" aria-label={t('login.language')}>
-          {(['fr', 'en', 'es']).map((lng) => (
-            <button
-              key={lng}
-              type="button"
-              className={`chat-sidebar-lang-btn ${i18n.language.startsWith(lng) ? 'chat-sidebar-lang-btn--active' : ''}`}
-              onClick={() => changeLanguage(lng)}
-              aria-pressed={i18n.language.startsWith(lng)}
-              aria-label={t(`chat.locale${lng.charAt(0).toUpperCase()}${lng.slice(1)}`)}
-            >
-              {lng.toUpperCase()}
-            </button>
-          ))}
-        </div>
         <button
           type="button"
           onClick={toggleDarkMode}
@@ -70,17 +52,15 @@ export default function Login() {
         transition={{ duration: 0.45, ease: [0.23, 1, 0.32, 1] }}
       >
         <div className="login-card">
-          <div className="login-card-accent" aria-hidden />
+          <div className="login-card-header">
+            <img
+              src={`${import.meta.env.BASE_URL}zerux-logo.png`}
+              alt="Zerux"
+              className="login-logo-img"
+              decoding="async"
+            />
+          </div>
           <div className="login-card-body">
-            <div className="login-brand">
-              <div className="login-logo">
-                <Sparkles size={26} strokeWidth={1.75} style={{ color: 'var(--color-primary)' }} />
-              </div>
-              <div>
-                <h1 className="login-title">IAChat</h1>
-                <p className="login-subtitle">{t('login.subtitle')}</p>
-              </div>
-            </div>
 
             <form className="login-form" onSubmit={handleSubmit} noValidate>
               <div>

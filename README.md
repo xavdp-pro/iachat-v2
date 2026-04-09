@@ -1,6 +1,6 @@
-# IAChat
+# ZERUX IA
 
-**IAChat** is an **open-source chat shell** for teams and products that need a **familiar AI conversation UI** (sidebar, projects, threads, composer) without locking into a single vendor. It is meant to be **reused across projects** and extended through **plugins** (LLM backends, tools, future agents) configured from an **admin area**, while day-to-day use happens in the **chat** surface.
+**ZERUX IA** is an **open-source chat shell** for teams and products that need a **familiar AI conversation UI** (sidebar, projects, threads, composer) without locking into a single vendor. It is meant to be **reused across projects** and extended through **plugins** (LLM backends, tools, future agents) configured from an **admin area**, while day-to-day use happens in the **chat** surface.
 
 ## Why this exists
 
@@ -9,7 +9,7 @@
 
 Longer product and plugin vision: [`mds/interface-vision-plugins.md`](mds/interface-vision-plugins.md).
 
-### IAChat v2 (this tree)
+### ZERUX IA / iachat-v2 (this tree)
 
 This copy is **deployed from the v1 GitHub repo** (`git clone`) with **different ports** so v1 and v2 run together:
 
@@ -93,4 +93,4 @@ This project is intended as **open source**. Add a `LICENSE` file if you want a 
 
 ---
 
-*IAChat v1 — generic chat shell, plugin-ready, skinnable.*
+*Upstream iachat v1 — generic chat shell, plugin-ready, skinnable.*

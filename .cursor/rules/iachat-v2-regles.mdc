@@ -1,0 +1,34 @@
+---
+description: Project rules from mds/regles.md — DB conventions, paths, UX, languages
+globs: iachat-v2/**
+alwaysApply: false
+---
+
+# iachat-v2 — rules (source of truth: `mds/regles.md`)
+
+## Language
+
+- Code and comments in **English**. Human ↔ assistant communication in **French**.
+
+## Database (MariaDB / MySQL)
+
+- **DB name = DB user = `{mon-app}`** (e.g. this app: `iachat-v2`). Never invent a different naming scheme.
+- **Password**: read from `/apps/{mon-app}/etc/mysql/localhost/passwd` when you need it (portable setup); prefer that over guessing or committing secrets.
+- **The database and user already exist** — do not create DB/user from scratch in migrations unless explicitly asked.
+- **Agent (you)**: use **CLI** (`mysql`, etc.) for inspection and ad-hoc SQL when the user asks.
+- **Application**: use the **programming stack** only (e.g. `mysql2` in Node) — not the CLI inside app code.
+
+## Paths under `/apps/{mon-app}/`
+
+- `app` — source code · `etc` — config · `log` — logs · `sav` — keep files (not in git) · `tmp` — temp · `nosav` — cache / non-backed-up
+- If the app lives under `/apps/{mon-app}/app`, **check cwd** before running commands.
+
+## UX / frontend
+
+- **Never** use `alert()`, `confirm()`, or `prompt()`. Use **modals** consistent with the app design.
+- Modals must close via **Escape**, **backdrop click**, and **top-right close**; use `useEffect` for `keydown` on `Escape` unless a strict validation flow requires otherwise.
+
+## Other
+
+- Ask questions until requirements are clear. Shell may run as root — no `sudo` needed.
+- Before destructive or path-sensitive actions, **verify the working directory**.

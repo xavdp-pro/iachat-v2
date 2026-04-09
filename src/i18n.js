@@ -2,118 +2,6 @@ import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
 
 const resources = {
-  en: {
-    translation: {
-      "login": {
-        "title": "Welcome Back",
-        "subtitle": "Sign in to continue",
-        "email": "Email address",
-        "emailPlaceholder": "you@example.com",
-        "password": "Password",
-        "passwordPlaceholder": "Your password",
-        "submit": "Sign in",
-        "invalidCredentials": "Invalid email or password",
-        "language": "Language",
-        "themeLight": "Light mode",
-        "themeDark": "Dark mode",
-        "showPassword": "Show password",
-        "hidePassword": "Hide password",
-        "footer": "IAChat · v1.0",
-        "noAccount": "Don't have an account?",
-        "contactAdmin": "Contact your administrator"
-      },
-      "chat": {
-        "newProject": "New project",
-        "projects": "Projects",
-        "noProjectSelected": "Select or create a project",
-        "noProjectSubtitle": "Your conversations will appear here",
-        "discussions": "Conversations",
-        "newDiscussion": "New chat",
-        "defaultDiscussionTitle": "New conversation",
-        "renameDiscussionTitle": "Rename conversation",
-        "renameDiscussion": "Rename",
-        "discussionTitleLabel": "Title",
-        "discussionActions": "Conversation actions",
-        "deleteDiscussionTitle": "Delete conversation",
-        "deleteDiscussionMessage": "Delete \"{{title}}\"? All messages in this chat will be removed.",
-        "pickDiscussion": "Choose a conversation or start a new one",
-        "messagePlaceholder": "Message…",
-        "emptyGreeting": "How can I help you today?",
-        "projectNameLabel": "Name",
-        "projectDescLabel": "Description",
-        "createProjectSubmit": "Create project",
-        "editProject": "Edit project",
-        "renameProject": "Rename",
-        "archiveProject": "Archive",
-        "unarchiveProject": "Restore from archive",
-        "deleteProjectTitle": "Delete project",
-        "deleteProjectMessage": "Delete \"{{name}}\" and all its conversations? This cannot be undone.",
-        "archivedProjects": "Archived",
-        "projectActions": "Project actions",
-        "you": "You",
-        "logout": "Sign out",
-        "admin": "Admin panel",
-        "localeFr": "Français",
-        "localeEn": "English",
-        "localeEs": "Español",
-        "openMenu": "Open menu",
-        "closeMenu": "Close menu",
-        "sendMessage": "Send message",
-        "landingGreeting": "How can I help you today?",
-        "landingNoProject": "Select or create a project to get started",
-        "landingWithProject": "Type your message and press Enter",
-        "landingProjectHint": "Select a project on the left to begin",
-        "startFirstMessage": "Start the conversation…",
-        "emptyDiscussionGreeting": "Start the conversation",
-        "emptyDiscussionSub": "Send your first message below",
-        "assistant": "Assistant",
-        "attachFile": "Attach file",
-        "startRecording": "Start voice input",
-        "stopRecording": "Stop recording",
-        "removeAttachment": "Remove attachment",
-        "deleteMessageTitle": "Delete message",
-        "deleteMessageConfirm": "Delete this message? This cannot be undone.",
-        "edited": "edited"
-      },
-      "admin": {
-        "title": "Administration",
-        "userListTitle": "Users",
-        "subtitle": "Manage users and access roles.",
-        "backToChat": "Back to chat",
-        "addUser": "Add user",
-        "userCount": "{{count}} user(s)",
-        "colName": "Name",
-        "colEmail": "Email",
-        "colRole": "Role",
-        "colStatus": "Status",
-        "colCreated": "Created",
-        "colActions": "Actions",
-        "modalNew": "New user",
-        "modalEdit": "Edit user",
-        "email": "Email",
-        "name": "Display name",
-        "password": "Password (leave blank to keep current)",
-        "role": "Role",
-        "accountState": "Account status",
-        "roleUser": "User",
-        "roleAdmin": "Administrator",
-        "deleteTitle": "Delete user",
-        "deleteMessage": "Permanently delete {{email}}? This cannot be undone.",
-        "error": "Request failed",
-        "anonymous": "Anonymous"
-      },
-      "common": {
-        "cancel": "Cancel",
-        "save": "Save",
-        "delete": "Delete",
-        "edit": "Edit",
-        "close": "Close",
-        "active": "Active",
-        "inactive": "Inactive",
-        "loading": "Loading..."
-      }
-    }
-  },
   fr: {
     translation: {
       "login": {
@@ -130,7 +18,8 @@ const resources = {
         "themeDark": "Mode sombre",
         "showPassword": "Afficher le mot de passe",
         "hidePassword": "Masquer le mot de passe",
-        "footer": "IAChat · v1.0",
+        "footer": "Zerux · ZERUX IA",
+        "brandMark": "Zerux",
         "noAccount": "Pas de compte ?",
         "contactAdmin": "Contactez votre administrateur"
       },
@@ -182,10 +71,27 @@ const resources = {
         "attachFile": "Joindre un fichier",
         "startRecording": "Démarrer la dictée",
         "stopRecording": "Arrêter l'enregistrement",
+        "ttsToggleOn": "Activer la lecture audio (TTS)",
+        "ttsToggleOff": "Désactiver la lecture audio (TTS)",
+        "ttsPlaying": "Lecture en cours…",
+        "ttsMicNoAccess": "Accès au microphone refusé.",
+        "copy": "Copier",
+        "copied": "Copié !",
         "removeAttachment": "Supprimer la pièce jointe",
         "deleteMessageTitle": "Supprimer le message",
         "deleteMessageConfirm": "Supprimer ce message ? Cette action est irréversible.",
-        "edited": "modifié"
+        "edited": "modifié",
+        "ollamaErrorDismiss": "Fermer",
+        "manageMembers": "Membres",
+        "membersModalTitle": "Membres du projet",
+        "membersEmpty": "Aucun membre pour l'instant.",
+        "memberOwner": "Propriétaire",
+        "memberMember": "Membre",
+        "memberRemove": "Retirer",
+        "memberInviteLabel": "Inviter par e-mail",
+        "memberInviteSubmit": "Inviter",
+        "memberAlreadyMember": "Déjà membre du projet",
+        "memberNotFound": "Aucun utilisateur actif avec cet e-mail"
       },
       "admin": {
         "title": "Administration",
@@ -212,9 +118,51 @@ const resources = {
         "deleteTitle": "Supprimer l'utilisateur",
         "deleteMessage": "Supprimer définitivement {{email}} ? Cette action est irréversible.",
         "error": "Échec de la requête",
-        "anonymous": "Anonyme"
+        "anonymous": "Anonyme",
+        "tabsLabel": "Sections d’administration",
+        "tabUsers": "Utilisateurs",
+        "tabOllama": "Ollama",
+        "tabTts": "Voix TTS",
+        "ttsTitle": "Synthèse & Reconnaissance vocale",
+        "ttsSubtitle": "Testez et choisissez la voix par défaut pour la lecture automatique des réponses IA.",
+        "ttsVoicesLoading": "Chargement des voix…",
+        "ttsVoicesError": "Impossible de charger les voix.",
+        "ttsTestLabel": "Texte de test",
+        "ttsTestPlaceholder": "Saisissez un texte à lire par la voix…",
+        "ttsSpeedLabel": "Vitesse",
+        "ttsPlay": "Écouter",
+        "ttsPlaying": "Lecture…",
+        "ttsVoiceSetDefault": "Choisir par défaut",
+        "ttsVoiceIsDefault": "Voix par défaut",
+        "ttsDefaultVoiceLabel": "Voix active",
+        "ollamaTitle": "Ollama (IA globale)",
+        "ollamaSubtitle": "Ces réglages s’appliquent à tous les utilisateurs. Réservés aux administrateurs.",
+        "ollamaEnabledLabel": "Réponses IA",
+        "ollamaEnabledManaged": "L’activation est pilotée uniquement par la configuration serveur (pas de forçage dans l’admin).",
+        "ollamaEnabledInherit": "Selon la configuration serveur (.env)",
+        "ollamaEnabledOn": "Forcer l’activation",
+        "ollamaEnabledOff": "Forcer la désactivation",
+        "ollamaEnabledHint": "OLLAMA_ENABLED côté serveur est actuellement : {{env}}.",
+        "ollamaModelLabel": "Modèle",
+        "ollamaModelEnv": "Valeur serveur (.env / OLLAMA_MODEL)",
+        "ollamaModelPlaceholder": "Choisir une suggestion ou saisir un nom (vide = défaut serveur)",
+        "ollamaModelSearchPlaceholder": "Rechercher dans les modèles en cache...",
+        "ollamaClearSearch": "Vider la recherche",
+        "ollamaRefreshModels": "Rafraîchir la liste des modèles",
+        "ollamaClearModel": "Vider le modèle sélectionné",
+        "ollamaModelsRefreshed": "Liste des modèles rafraîchie ({{count}}).",
+        "ollamaTestPrompt": "Tester la réponse Ollama",
+        "ollamaTestOk": "Ollama répond (modèle : {{model}}, {{ms}} ms). Réponse : {{reply}}",
+        "ollamaRefreshError": "Impossible de rafraîchir la liste des modèles depuis Ollama.",
+        "ollamaDegradedBanner": "Impossible de charger les réglages via l’API. Vous pouvez saisir un nom de modèle ; les suggestions viennent de VITE_OLLAMA_MODEL_HINTS si défini. Si l’enregistrement échoue, redémarrez l’API.",
+        "ollamaModelsListWarningIntro": "Le serveur d’application n’a pas pu joindre Ollama pour actualiser la liste des modèles. Détail :",
+        "ollamaModelHint": "Modèle effectif pour tout le monde : {{model}}",
+        "ollamaSave": "Enregistrer Ollama",
+        "ollamaSaved": "Réglages enregistrés.",
+        "ollamaError": "Impossible de charger ou d’enregistrer les réglages Ollama."
       },
       "common": {
+        "appName": "ZERUX IA",
         "cancel": "Annuler",
         "save": "Enregistrer",
         "delete": "Supprimer",
@@ -225,165 +173,18 @@ const resources = {
         "loading": "Chargement..."
       }
     }
-  },
-  es: {
-    translation: {
-      "login": {
-        "title": "Bienvenido de nuevo",
-        "subtitle": "Inicie sesión para continuar",
-        "email": "Correo electrónico",
-        "emailPlaceholder": "usted@ejemplo.com",
-        "password": "Contraseña",
-        "passwordPlaceholder": "Su contraseña",
-        "submit": "Iniciar sesión",
-        "invalidCredentials": "Correo o contraseña incorrectos",
-        "language": "Idioma",
-        "themeLight": "Modo claro",
-        "themeDark": "Modo oscuro",
-        "showPassword": "Mostrar contraseña",
-        "hidePassword": "Ocultar contraseña",
-        "footer": "IAChat · v1.0",
-        "noAccount": "¿No tienes una cuenta?",
-        "contactAdmin": "Contacte a su administrador"
-      },
-      "chat": {
-        "newProject": "Nuevo proyecto",
-        "projects": "Proyectos",
-        "noProjectSelected": "Seleccione o cree un proyecto",
-        "noProjectSubtitle": "Sus conversaciones aparecerán aquí",
-        "discussions": "Conversaciones",
-        "newDiscussion": "Nueva conversación",
-        "defaultDiscussionTitle": "Nueva conversación",
-        "renameDiscussionTitle": "Renombrar conversación",
-        "renameDiscussion": "Renombrar",
-        "discussionTitleLabel": "Título",
-        "discussionActions": "Acciones de la conversación",
-        "deleteDiscussionTitle": "Eliminar conversación",
-        "deleteDiscussionMessage": "¿Eliminar «{{title}}»? Se borrarán todos los mensajes.",
-        "pickDiscussion": "Elija una conversación o cree una nueva",
-        "messagePlaceholder": "Escriba un mensaje…",
-        "emptyGreeting": "¿En qué puedo ayudarte?",
-        "projectNameLabel": "Nombre",
-        "projectDescLabel": "Descripción",
-        "createProjectSubmit": "Crear proyecto",
-        "editProject": "Editar proyecto",
-        "renameProject": "Renombrar",
-        "archiveProject": "Archivar",
-        "unarchiveProject": "Desarchivar",
-        "deleteProjectTitle": "Eliminar proyecto",
-        "deleteProjectMessage": "¿Eliminar «{{name}}» y todas sus conversaciones? No se puede deshacer.",
-        "archivedProjects": "Archivados",
-        "projectActions": "Acciones del proyecto",
-        "you": "Tú",
-        "logout": "Cerrar sesión",
-        "admin": "Panel de administración",
-        "localeFr": "Français",
-        "localeEn": "English",
-        "localeEs": "Español",
-        "openMenu": "Abrir menú",
-        "closeMenu": "Cerrar menú",
-        "sendMessage": "Enviar mensaje",
-        "landingGreeting": "¿En qué puedo ayudarte?",
-        "landingNoProject": "Seleccione o cree un proyecto para comenzar",
-        "landingWithProject": "Escriba su mensaje y pulse Intro",
-        "landingProjectHint": "Seleccione un proyecto a la izquierda para comenzar",
-        "startFirstMessage": "Comience la conversación…",
-        "emptyDiscussionGreeting": "Comience la conversación",
-        "emptyDiscussionSub": "Envíe su primer mensaje a continuación",
-        "assistant": "Asistente",
-        "attachFile": "Adjuntar archivo",
-        "startRecording": "Iniciar dictado",
-        "stopRecording": "Detener grabación",
-        "removeAttachment": "Eliminar archivo adjunto",
-        "deleteMessageTitle": "Eliminar mensaje",
-        "deleteMessageConfirm": "¿Eliminar este mensaje? Esta acción no se puede deshacer.",
-        "edited": "editado"
-      },
-      "admin": {
-        "title": "Administración",
-        "userListTitle": "Usuarios",
-        "subtitle": "Gestione usuarios y roles de acceso.",
-        "backToChat": "Volver al chat",
-        "addUser": "Añadir usuario",
-        "userCount": "{{count}} usuario(s)",
-        "colName": "Nombre",
-        "colEmail": "Correo",
-        "colRole": "Rol",
-        "colStatus": "Estado",
-        "colCreated": "Creado",
-        "colActions": "Acciones",
-        "modalNew": "Nuevo usuario",
-        "modalEdit": "Editar usuario",
-        "email": "Correo electrónico",
-        "name": "Nombre visible",
-        "password": "Contraseña (vacío = sin cambio)",
-        "role": "Rol",
-        "accountState": "Estado de la cuenta",
-        "roleUser": "Usuario",
-        "roleAdmin": "Administrador",
-        "deleteTitle": "Eliminar usuario",
-        "deleteMessage": "¿Eliminar permanentemente a {{email}}? No se puede deshacer.",
-        "error": "Error en la solicitud",
-        "anonymous": "Anónimo"
-      },
-      "common": {
-        "cancel": "Cancelar",
-        "save": "Guardar",
-        "delete": "Eliminar",
-        "edit": "Editar",
-        "close": "Cerrar",
-        "active": "Activo",
-        "inactive": "Inactivo",
-        "loading": "Cargando..."
-      }
-    }
   }
 };
-
-/** UI languages we ship (ISO 639-1). */
-const SUPPORTED_LANGS = ['fr', 'en', 'es']
-
-/**
- * Map navigator.language(s) to a supported code, or fallback.
- */
-function languageFromNavigator() {
-  if (typeof navigator === 'undefined') return 'en'
-  const candidates = [...(navigator.languages || []), navigator.language].filter(Boolean)
-  for (const tag of candidates) {
-    const base = String(tag).split('-')[0].toLowerCase()
-    if (SUPPORTED_LANGS.includes(base)) return base
-  }
-  return 'en'
-}
-
-/**
- * Prefer saved choice (localStorage), else browser, else English.
- */
-function getInitialLanguage() {
-  if (typeof localStorage === 'undefined') return languageFromNavigator()
-  const saved = localStorage.getItem('lng')
-  if (saved && SUPPORTED_LANGS.includes(saved)) return saved
-  if (saved) localStorage.removeItem('lng')
-  return languageFromNavigator()
-}
 
 i18n
   .use(initReactI18next)
   .init({
     resources,
-    lng: getInitialLanguage(),
-    supportedLngs: SUPPORTED_LANGS,
-    fallbackLng: 'en',
+    lng: 'fr',
+    fallbackLng: 'fr',
     interpolation: {
       escapeValue: false
     }
   })
-
-// Persist any language change (single place; keeps localStorage in sync with i18n)
-i18n.on('languageChanged', (lng) => {
-  if (typeof localStorage === 'undefined') return
-  const base = String(lng).split('-')[0].toLowerCase()
-  if (SUPPORTED_LANGS.includes(base)) localStorage.setItem('lng', base)
-})
 
 export default i18n

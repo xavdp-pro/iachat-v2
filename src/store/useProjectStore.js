@@ -9,7 +9,13 @@ export const useProjectStore = create((set, get) => ({
   discussions: [],
   activeDiscussion: null,
   messages: [],
+  projectMembers: [],
   loading: false,
+  streaming: false,
+  streamingContent: '',
+  ollamaError: null,
+
+  clearOllamaError: () => set({ ollamaError: null }),
 
   fetchProjects: async () => {
     set({ loading: true })
@@ -171,6 +177,29 @@ export const useProjectStore = create((set, get) => ({
     set((state) => ({ messages: state.messages.filter((m) => m.id !== id) }))
   },
 
+  fetchProjectMembers: async (projectId) => {
+    try {
+      const data = await api.get(`/projects/${projectId}/members`)
+      set({ projectMembers: data })
+      return data
+    } catch (err) {
+      console.error('Error fetching project members:', err)
+      set({ projectMembers: [] })
+      throw err
+    }
+  },
+
+  addProjectMember: async (projectId, email) => {
+    const data = await api.post(`/projects/${projectId}/members`, { email })
+    set((state) => ({ projectMembers: [...state.projectMembers, data] }))
+    return data
+  },
+
+  removeProjectMember: async (projectId, userId) => {
+    await api.delete(`/projects/${projectId}/members/${userId}`)
+    set((state) => ({ projectMembers: state.projectMembers.filter((m) => m.user_id !== userId) }))
+  },
+
   sendMessage: async (content, attachments = []) => {
     const { activeDiscussion } = get()
     if (!activeDiscussion || !content.trim()) return
@@ -185,26 +214,119 @@ export const useProjectStore = create((set, get) => ({
       created_at: new Date().toISOString(),
     }
 
-    // Optimistic update
-    set(state => ({ messages: [...state.messages, optimistic] }))
+    set((state) => ({
+      messages: [...state.messages, optimistic],
+      loading: true,
+      streaming: false,
+      streamingContent: '',
+      ollamaError: null,
+    }))
 
+    // If attachments present, fall back to non-streaming endpoint
+    if (attachments.length > 0) {
+      try {
+        const data = await api.post(
+          '/messages',
+          { discussion_id: activeDiscussion.id, content, role: 'user', attachments },
+          { timeout: 600000 }
+        )
+        const userMsg = data.message || data
+        const assistantMsg = data.assistant
+        set((state) => {
+          const replaced = state.messages.map((m) =>
+            m.id === tempId ? { ...userMsg, attachments: userMsg.attachments || [] } : m
+          )
+          return {
+            messages: assistantMsg
+              ? [...replaced, { ...assistantMsg, attachments: assistantMsg.attachments || [] }]
+              : replaced,
+            loading: false,
+            ollamaError: data.ollama_error || null,
+          }
+        })
+        return data
+      } catch (err) {
+        set((state) => ({
+          messages: state.messages.filter((m) => m.id !== tempId),
+          loading: false,
+        }))
+        throw err
+      }
+    }
+
+    // Streaming path (no attachments)
     try {
-      const data = await api.post('/messages', {
-        discussion_id: activeDiscussion.id,
-        content,
-        role: 'user',
-        attachments,
+      const token = localStorage.getItem('token')
+      const baseURL = import.meta.env.VITE_API_URL || '/api'
+      const res = await fetch(`${baseURL}/messages/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({ discussion_id: activeDiscussion.id, content, attachments }),
       })
-      // Replace optimistic message with server response
-      set(state => ({
-        messages: state.messages.map(m => m.id === tempId ? { ...data, attachments: data.attachments || [] } : m),
-      }))
-      return data
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}))
+        throw errData
+      }
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop()
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          try {
+            const evt = JSON.parse(line.slice(6))
+            if (evt.type === 'user') {
+              set((state) => ({
+                messages: state.messages.map((m) =>
+                  m.id === tempId ? { ...evt.message, attachments: [] } : m
+                ),
+              }))
+            } else if (evt.type === 'chunk') {
+              set((state) => ({
+                streaming: true,
+                streamingContent: state.streamingContent + evt.delta,
+              }))
+            } else if (evt.type === 'done') {
+              set((state) => ({
+                messages: evt.assistant
+                  ? [...state.messages, { ...evt.assistant, attachments: [] }]
+                  : state.messages,
+                loading: false,
+                streaming: false,
+                streamingContent: '',
+                ollamaError: null,
+              }))
+            } else if (evt.type === 'error') {
+              set({
+                loading: false,
+                streaming: false,
+                streamingContent: '',
+                ollamaError: evt.error,
+              })
+            }
+          } catch { /* skip malformed SSE line */ }
+        }
+      }
     } catch (err) {
-      // Remove optimistic message on error
-      set(state => ({ messages: state.messages.filter(m => m.id !== tempId) }))
+      set((state) => ({
+        messages: state.messages.filter((m) => m.id !== tempId),
+        loading: false,
+        streaming: false,
+        streamingContent: '',
+      }))
       console.error('Error sending message:', err)
       throw err
     }
-  }
+  },
 }))
