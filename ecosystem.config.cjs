@@ -1,8 +1,11 @@
 /**
- * PM2: keep API (7608) + Vite preview (7598) alive with auto-restart.
+ * PM2 — PRODUCTION: API + Vite preview (serves dist/, no HMR).
  * Usage (after npm ci && npm run build):
  *   pm2 start ecosystem.config.cjs
  *   pm2 save && pm2 startup
+ *
+ * For dev + HMR, stop this and use: npm run pm2:switch:dev
+ * (see ecosystem.dev.config.cjs)
  */
 const fs = require('fs')
 const path = require('path')
@@ -28,9 +31,9 @@ module.exports = {
       name: 'zeruxcomm-vite',
       cwd: root,
       script: 'node_modules/vite/bin/vite.js',
-      args: '--host 127.0.0.1 --port 7598 --strictPort',
+      args: 'preview --host 127.0.0.1 --port 7598 --strictPort',
       interpreter: 'node',
-      env: { NODE_ENV: 'development' },
+      env: { NODE_ENV: 'production' },
       error_file: path.join(root, 'tmp/logs/pm2-vite-error.log'),
       out_file: path.join(root, 'tmp/logs/pm2-vite-out.log'),
       autorestart: true,

@@ -1,8 +1,8 @@
-import 'dotenv/config'
-import express from 'express'
-import cors from 'cors'
+import './env.js'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
+import express from 'express'
+import cors from 'cors'
 import { mkdirSync } from 'fs'
 
 import authRoutes from './routes/auth.js'
@@ -13,6 +13,10 @@ import projectsRoutes from './routes/projects.js'
 import discussionsRoutes from './routes/discussions.js'
 import messagesRoutes from './routes/messages.js'
 import ttsRoutes from './routes/tts.js'
+import experiencesRoutes from './routes/experiences.js'
+import documentsRoutes from './routes/documents.js'
+import devisRoutes from './routes/devis.js'
+import prospectsRoutes from './routes/prospects.js'
 import { ensureDbSchema } from './db/ensureSchema.js'
 import { warmupMemory } from './services/memory.js'
 
@@ -43,6 +47,10 @@ app.use('/api/plugins', pluginsRoutes)
 app.use('/api/projects', projectsRoutes)
 app.use('/api/discussions', discussionsRoutes)
 app.use('/api/messages', messagesRoutes)
+app.use('/api/experiences', experiencesRoutes)
+app.use('/api/documents', documentsRoutes)
+app.use('/api/devis', devisRoutes)
+app.use('/api/prospects', prospectsRoutes)
 app.use('/api/tts', ttsRoutes)
 
 // Health check (capabilities help verify deploy: admin Ollama UI needs GET/PUT /api/admin/ollama-settings)

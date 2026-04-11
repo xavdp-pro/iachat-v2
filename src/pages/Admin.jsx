@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import {
   Plus, Pencil, Trash2, ShieldCheck, User, Loader2, Moon, Sun, MessageSquare, LogOut, Bot, RefreshCw, X,
-  Headphones, Play, Square, Volume2,
+  Headphones, Play, Square, Volume2, Menu, Undo2, CornerUpLeft, MessageCircleReply, BookOpen, CheckCircle2, XCircle, Clock,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useAuthStore } from '../store/useAuthStore.js'
@@ -13,7 +13,8 @@ import api from '../api/index.js'
 const TAB_USERS = 'users'
 const TAB_OLLAMA = 'ollama'
 const TAB_TTS = 'tts'
-const VALID_TABS = new Set([TAB_USERS, TAB_OLLAMA, TAB_TTS])
+const TAB_EXPERIENCES = 'experiences'
+const VALID_TABS = new Set([TAB_USERS, TAB_OLLAMA, TAB_TTS, TAB_EXPERIENCES])
 
 function modelHintsFromVite() {
   const raw = import.meta.env.VITE_OLLAMA_MODEL_HINTS || ''
@@ -26,6 +27,18 @@ export default function Admin() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { user, logout } = useAuthStore()
   const { darkMode, toggleDarkMode } = useThemeStore()
+
+  const [menuOpen, setMenuOpen] = useState(false)
+  const menuRef = useRef(null)
+
+  useEffect(() => {
+    if (!menuOpen) return
+    const onClickOutside = (e) => {
+      if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false)
+    }
+    document.addEventListener('mousedown', onClickOutside)
+    return () => document.removeEventListener('mousedown', onClickOutside)
+  }, [menuOpen])
 
   const [users, setUsers] = useState([])
   const [loading, setLoading] = useState(true)
@@ -51,6 +64,38 @@ export default function Admin() {
   const [ttsDefaultVoice, setTtsDefaultVoice] = useState(() => localStorage.getItem('tts_voice') || 'ff_siwis')
   const [ttsError, setTtsError] = useState('')
   const ttsAdminAudioRef = useRef(null)
+
+  // ── Experiences (knowledge base) state ────────────────────────────────
+  const [allExperiences, setAllExperiences] = useState([])
+  const [expLoading, setExpLoading] = useState(false)
+
+  const fetchAllExperiences = useCallback(async () => {
+    setExpLoading(true)
+    try {
+      const data = await api.get('/experiences')
+      setAllExperiences(data)
+    } catch { /* ignore */ }
+    finally { setExpLoading(false) }
+  }, [])
+
+  useEffect(() => {
+    if (activeTab === TAB_EXPERIENCES) fetchAllExperiences()
+  }, [activeTab, fetchAllExperiences])
+
+  const handleExpApprove = async (exp) => {
+    await api.post(`/experiences/${exp.id}/approve`)
+    setAllExperiences((prev) => prev.map((e) => e.id === exp.id ? { ...e, status: 'approved' } : e))
+  }
+
+  const handleExpReject = async (exp) => {
+    await api.post(`/experiences/${exp.id}/reject`)
+    setAllExperiences((prev) => prev.map((e) => e.id === exp.id ? { ...e, status: 'rejected' } : e))
+  }
+
+  const handleExpDelete = async (exp) => {
+    await api.delete(`/experiences/${exp.id}`)
+    setAllExperiences((prev) => prev.filter((e) => e.id !== exp.id))
+  }
 
   const tabParam = searchParams.get('tab')
   const activeTab = VALID_TABS.has(tabParam) ? tabParam : TAB_USERS
@@ -269,14 +314,8 @@ export default function Admin() {
         </div>
         <div className="admin-topbar-actions">
           <button type="button" className="admin-btn-ghost" onClick={() => navigate('/chat')}>
-            <MessageSquare size={16} />
-            {t('admin.backToChat')}
-          </button>
-          <button type="button" className="admin-btn-icon" onClick={toggleDarkMode} aria-label="Theme">
-            {darkMode ? <Sun size={18} /> : <Moon size={18} />}
-          </button>
-          <button type="button" className="admin-btn-icon admin-btn-icon--danger" onClick={logout} aria-label="Logout">
-            <LogOut size={18} />
+            <MessageCircleReply size={16} />
+            <span>{t('admin.backToChat')}</span>
           </button>
         </div>
       </header>
@@ -318,6 +357,23 @@ export default function Admin() {
           >
             <Headphones size={17} strokeWidth={2} aria-hidden />
             {t('admin.tabTts')}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            id="admin-tab-experiences"
+            aria-selected={activeTab === TAB_EXPERIENCES}
+            aria-controls="admin-panel-experiences"
+            className={`admin-tab ${activeTab === TAB_EXPERIENCES ? 'admin-tab--active' : ''}`}
+            onClick={() => setActiveTab(TAB_EXPERIENCES)}
+          >
+            <BookOpen size={17} strokeWidth={2} aria-hidden />
+            Expériences
+            {allExperiences.filter(e => e.status === 'pending').length > 0 && (
+              <span style={{ background: 'var(--color-primary)', color: '#fff', borderRadius: 99, fontSize: 10, fontWeight: 700, padding: '0 6px', marginLeft: 4 }}>
+                {allExperiences.filter(e => e.status === 'pending').length}
+              </span>
+            )}
           </button>
         </div>
 
@@ -696,6 +752,67 @@ export default function Admin() {
                         </button>
                       )}
                     </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </section>
+        )}
+
+        {activeTab === TAB_EXPERIENCES && (
+        <section id="admin-panel-experiences" role="tabpanel" aria-labelledby="admin-tab-experiences" className="admin-ollama-panel">
+          <div className="admin-ollama-head">
+            <div className="admin-ollama-icon"><BookOpen size={22} strokeWidth={2} /></div>
+            <div>
+              <h2>Base de connaissances</h2>
+              <p className="admin-ollama-desc">Validez ou refusez les expériences soumises par les commerciaux. Les expériences approuvées sont indexées dans Qdrant et utilisées par l'IA pour contrôler la qualité des devis.</p>
+            </div>
+          </div>
+          {expLoading ? (
+            <div style={{ textAlign: 'center', padding: 40 }}><Loader2 size={24} className="spin" /></div>
+          ) : allExperiences.length === 0 ? (
+            <div style={{ color: 'var(--color-text-muted)', textAlign: 'center', padding: 40 }}>Aucune expérience soumise.</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 16 }}>
+              {['pending', 'approved', 'rejected'].map((statusGroup) => {
+                const group = allExperiences.filter(e => e.status === statusGroup)
+                if (!group.length) return null
+                const meta = { pending: { label: 'En attente', color: '#f59e0b' }, approved: { label: 'Approuvées', color: '#22c55e' }, rejected: { label: 'Refusées', color: '#ef4444' } }
+                return (
+                  <div key={statusGroup}>
+                    <div style={{ fontWeight: 700, fontSize: 12, color: meta[statusGroup].color, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>
+                      {meta[statusGroup].label} ({group.length})
+                    </div>
+                    {group.map((exp) => (
+                      <div key={exp.id} style={{ background: 'var(--color-bg)', border: '1px solid var(--color-border)', borderRadius: 8, padding: '12px 14px', marginBottom: 8 }}>
+                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, flexWrap: 'wrap' }}>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontWeight: 600, marginBottom: 4 }}>{exp.title}</div>
+                            {exp.category && <span style={{ fontSize: 11, background: 'var(--color-border)', padding: '1px 8px', borderRadius: 99, marginBottom: 6, display: 'inline-block' }}>{exp.category}</span>}
+                            <p style={{ fontSize: 13, color: 'var(--color-text-muted)', margin: 0, whiteSpace: 'pre-wrap' }}>
+                              {exp.content.length > 250 ? exp.content.slice(0, 250) + '…' : exp.content}
+                            </p>
+                            <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 6 }}>Par <strong>{exp.author_name || '?'}</strong> · {new Date(exp.created_at).toLocaleDateString('fr-FR')}</div>
+                          </div>
+                          <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                            {exp.status !== 'approved' && (
+                              <button className="btn btn--primary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => handleExpApprove(exp)} title="Approuver">
+                                <CheckCircle2 size={13} strokeWidth={2.5} style={{ marginRight: 4 }} />Approuver
+                              </button>
+                            )}
+                            {exp.status !== 'rejected' && (
+                              <button className="btn btn--ghost" style={{ padding: '4px 10px', fontSize: 12, color: '#ef4444', borderColor: '#ef4444' }} onClick={() => handleExpReject(exp)} title="Refuser">
+                                <XCircle size={13} strokeWidth={2.5} style={{ marginRight: 4 }} />Refuser
+                              </button>
+                            )}
+                            <button className="chat-msg-toolbar-btn chat-msg-toolbar-btn--danger" onClick={() => handleExpDelete(exp)} title="Supprimer">
+                              <Trash2 size={13} strokeWidth={2} />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 )
               })}

@@ -10,7 +10,7 @@ import {
   getGlobalOllamaModel,
   resolvedIsOllamaEnabled,
 } from '../services/appSettings.js'
-import { storeMemory, searchMemory } from '../services/memory.js'
+import { storeMemory, searchMemory, searchExperiences } from '../services/memory.js'
 
 const router = Router()
 router.use(authenticate)
@@ -35,17 +35,25 @@ async function fetchDiscussionTranscriptForOllama(discussionId) {
     }
   }
   // ── Long-term memory: inject relevant past context before current conversation
+  const lastUserMsg = messages.filter(m => m.role === 'user').slice(-1)[0]?.content || ''
   const memories = await searchMemory({
-    text: messages.filter(m => m.role === 'user').slice(-1)[0]?.content || '',
+    text: lastUserMsg,
     projectId: null,
     topK: 5,
   }).catch(() => [])
   const memBlock = memories.length
     ? `\n\n[Mémoire long-terme — échanges pertinents passés :]\n` +
-      memories.map((m, i) => `${i + 1}. [${m.role}] ${m.text}`).join('\n')
+    memories.map((m, i) => `${i + 1}. [${m.role}] ${m.text}`).join('\n')
     : ''
 
-  const out = [{ role: 'system', content: systemPrompt() + memBlock }]
+  // ── Knowledge base: inject approved commercial experiences
+  const expHits = await searchExperiences({ text: lastUserMsg, topK: 3 }).catch(() => [])
+  const expBlock = expHits.length
+    ? `\n\n[Base de connaissances commerciale — expériences terrain pertinentes :]\n` +
+      expHits.map((h, i) => `${i + 1}. [${h.category || 'Général'}] ${h.title} — ${h.excerpt || ''}`).join('\n')
+    : ''
+
+  const out = [{ role: 'system', content: systemPrompt() + memBlock + expBlock }]
   for (const m of messages) {
     if (m.role !== 'user' && m.role !== 'assistant') continue
     const ollamaRole = m.role === 'user' ? 'user' : 'assistant'
@@ -150,7 +158,7 @@ router.post('/', async (req, res) => {
     }
 
     // Store user message in vector memory (non-blocking)
-    storeMemory({ messageId, discussionId: discussion_id, projectId: null, role: 'user', text: content }).catch(() => {})
+    storeMemory({ messageId, discussionId: discussion_id, projectId: null, role: 'user', text: content }).catch(() => { })
 
     let assistantPayload = null
     let ollama_error = null
@@ -180,7 +188,7 @@ router.post('/', async (req, res) => {
           created_at: new Date().toISOString(),
         }
         // Store assistant reply in vector memory (non-blocking)
-        storeMemory({ messageId: aiResult.insertId, discussionId: discussion_id, projectId: null, role: 'assistant', text: reply }).catch(() => {})
+        storeMemory({ messageId: aiResult.insertId, discussionId: discussion_id, projectId: null, role: 'assistant', text: reply }).catch(() => { })
       } catch (e) {
         const msg = e.name === 'AbortError' ? 'Ollama request timed out' : (e.message || 'Ollama error')
         console.error('Ollama chat:', msg)
@@ -231,7 +239,7 @@ router.post('/stream', async (req, res) => {
     }
 
     // Store user message in vector memory (non-blocking)
-    storeMemory({ messageId, discussionId: discussion_id, projectId: null, role: 'user', text: content }).catch(() => {})
+    storeMemory({ messageId, discussionId: discussion_id, projectId: null, role: 'user', text: content }).catch(() => { })
 
     // 2. SSE headers
     res.setHeader('Content-Type', 'text/event-stream')
@@ -284,7 +292,7 @@ router.post('/stream', async (req, res) => {
     }
 
     // Store assistant reply in vector memory (non-blocking)
-    storeMemory({ messageId: aiResult.insertId, discussionId: discussion_id, projectId: null, role: 'assistant', text: fullText }).catch(() => {})
+    storeMemory({ messageId: aiResult.insertId, discussionId: discussion_id, projectId: null, role: 'assistant', text: fullText }).catch(() => { })
 
     res.write(`data: ${JSON.stringify({ type: 'done', assistant: assistantPayload })}\n\n`)
     res.end()
@@ -323,6 +331,25 @@ router.delete('/:id', async (req, res) => {
       return res.status(403).json({ error: 'Forbidden' })
     await db.query('DELETE FROM messages WHERE id = ?', [req.params.id])
     res.json({ success: true })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// DELETE /api/messages/from/:id — supprime ce message ET tous les suivants dans la discussion
+// Le message cible doit appartenir à l'utilisateur courant
+router.delete('/from/:id', async (req, res) => {
+  try {
+    const [rows] = await db.query('SELECT * FROM messages WHERE id = ?', [req.params.id])
+    if (!rows.length) return res.status(404).json({ error: 'Not found' })
+    const msg = rows[0]
+    if (Number(msg.user_id) !== Number(req.user.id))
+      return res.status(403).json({ error: 'Forbidden' })
+    await db.query(
+      'DELETE FROM messages WHERE discussion_id = ? AND id >= ?',
+      [msg.discussion_id, msg.id]
+    )
+    res.json({ success: true, discussion_id: msg.discussion_id })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }

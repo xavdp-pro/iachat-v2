@@ -177,6 +177,12 @@ export const useProjectStore = create((set, get) => ({
     set((state) => ({ messages: state.messages.filter((m) => m.id !== id) }))
   },
 
+  pruneMessagesFrom: async (messageId) => {
+    await api.delete(`/messages/from/${messageId}`)
+    const idx = get().messages.findIndex((m) => m.id === messageId)
+    if (idx !== -1) set((state) => ({ messages: state.messages.slice(0, idx) }))
+  },
+
   fetchProjectMembers: async (projectId) => {
     try {
       const data = await api.get(`/projects/${projectId}/members`)

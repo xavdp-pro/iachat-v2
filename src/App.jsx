@@ -5,6 +5,10 @@ import { useThemeStore } from './store/useThemeStore.js'
 import Login from './pages/Login.jsx'
 import Admin from './pages/Admin.jsx'
 import Chat from './pages/Chat.jsx'
+import Experiences from './pages/Experiences.jsx'
+import Devis from './pages/Devis.jsx'
+import Prospects from './pages/Prospects.jsx'
+import ProspectQuotes from './pages/ProspectQuotes.jsx'
 
 // Route guard — redirect to login if not authenticated
 function PrivateRoute({ children, adminOnly = false }) {
@@ -42,6 +46,26 @@ export default function App() {
         <Route path="/chat" element={
           <PrivateRoute>
             <Chat />
+          </PrivateRoute>
+        } />
+        <Route path="/experiences" element={
+          <PrivateRoute>
+            <Experiences />
+          </PrivateRoute>
+        } />
+        <Route path="/devis" element={
+          <PrivateRoute>
+            <Devis />
+          </PrivateRoute>
+        } />
+        <Route path="/prospects" element={
+          <PrivateRoute>
+            <Prospects />
+          </PrivateRoute>
+        } />
+        <Route path="/prospects/:id/quotes" element={
+          <PrivateRoute>
+            <ProspectQuotes />
           </PrivateRoute>
         } />
         <Route path="/" element={<Navigate to="/chat" replace />} />

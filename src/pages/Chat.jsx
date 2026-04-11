@@ -5,8 +5,8 @@ import {
   Send, Bot, Sparkles, Settings,
   MoreVertical, Archive, ArchiveRestore,
   Menu, X, Paperclip, Mic, MicOff, FileText, ZoomIn,
-  Volume2, VolumeX, Copy, Check,
-  Users, UserPlus,
+  Volume2, VolumeX, Copy, Check, RotateCcw,
+  Users, UserPlus, ChevronRight, BookOpen, FileSpreadsheet, Building2,
 } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/useAuthStore.js'
@@ -26,7 +26,7 @@ export default function Chat() {
     discussions, activeDiscussion, setActiveDiscussion,
     createProject, createDiscussion, updateDiscussion, deleteDiscussion,
     updateProject, deleteProject,
-    messages, sendMessage, updateMessage, deleteMessage, loading,
+    messages, sendMessage, updateMessage, deleteMessage, pruneMessagesFrom, loading,
     streaming, streamingContent,
     ollamaError, clearOllamaError,
     projectMembers, fetchProjectMembers, addProjectMember, removeProjectMember,
@@ -52,6 +52,7 @@ export default function Chat() {
   const [editingMessageId, setEditingMessageId] = useState(null)
   const [editingMessageContent, setEditingMessageContent] = useState('')
   const [confirmDeleteMessage, setConfirmDeleteMessage] = useState(null)
+  const [confirmRelaunchMessage, setConfirmRelaunchMessage] = useState(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [layoutDesktop, setLayoutDesktop] = useState(
     () => typeof window !== 'undefined' && window.matchMedia('(min-width: 1024px)').matches
@@ -147,11 +148,12 @@ export default function Chat() {
       if (discussionRenameTarget) { closeRenameDiscussionModal(); return }
       if (confirmDeleteDiscussion) { setConfirmDeleteDiscussion(null); return }
       if (confirmDeleteMessage) { setConfirmDeleteMessage(null); return }
+      if (confirmRelaunchMessage) { setConfirmRelaunchMessage(null); return }
       if (editingMessageId) { cancelEditMessage(); return }
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [isProjectModalOpen, confirmDeleteProject, discussionRenameTarget, confirmDeleteDiscussion, confirmDeleteMessage, editingMessageId, membersProjectTarget])
+  }, [isProjectModalOpen, confirmDeleteProject, discussionRenameTarget, confirmDeleteDiscussion, confirmDeleteMessage, confirmRelaunchMessage, editingMessageId, membersProjectTarget])
 
   const isProjectArchived = (p) => Number(p?.archived) === 1
   const activeProjects = projects.filter((p) => !isProjectArchived(p))
@@ -301,6 +303,15 @@ export default function Chat() {
     } catch { /* api error */ }
   }
 
+  const relaunchEditMessage = useCallback(async (m) => {
+    const newContent = editingMessageContent.trim()
+    if (!newContent || loading) return
+    const attachments = m.attachments || []
+    cancelEditMessage()
+    await pruneMessagesFrom(m.id)
+    await sendMessage(newContent, attachments)
+  }, [editingMessageContent, loading, pruneMessagesFrom, sendMessage, cancelEditMessage])
+
   const handleConfirmDeleteMessage = async () => {
     if (!confirmDeleteMessage) return
     try {
@@ -309,6 +320,13 @@ export default function Chat() {
       setConfirmDeleteMessage(null)
     }
   }
+
+  const handleConfirmRelaunch = useCallback(async () => {
+    if (!confirmRelaunchMessage) return
+    const m = confirmRelaunchMessage
+    setConfirmRelaunchMessage(null)
+    await relaunchEditMessage(m)
+  }, [confirmRelaunchMessage, relaunchEditMessage])
 
   const autoResizeTextarea = () => {
     if (textareaRef.current) {
@@ -789,6 +807,18 @@ export default function Chat() {
         </nav>
 
         <div className="chat-sidebar-footer">
+          <Link to="/experiences" className="chat-footer-link">
+            <BookOpen size={16} strokeWidth={2} />
+            Expériences
+          </Link>
+          <Link to="/devis" className="chat-footer-link">
+            <FileSpreadsheet size={16} strokeWidth={2} />
+            Devis NEXUS
+          </Link>
+          <Link to="/prospects" className="chat-footer-link">
+            <Building2 size={16} strokeWidth={2} />
+            Prospects
+          </Link>
           {user?.role === 'admin' && (
             <Link to="/admin" className="chat-footer-link">
               <Settings size={16} strokeWidth={2} />
@@ -991,7 +1021,6 @@ export default function Chat() {
                                   autoFocus
                                   rows={3}
                                   onKeyDown={(e) => {
-                                    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveEditMessage(m.id) }
                                     if (e.key === 'Escape') cancelEditMessage()
                                   }}
                                 />
@@ -999,8 +1028,14 @@ export default function Chat() {
                                   <button type="button" className="chat-modal-btn chat-modal-btn--secondary" onClick={cancelEditMessage}>
                                     {t('common.cancel')}
                                   </button>
-                                  <button type="button" className="chat-modal-btn chat-modal-btn--primary" onClick={() => saveEditMessage(m.id)}>
-                                    {t('common.save')}
+                                  <button
+                                    type="button"
+                                    className="chat-modal-btn chat-modal-btn--primary"
+                                    onClick={() => setConfirmRelaunchMessage(m)}
+                                    disabled={loading}
+                                  >
+                                    <RotateCcw size={14} strokeWidth={2} />
+                                    {t('chat.relaunch')}
                                   </button>
                                 </div>
                               </div>
@@ -1369,6 +1404,40 @@ export default function Chat() {
             </motion.div>
           </motion.div>
         )}
+        {confirmRelaunchMessage && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="chat-modal-backdrop"
+            onClick={() => setConfirmRelaunchMessage(null)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 8 }}
+              className="chat-modal"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="chat-modal-header">
+                <h2 className="chat-modal-title">{t('chat.relaunchConfirmTitle')}</h2>
+                <button type="button" className="chat-modal-close" onClick={() => setConfirmRelaunchMessage(null)} aria-label={t('common.close')}>
+                  <X size={18} strokeWidth={2} />
+                </button>
+              </div>
+              <p className="chat-modal-message">{t('chat.relaunchConfirmMessage')}</p>
+              <div className="chat-modal-actions">
+                <button type="button" className="chat-modal-btn chat-modal-btn--secondary" onClick={() => setConfirmRelaunchMessage(null)}>
+                  {t('common.cancel')}
+                </button>
+                <button type="button" className="chat-modal-btn chat-modal-btn--primary" onClick={handleConfirmRelaunch}>
+                  <RotateCcw size={14} strokeWidth={2} />
+                  {t('chat.relaunch')}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
         {membersProjectTarget && (
           <motion.div
             initial={{ opacity: 0 }}
@@ -1524,6 +1593,20 @@ function ComposerField({
   ttsEnabled, ttsPlaying, toggleTts,
   t, setLightboxSrc,
 }) {
+  const [toolsOpen, setToolsOpen] = React.useState(false)
+  const toolsRef = React.useRef(null)
+
+  React.useEffect(() => {
+    if (!toolsOpen) return
+    const handler = (e) => {
+      if (toolsRef.current && !toolsRef.current.contains(e.target)) {
+        setToolsOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [toolsOpen])
+
   return (
     <form className="chat-composer-inner" onSubmit={handleSendMessage}>
       {/* Attachment preview chips */}
@@ -1563,14 +1646,26 @@ function ComposerField({
         className={`chat-composer-field ${disabled ? 'chat-composer-field--disabled' : ''}`}
         onPaste={onComposerPaste}
       >
-        {/* Left tools: paperclip + mic + TTS toggle */}
-        <div className="chat-composer-tools">
+        {/* Mobile toggle button for tools */}
+        <div ref={toolsRef} style={{ display: 'contents' }}>
+        <button
+          type="button"
+          className={`chat-composer-tool-btn chat-composer-tools-toggle ${toolsOpen ? 'chat-composer-tools-toggle--open' : ''}`}
+          disabled={disabled}
+          aria-label="Ouvrir les outils"
+          onClick={() => setToolsOpen((v) => !v)}
+        >
+          <Plus size={17} strokeWidth={2} />
+        </button>
+
+        {/* Tools: always visible on desktop, hidden behind toggle on mobile */}
+        <div className={`chat-composer-tools ${toolsOpen ? 'chat-composer-tools--open' : ''}`}>
           <button
             type="button"
             className="chat-composer-tool-btn"
             disabled={disabled}
             aria-label={t('chat.attachFile')}
-            onClick={() => fileInputRef.current?.click()}
+            onClick={() => { fileInputRef.current?.click(); setToolsOpen(false) }}
           >
             <Paperclip size={17} strokeWidth={2} />
           </button>
@@ -1579,7 +1674,7 @@ function ComposerField({
             className={`chat-composer-tool-btn ${isRecording ? 'chat-composer-tool-btn--recording' : ''}`}
             disabled={disabled}
             aria-label={isRecording ? t('chat.stopRecording') : t('chat.startRecording')}
-            onClick={toggleMic}
+            onClick={() => { toggleMic(); }}
           >
             {isRecording ? <MicOff size={17} strokeWidth={2} /> : <Mic size={17} strokeWidth={2} />}
           </button>
@@ -1587,11 +1682,12 @@ function ComposerField({
             type="button"
             className={`chat-composer-tool-btn ${ttsEnabled ? 'chat-composer-tool-btn--tts-on' : ''} ${ttsPlaying ? 'chat-composer-tool-btn--recording' : ''}`}
             aria-label={ttsEnabled ? t('chat.ttsToggleOff') : t('chat.ttsToggleOn')}
-            onClick={toggleTts}
+            onClick={() => { toggleTts(); }}
             title={ttsEnabled ? t('chat.ttsToggleOff') : t('chat.ttsToggleOn')}
           >
             {ttsEnabled ? <Volume2 size={17} strokeWidth={2} /> : <VolumeX size={17} strokeWidth={2} />}
           </button>
+        </div>
         </div>
 
         <textarea

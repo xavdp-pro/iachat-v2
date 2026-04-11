@@ -1,13 +1,45 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <title>ZERUX IA</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.jsx"></script>
-  </body>
+
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>ZERUX IA</title>
+</head>
+
+<body>
+  <div id="root">
+    <div id="app-splash"
+      style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#141618;z-index:9999;animation:splash-fade 0.3s ease 0.5s forwards;">
+      <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#8ab8c0" stroke-width="1.5"
+        stroke-linecap="round" stroke-linejoin="round" style="animation:splash-pulse 1s ease-in-out infinite;">
+        <path d="M12 2a10 10 0 1 0 10 10" />
+        <path d="M12 6v6l4 2" />
+      </svg>
+    </div>
+  </div>
+  <style>
+    @keyframes splash-fade {
+      to {
+        opacity: 0;
+        pointer-events: none
+      }
+    }
+
+    @keyframes splash-pulse {
+
+      0%,
+      100% {
+        opacity: 1
+      }
+
+      50% {
+        opacity: 0.4
+      }
+    }
+  </style>
+  <script type="module" src="/src/main.jsx"></script>
+</body>
+
 </html>

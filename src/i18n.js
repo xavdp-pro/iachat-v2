@@ -77,6 +77,9 @@ const resources = {
         "ttsMicNoAccess": "Accès au microphone refusé.",
         "copy": "Copier",
         "copied": "Copié !",
+        "relaunch": "Relancer",
+        "relaunchConfirmTitle": "Modifier et relancer",
+        "relaunchConfirmMessage": "Ce message et tout ce qui suit sera supprimé, puis votre nouveau prompt sera envoyé. Continuer ?",
         "removeAttachment": "Supprimer la pièce jointe",
         "deleteMessageTitle": "Supprimer le message",
         "deleteMessageConfirm": "Supprimer ce message ? Cette action est irréversible.",
@@ -170,7 +173,10 @@ const resources = {
         "close": "Fermer",
         "active": "Actif",
         "inactive": "Inactif",
-        "loading": "Chargement..."
+        "loading": "Chargement...",
+        "logout": "Déconnexion",
+        "darkMode": "Mode sombre",
+        "lightMode": "Mode clair"
       }
     }
   }

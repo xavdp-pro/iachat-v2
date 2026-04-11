@@ -75,6 +75,56 @@ export async function ensureDbSchema() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `)
     console.log('✅ DB: project_members table ready')
+
+    // ── experiences (base de connaissances commerciaux) ───────────────────
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS experiences (
+        id          INT AUTO_INCREMENT PRIMARY KEY,
+        user_id     INT NOT NULL,
+        title       VARCHAR(255) NOT NULL,
+        content     TEXT NOT NULL,
+        category    VARCHAR(100) DEFAULT NULL,
+        status      ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending',
+        qdrant_id   INT DEFAULT NULL,
+        created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        CONSTRAINT fk_exp_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `)
+    console.log('✅ DB: experiences table ready')
+
+    // ── documents (pipeline d'analyse documentaire) ───────────────────────
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS documents (
+        id           INT AUTO_INCREMENT PRIMARY KEY,
+        user_id      INT NOT NULL,
+        filename     VARCHAR(255) NOT NULL,
+        original_name VARCHAR(255),
+        mime_type    VARCHAR(100),
+        file_size    INT DEFAULT 0,
+        page_count   INT DEFAULT 1,
+        status       ENUM('pending','processing','done','error') NOT NULL DEFAULT 'pending',
+        summary      MEDIUMTEXT,
+        error_msg    VARCHAR(500) DEFAULT NULL,
+        created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT fk_doc_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `)
+    console.log('✅ DB: documents table ready')
+
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS document_pages (
+        id            INT AUTO_INCREMENT PRIMARY KEY,
+        document_id   INT NOT NULL,
+        page_number   INT NOT NULL,
+        raw_text      MEDIUMTEXT,
+        vision_result MEDIUMTEXT,
+        qdrant_id     VARCHAR(128) DEFAULT NULL,
+        created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT fk_dp_doc FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `)
+    console.log('✅ DB: document_pages table ready')
   } catch (err) {
     console.error('ensureDbSchema:', err.message)
     throw err
