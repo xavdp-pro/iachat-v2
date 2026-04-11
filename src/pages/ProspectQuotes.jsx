@@ -731,8 +731,10 @@ export default function ProspectQuotes() {
 
   // Persist sessions
   useEffect(() => {
-    localStorage.setItem('devis_sessions', JSON.stringify(sessions))
-  }, [sessions])
+    if (id) {
+      localStorage.setItem(`devis_sessions_${id}`, JSON.stringify(sessions))
+    }
+  }, [sessions, id])
 
   // Scroll IA
   useEffect(() => {
@@ -777,9 +779,10 @@ export default function ProspectQuotes() {
     try {
       const fd = new FormData()
       fd.append('file', f)
+      const token = localStorage.getItem('token')
       const res = await fetch('/api/devis/analyze', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: fd,
       })
       const data = await res.json()
