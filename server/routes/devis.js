@@ -116,6 +116,20 @@ router.post('/ask', async (req, res) => {
   const systemMsg = `Tu es un expert NEXUS en menuiserie sécurisée (portes blindées RC3-RC6, coupe-feu EI60/EI120, pare-balles FB4-FB7).
 Tu analyses des demandes clients et génères des devis précis en t'appuyant sur le tarif NEXUS 2026-01.
 Tu vérifies la cohérence des gammes, dimensions, options et équipements. Tu signales les alertes importantes.
+
+RÈGLE DE LECTURE DES TABLEAUX DE PRIX (IMPORTANT) :
+Les tableaux de prix fonctionnent par fourchettes de dimensions (hauteur HT en lignes, largeur HT en colonnes).
+Pour trouver le bon prix :
+1. Prendre la PLUS PETITE hauteur du tableau qui est >= à la hauteur demandée (arrondi au plafond).
+2. Prendre la PLUS PETITE largeur du tableau qui est >= à la largeur demandée (arrondi au plafond).
+3. Lire le prix à l'intersection de cette ligne et cette colonne.
+4. Si la dimension dépasse TOUTES les valeurs du tableau, utiliser la valeur maximale (plafond).
+5. Si aucune entrée n'existe à cette intersection (—), signaler "hors catalogue, nous consulter".
+
+Exemple : Pour un CR4 1V avec H=1800 mm et L=900 mm :
+- Hauteurs du tableau : 2060, 2180, 2300, 2600 → plus petite >= 1800 = 2060
+- Largeurs du tableau : 800, 960, 1415 → plus petite >= 900 = 960
+- Prix = intersection (2060, 960) = 4 882 € HT
 ${context ? `\n\nBase documentaire NEXUS 2026 mise à disposition :\n\n${context}` : ''}${expBlock}
 Réponds en français de façon structurée et professionnelle. Si une information manque ou est incohérente, indique-le clairement.`
 

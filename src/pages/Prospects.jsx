@@ -6,7 +6,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Building2, Loader2, Search, MessageCircleReply, ChevronRight,
-  Users, Handshake, Globe, Phone, MapPin, Briefcase, X,
+  Users, Handshake, Globe, Phone, MapPin, Briefcase, X, FileText, ExternalLink
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import api from '../api/index.js'
@@ -257,6 +257,9 @@ export default function Prospects() {
                     {list.map((row) => {
                       const p = row.properties || {}
                       const active = String(selectedId) === String(row.id)
+                      const deals = row.associations?.deals?.results || []
+                      const hasDeals = deals.length > 0
+                      
                       return (
                         <button
                           key={row.id}
@@ -273,6 +276,7 @@ export default function Prospects() {
                               : 'var(--color-surface)',
                             cursor: 'pointer',
                             color: 'var(--color-text)',
+                            position: 'relative'
                           }}
                         >
                           <div
@@ -281,13 +285,31 @@ export default function Prospects() {
                               fontSize: '0.875rem',
                               display: 'flex',
                               alignItems: 'center',
+                              justifyContent: 'space-between',
                               gap: 6,
                             }}
                           >
-                            <Building2 size={14} style={{ opacity: 0.7, flexShrink: 0 }} />
-                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                              {p.name || `Entreprise #${row.id}`}
-                            </span>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden' }}>
+                              <Building2 size={14} style={{ opacity: 0.7, flexShrink: 0 }} />
+                              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {p.name || `Entreprise #${row.id}`}
+                              </span>
+                            </div>
+                            {hasDeals && (
+                              <div 
+                                style={{ 
+                                  fontSize: '9px', 
+                                  background: 'var(--color-primary)', 
+                                  color: 'white', 
+                                  padding: '1px 4px', 
+                                  borderRadius: '4px',
+                                  fontWeight: 800,
+                                  flexShrink: 0
+                                }}
+                              >
+                                PDF
+                              </div>
+                            )}
                           </div>
                           <div style={{ fontSize: '11px', color: 'var(--color-text-3)', marginTop: 4 }}>
                             {[p.domain, p.city, p.country].filter(Boolean).join(' · ') || '—'}
@@ -378,6 +400,7 @@ export default function Prospects() {
                             <Cell icon={<Users size={12} />} label="Effectif" value={p.numberofemployees} />
                             <Cell icon={<Handshake size={12} />} label="CA annuel" value={fmtMoney(p.annualrevenue)} />
                           </div>
+
                           {p.description && (
                             <div
                               style={{
@@ -476,9 +499,105 @@ export default function Prospects() {
                                 ) : (
                                   (detail.deals || []).map((d) => {
                                     const dp = d.properties || {}
+                                    const attachments = d.attachments || []
                                     return (
                                       <tr key={d.id}>
-                                        <td>{dp.dealname || '—'}</td>
+                                        <td>
+                                          <div style={{ fontWeight: 600, color: 'var(--color-text)' }}>
+                                            {dp.dealname || '—'}
+                                          </div>
+                                          {attachments.length > 0 && (
+                                            <div style={{ display: 'flex', flexDirection: 'column', marginTop: 6 }}>
+                                              {attachments.map((file, idx) => (
+                                                <div 
+                                                  key={file.id} 
+                                                  style={{ 
+                                                    display: 'flex', 
+                                                    alignItems: 'center', 
+                                                    height: 24,
+                                                    position: 'relative'
+                                                  }}
+                                                >
+                                                  {/* Tree lines connectors */}
+                                                  <div style={{
+                                                    width: 12,
+                                                    height: idx === 0 ? 12 : 24,
+                                                    borderLeft: '1.5px solid var(--color-border)',
+                                                    position: 'absolute',
+                                                    left: 6,
+                                                    top: 0
+                                                  }} />
+                                                  <div style={{
+                                                    width: 12,
+                                                    height: 12,
+                                                    borderBottom: '1.5px solid var(--color-border)',
+                                                    borderLeft: idx === attachments.length - 1 ? '1.5px solid var(--color-border)' : 'none',
+                                                    marginLeft: 6,
+                                                    marginRight: 8
+                                                  }} />
+                                                  
+                                                  <a
+                                                    href={file.url}
+                                                    target="_blank"
+                                                    rel="noopener noreferrer"
+                                                    style={{
+                                                      display: 'flex',
+                                                      alignItems: 'center',
+                                                      justifyContent: 'space-between',
+                                                      gap: 12,
+                                                      fontSize: '11px',
+                                                      color: 'var(--color-text-2)',
+                                                      textDecoration: 'none',
+                                                      background: 'rgba(0,0,0,0.03)',
+                                                      padding: '2px 8px',
+                                                      borderRadius: '6px',
+                                                      flex: 1,
+                                                      maxWidth: '100%',
+                                                      transition: 'all 0.15s ease',
+                                                      border: '1px solid transparent'
+                                                    }}
+                                                    title={`${file.name} (Source: ${file.source || 'Inconnue'})`}
+                                                    onMouseOver={(e) => {
+                                                      e.currentTarget.style.borderColor = 'var(--color-primary)';
+                                                      e.currentTarget.style.color = 'var(--color-primary)';
+                                                      e.currentTarget.style.background = 'white';
+                                                    }}
+                                                    onMouseOut={(e) => {
+                                                      e.currentTarget.style.borderColor = 'transparent';
+                                                      e.currentTarget.style.color = 'var(--color-text-2)';
+                                                      e.currentTarget.style.background = 'rgba(0,0,0,0.03)';
+                                                    }}
+                                                  >
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden' }}>
+                                                      <FileText size={12} style={{ opacity: 0.6, flexShrink: 0 }} />
+                                                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 500 }}>
+                                                        {file.name}
+                                                      </span>
+                                                    </div>
+                                                    
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                                                      {file.source && (
+                                                        <span style={{ 
+                                                          fontSize: '9px', 
+                                                          fontWeight: 600,
+                                                          textTransform: 'uppercase', 
+                                                          opacity: 0.6, 
+                                                          background: 'rgba(0,0,0,0.06)',
+                                                          padding: '1px 5px',
+                                                          borderRadius: '4px',
+                                                          color: 'var(--color-text-1)'
+                                                        }}>
+                                                          {file.source}
+                                                        </span>
+                                                      )}
+                                                      <ExternalLink size={10} style={{ opacity: 0.3 }} />
+                                                    </div>
+                                                  </a>
+                                                </div>
+                                              ))}
+                                            </div>
+                                          )}
+                                        </td>
                                         <td>{fmtMoney(dp.amount)}</td>
                                         <td>
                                           <span style={{ fontSize: 11 }}>{dp.dealstage || '—'}</span>

@@ -58,16 +58,28 @@ export default function Admin() {
   // ── TTS state ────────────────────────────────────────────────────────────
   const [ttsVoices, setTtsVoices] = useState([])
   const [ttsVoicesLoading, setTtsVoicesLoading] = useState(false)
+  const [ttsSearch, setTtsSearch] = useState('')
   const [ttsTestText, setTtsTestText] = useState('Bonjour, je suis votre assistant vocal IA.')
   const [ttsSpeed, setTtsSpeed] = useState(0.92)
   const [ttsTestingVoice, setTtsTestingVoice] = useState(null)
-  const [ttsDefaultVoice, setTtsDefaultVoice] = useState(() => localStorage.getItem('tts_voice') || 'ff_siwis')
+  const [ttsDefaultVoice, setTtsDefaultVoice] = useState(() => localStorage.getItem('tts_voice') || 'Ana Florence')
   const [ttsError, setTtsError] = useState('')
   const ttsAdminAudioRef = useRef(null)
 
   // ── Experiences (knowledge base) state ────────────────────────────────
   const [allExperiences, setAllExperiences] = useState([])
   const [expLoading, setExpLoading] = useState(false)
+
+  const tabParam = searchParams.get('tab')
+  const activeTab = VALID_TABS.has(tabParam) ? tabParam : TAB_USERS
+
+  const setActiveTab = (next) => {
+    if (next === TAB_USERS) {
+      setSearchParams({}, { replace: true })
+    } else {
+      setSearchParams({ tab: next }, { replace: true })
+    }
+  }
 
   const fetchAllExperiences = useCallback(async () => {
     setExpLoading(true)
@@ -95,17 +107,6 @@ export default function Admin() {
   const handleExpDelete = async (exp) => {
     await api.delete(`/experiences/${exp.id}`)
     setAllExperiences((prev) => prev.filter((e) => e.id !== exp.id))
-  }
-
-  const tabParam = searchParams.get('tab')
-  const activeTab = VALID_TABS.has(tabParam) ? tabParam : TAB_USERS
-
-  const setActiveTab = (next) => {
-    if (next === TAB_USERS) {
-      setSearchParams({}, { replace: true })
-    } else {
-      setSearchParams({ tab: next }, { replace: true })
-    }
   }
 
   useEffect(() => {
@@ -672,20 +673,45 @@ export default function Admin() {
                 placeholder={t('admin.ttsTestPlaceholder')}
               />
             </div>
-            <div className="admin-ollama-field">
-              <label className="admin-ollama-label" htmlFor="tts-speed">
-                {t('admin.ttsSpeedLabel')} : <strong>{ttsSpeed.toFixed(2)}×</strong>
-              </label>
-              <input
-                id="tts-speed"
-                type="range"
-                min="0.5"
-                max="2.0"
-                step="0.05"
-                value={ttsSpeed}
-                onChange={(e) => setTtsSpeed(Number(e.target.value))}
-                style={{ width: '100%', maxWidth: '320px', accentColor: 'var(--color-primary)', display: 'block' }}
-              />
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
+              <div className="admin-ollama-field">
+                <label className="admin-ollama-label" htmlFor="tts-speed">
+                  {t('admin.ttsSpeedLabel')} : <strong>{ttsSpeed.toFixed(2)}×</strong>
+                </label>
+                <input
+                  id="tts-speed"
+                  type="range"
+                  min="0.5"
+                  max="2.0"
+                  step="0.05"
+                  value={ttsSpeed}
+                  onChange={(e) => setTtsSpeed(Number(e.target.value))}
+                  style={{ width: '100%', accentColor: 'var(--color-primary)', display: 'block' }}
+                />
+              </div>
+              <div className="admin-ollama-field">
+                <label className="admin-ollama-label" htmlFor="tts-search">
+                  Rechercher une voix ({ttsVoices.length})
+                </label>
+                <div style={{ position: 'relative' }}>
+                  <input
+                    id="tts-search"
+                    className="admin-ollama-select"
+                    type="text"
+                    value={ttsSearch}
+                    onChange={(e) => setTtsSearch(e.target.value)}
+                    placeholder="Ex: Ana, Damien..."
+                    style={{ paddingRight: 30 }}
+                  />
+                  {ttsSearch && (
+                    <X 
+                      size={14} 
+                      style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', cursor: 'pointer', opacity: 0.5 }} 
+                      onClick={() => setTtsSearch('')}
+                    />
+                  )}
+                </div>
+              </div>
             </div>
             <p className="admin-ollama-hint" style={{ display: 'flex', alignItems: 'center', gap: '0.4em' }}>
               <Volume2 size={14} />
@@ -702,14 +728,22 @@ export default function Admin() {
               <Loader2 size={24} className="animate-spin" style={{ color: 'var(--color-primary)' }} />
             </div>
           ) : (
-            <div className="admin-tts-voices">
-              {ttsVoices.map((voice) => {
+            <div className="admin-tts-voices" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+              {ttsVoices
+                .filter(voice => {
+                  const recommended = ["Ana Florence", "Damien Black", "Henriette Usha", "Craig Gutsy", "Alison Dietlinde", "Nova Hogarth"];
+                  if (!recommended.includes(voice.name)) return false;
+                  if (!ttsSearch.trim()) return true;
+                  return voice.name.toLowerCase().includes(ttsSearch.toLowerCase());
+                })
+                .map((voice) => {
                 const isDefault = voice.id === ttsDefaultVoice
                 const isTesting = ttsTestingVoice === voice.id
                 return (
                   <div
                     key={voice.id}
                     className={`admin-tts-voice-card ${isDefault ? 'admin-tts-voice-card--active' : ''}`}
+                    style={{ margin: 0 }}
                   >
                     <div className="admin-tts-voice-info">
                       <span className="admin-tts-voice-name">{voice.name}</span>
@@ -717,16 +751,16 @@ export default function Admin() {
                     </div>
                     <div className="admin-tts-voice-actions">
                       {isDefault && (
-                        <span className="admin-badge">{t('admin.ttsVoiceIsDefault')}</span>
+                        <span className="admin-badge" style={{ fontSize: 10 }}>Défaut</span>
                       )}
                       {!isDefault && (
                         <button
                           type="button"
                           className="admin-btn-ghost"
                           onClick={() => setDefaultTtsVoice(voice.id)}
-                          style={{ fontSize: '0.78rem' }}
+                          style={{ fontSize: '0.72rem', padding: '2px 6px' }}
                         >
-                          {t('admin.ttsVoiceSetDefault')}
+                          Définir
                         </button>
                       )}
                       {isTesting ? (
@@ -734,10 +768,9 @@ export default function Admin() {
                           type="button"
                           className="admin-btn-ghost"
                           onClick={stopTtsPlayback}
-                          style={{ color: 'var(--color-danger)' }}
+                          style={{ color: 'var(--color-danger)', padding: '2px 6px' }}
                         >
-                          <Square size={14} />
-                          {t('admin.ttsPlaying')}
+                          <Square size={12} />
                         </button>
                       ) : (
                         <button
@@ -745,10 +778,9 @@ export default function Admin() {
                           className="admin-btn-primary"
                           onClick={() => testTtsVoice(voice.id)}
                           disabled={ttsTestingVoice != null}
-                          style={{ padding: '0.3rem 0.75rem', fontSize: '0.82rem' }}
+                          style={{ padding: '4px 8px' }}
                         >
-                          <Play size={14} />
-                          {t('admin.ttsPlay')}
+                          <Play size={12} />
                         </button>
                       )}
                     </div>

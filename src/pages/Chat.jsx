@@ -69,6 +69,9 @@ export default function Chat() {
   const audioChunksRef = useRef([])
   const ttsAudioRef = useRef(null)
   const prevStreamingRef = useRef(false)
+  const ttsQueueRef = useRef([])
+  const isProcessingQueueRef = useRef(false)
+  const lastSentIndexRef = useRef(0)
 
   const closeMobileSidebar = () => {
     if (typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches) {
@@ -113,16 +116,66 @@ export default function Chat() {
     if (streaming) messagesEndRef.current?.scrollIntoView({ behavior: 'instant' })
   }, [streamingContent, streaming])
 
-  // Lecture TTS automatique quand le streaming se termine
+  // Streaming TTS: buffer and play sentences as they arrive
+  useEffect(() => {
+    if (!streaming || !ttsEnabled) {
+      if (!streaming) lastSentIndexRef.current = 0
+      return
+    }
+
+    const text = streamingContent
+    const sentenceEndings = /[.!?\n]/
+    const newText = text.slice(lastSentIndexRef.current)
+    
+    // Find if there's a sentence ending in the new text
+    const match = newText.match(sentenceEndings)
+    if (match) {
+      const endIdx = lastSentIndexRef.current + match.index + 1
+      const sentence = text.slice(lastSentIndexRef.current, endIdx).trim()
+      
+      if (sentence.length >= 1) { // Accept even short sentences
+        enqueueTts(sentence)
+        lastSentIndexRef.current = endIdx
+      }
+    }
+  }, [streamingContent, streaming, ttsEnabled])
+
+  const enqueueTts = (text) => {
+    ttsQueueRef.current.push(text)
+    processTtsQueue()
+  }
+
+  const processTtsQueue = async () => {
+    if (isProcessingQueueRef.current || ttsQueueRef.current.length === 0) return
+    
+    isProcessingQueueRef.current = true
+    const text = ttsQueueRef.current.shift()
+    
+    try {
+      await synthesizeAndPlay(text, true) // true = append mode/don't clear
+    } finally {
+      isProcessingQueueRef.current = false
+      processTtsQueue()
+    }
+  }
+
+  // Lecture TTS automatique quand le streaming se termine (pour le reste du texte)
   useEffect(() => {
     const wasStreaming = prevStreamingRef.current
     prevStreamingRef.current = streaming
     if (!wasStreaming || streaming) return
     if (!ttsEnabled) return
-    const lastMsg = [...messages].reverse().find((m) => m.role === 'assistant')
-    if (lastMsg?.content) synthesizeAndPlay(lastMsg.content)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streaming])
+    
+    // Play anything remaining in the buffer
+    const remainingText = streamingContent.slice(lastSentIndexRef.current).trim()
+    if (remainingText) {
+      enqueueTts(remainingText)
+    }
+    
+    // Re-verify the last message just in case (fallback)
+    // const lastMsg = [...messages].reverse().find((m) => m.role === 'assistant')
+    // if (lastMsg?.content) synthesizeAndPlay(lastMsg.content)
+  }, [streaming, streamingContent])
 
   useEffect(() => {
     if (projectMenuId == null && discussionMenuId == null) return
@@ -448,16 +501,19 @@ export default function Chat() {
 
   // ── TTS (Kokoro) ───────────────────────────────────────────────────────────
 
-  const synthesizeAndPlay = useCallback(async (text) => {
+  const synthesizeAndPlay = useCallback(async (text, append = false) => {
     if (!text?.trim()) return
-    if (ttsAudioRef.current) {
+    
+    if (!append && ttsAudioRef.current) {
       ttsAudioRef.current.pause()
       ttsAudioRef.current = null
+      ttsQueueRef.current = [] // Clear queue if manually playing something else
     }
+    
     setTtsPlaying(true)
     try {
       const token = localStorage.getItem('token') || ''
-      const voice = localStorage.getItem('tts_voice') || 'ff_siwis'
+      const voice = localStorage.getItem('tts_voice') || 'Ana Florence'
       const resp = await fetch('/api/tts/synthesize', {
         method: 'POST',
         headers: {
@@ -466,21 +522,29 @@ export default function Chat() {
         },
         body: JSON.stringify({ text: text.slice(0, 3000), voice }),
       })
-      if (!resp.ok) { setTtsPlaying(false); return }
+      if (!resp.ok) { 
+        if (!append) setTtsPlaying(false)
+        return 
+      }
       const blob = await resp.blob()
       const url = URL.createObjectURL(blob)
       const audio = new Audio(url)
-      ttsAudioRef.current = audio
-      const cleanup = () => {
-        setTtsPlaying(false)
-        URL.revokeObjectURL(url)
-        ttsAudioRef.current = null
-      }
-      audio.onended = cleanup
-      audio.onerror = cleanup
-      audio.play()
+      
+      if (!append) ttsAudioRef.current = audio
+
+      return new Promise((resolve) => {
+        const cleanup = () => {
+          if (!append) setTtsPlaying(false)
+          URL.revokeObjectURL(url)
+          if (!append) ttsAudioRef.current = null
+          resolve()
+        }
+        audio.onended = cleanup
+        audio.onerror = cleanup
+        audio.play().catch(resolve)
+      })
     } catch {
-      setTtsPlaying(false)
+      if (!append) setTtsPlaying(false)
     }
   }, [])
 
@@ -488,6 +552,7 @@ export default function Chat() {
     if (ttsEnabled && ttsAudioRef.current) {
       ttsAudioRef.current.pause()
       ttsAudioRef.current = null
+      ttsQueueRef.current = []
       setTtsPlaying(false)
     }
     setTtsEnabled((prev) => {

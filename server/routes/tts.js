@@ -11,48 +11,60 @@ const upload = multer({
 const TTS_BASE = process.env.TTS_URL || 'http://127.0.0.1:8010'
 const STT_BASE = process.env.STT_URL || 'http://127.0.0.1:8011'
 
-/** Catalogue Kokoro-82M (pas d'endpoint /voices sur ce serveur) */
-const KOKORO_VOICES = [
-  { id: 'ff_siwis',    name: 'Siwis',    lang: 'fr',    label: 'Français · Femme'     },
-  { id: 'af_heart',    name: 'Heart',    lang: 'en',    label: 'Anglais · Femme'      },
-  { id: 'af_bella',    name: 'Bella',    lang: 'en',    label: 'Anglais · Femme'      },
-  { id: 'af_nicole',   name: 'Nicole',   lang: 'en',    label: 'Anglais · Femme'      },
-  { id: 'af_sarah',    name: 'Sarah',    lang: 'en',    label: 'Anglais · Femme'      },
-  { id: 'af_sky',      name: 'Sky',      lang: 'en',    label: 'Anglais · Femme'      },
-  { id: 'am_adam',     name: 'Adam',     lang: 'en',    label: 'Anglais · Homme'      },
-  { id: 'am_michael',  name: 'Michael',  lang: 'en',    label: 'Anglais · Homme'      },
-  { id: 'bf_emma',     name: 'Emma',     lang: 'en-gb', label: 'Britannique · Femme'  },
-  { id: 'bf_isabella', name: 'Isabella', lang: 'en-gb', label: 'Britannique · Femme'  },
-  { id: 'bm_george',   name: 'George',   lang: 'en-gb', label: 'Britannique · Homme'  },
-  { id: 'bm_lewis',    name: 'Lewis',    lang: 'en-gb', label: 'Britannique · Homme'  },
-]
-
 /**
  * GET /api/tts/voices
- * Renvoie le catalogue de voix Kokoro disponibles.
+ * Renvoie le catalogue de voix XTTS-v2 disponibles.
  */
-router.get('/voices', authenticate, (_req, res) => {
-  res.json({ voices: KOKORO_VOICES })
+router.get('/voices', authenticate, async (_req, res) => {
+  try {
+    const voicesRes = await fetch(`${TTS_BASE}/voices`)
+    if (!voicesRes.ok) throw new Error('Impossible de récupérer les voix')
+    const data = await voicesRes.json()
+
+    // Formatter les voix pour le frontend
+    const voices = (data.voices || []).map(name => ({
+      id: name,
+      name: name,
+      lang: 'multi',
+      label: 'Multilingue (XTTS-v2)'
+    }))
+
+    res.json({ voices })
+  } catch (err) {
+    // Fallback si le serveur est éteint
+    res.json({
+      voices: [
+        { id: 'Ana Florence', name: 'Ana Florence', lang: 'multi', label: 'Multilingue (Offline)' },
+        { id: 'Damien Black', name: 'Damien Black', lang: 'multi', label: 'Multilingue (Offline)' }
+      ],
+      error: `Serveur XTTS-v2 injoignable : ${err.message}`
+    })
+  }
 })
 
 /**
  * POST /api/tts/synthesize
- * Proxifie la synthèse vers Kokoro et retourne le WAV.
+ * Proxifie la synthèse vers XTTS-v2 et retourne le WAV.
  * Body JSON : { text, voice?, speed? }
  */
 router.post('/synthesize', authenticate, async (req, res) => {
-  const { text, voice = 'ff_siwis', speed = 0.92 } = req.body
+  const { text, voice = 'Ana Florence', speed = 0.92 } = req.body
   if (!text || typeof text !== 'string' || !text.trim()) {
     return res.status(400).json({ error: 'Le champ "text" est requis.' })
   }
-  const safeSpeed = Math.min(2.0, Math.max(0.5, Number(speed) || 0.92))
-  const safeVoice = KOKORO_VOICES.some((v) => v.id === voice) ? voice : 'ff_siwis'
+  const safeSpeed = Math.min(2.0, Math.max(0.5, Number(speed) || 1.0))
+  const safeVoice = voice // On passe le nom tel quel pour XTTS-v2
 
   try {
     const ttsRes = await fetch(`${TTS_BASE}/tts`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: text.slice(0, 3000), voice: safeVoice, speed: safeSpeed }),
+      body: JSON.stringify({
+        text: text.slice(0, 3000),
+        voice: safeVoice,
+        lang: 'fr', // Par défaut en français
+        speed: safeSpeed
+      }),
     })
     if (!ttsRes.ok) {
       const errText = await ttsRes.text()
@@ -91,7 +103,7 @@ router.post('/stt', authenticate, upload.single('audio'), async (req, res) => {
     }
     const data = await sttRes.json()
     res.json({
-      text:     data.text     || '',
+      text: data.text || '',
       language: data.language || null,
       duration: data.duration || null,
     })
