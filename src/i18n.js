@@ -1,196 +1,25 @@
 import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
-
-const resources = {
-  fr: {
-    translation: {
-      "login": {
-        "title": "Bon retour",
-        "subtitle": "Connectez-vous pour continuer",
-        "email": "Adresse e-mail",
-        "emailPlaceholder": "vous@exemple.com",
-        "password": "Mot de passe",
-        "passwordPlaceholder": "Votre mot de passe",
-        "submit": "Se connecter",
-        "invalidCredentials": "Identifiants incorrects",
-        "language": "Langue",
-        "themeLight": "Mode clair",
-        "themeDark": "Mode sombre",
-        "showPassword": "Afficher le mot de passe",
-        "hidePassword": "Masquer le mot de passe",
-        "footer": "Zerux · ZERUX IA",
-        "brandMark": "Zerux",
-        "noAccount": "Pas de compte ?",
-        "contactAdmin": "Contactez votre administrateur"
-      },
-      "chat": {
-        "newProject": "Nouveau projet",
-        "projects": "Projets",
-        "noProjectSelected": "Sélectionnez ou créez un projet",
-        "noProjectSubtitle": "Vos conversations s'afficheront ici",
-        "discussions": "Conversations",
-        "newDiscussion": "Nouvelle conversation",
-        "defaultDiscussionTitle": "Nouvelle conversation",
-        "renameDiscussionTitle": "Renommer la conversation",
-        "renameDiscussion": "Renommer",
-        "discussionTitleLabel": "Titre",
-        "discussionActions": "Actions sur la conversation",
-        "deleteDiscussionTitle": "Supprimer la conversation",
-        "deleteDiscussionMessage": "Supprimer « {{title}} » ? Tous les messages seront effacés.",
-        "pickDiscussion": "Choisissez une conversation ou créez-en une",
-        "messagePlaceholder": "Envoyer un message…",
-        "emptyGreeting": "Comment puis-je vous aider ?",
-        "projectNameLabel": "Nom",
-        "projectDescLabel": "Description",
-        "createProjectSubmit": "Créer le projet",
-        "editProject": "Modifier le projet",
-        "renameProject": "Renommer",
-        "archiveProject": "Archiver",
-        "unarchiveProject": "Désarchiver",
-        "deleteProjectTitle": "Supprimer le projet",
-        "deleteProjectMessage": "Supprimer « {{name}} » et toutes ses conversations ? Irréversible.",
-        "archivedProjects": "Archivés",
-        "projectActions": "Actions du projet",
-        "you": "Vous",
-        "logout": "Déconnexion",
-        "admin": "Administration",
-        "localeFr": "Français",
-        "localeEn": "English",
-        "localeEs": "Español",
-        "openMenu": "Ouvrir le menu",
-        "closeMenu": "Fermer le menu",
-        "sendMessage": "Envoyer le message",
-        "landingGreeting": "Comment puis-je vous aider ?",
-        "landingNoProject": "Sélectionnez ou créez un projet pour commencer",
-        "landingWithProject": "Écrivez votre message et appuyez sur Entrée",
-        "landingProjectHint": "Sélectionnez un projet à gauche pour commencer",
-        "startFirstMessage": "Commencez la conversation…",
-        "emptyDiscussionGreeting": "Commencez la conversation",
-        "emptyDiscussionSub": "Envoyez votre premier message ci-dessous",
-        "assistant": "Assistant",
-        "attachFile": "Joindre un fichier",
-        "startRecording": "Démarrer la dictée",
-        "stopRecording": "Arrêter l'enregistrement",
-        "ttsToggleOn": "Activer la lecture audio (TTS)",
-        "ttsToggleOff": "Désactiver la lecture audio (TTS)",
-        "ttsPlaying": "Lecture en cours…",
-        "ttsMicNoAccess": "Accès au microphone refusé.",
-        "copy": "Copier",
-        "copied": "Copié !",
-        "relaunch": "Relancer",
-        "relaunchConfirmTitle": "Modifier et relancer",
-        "relaunchConfirmMessage": "Ce message et tout ce qui suit sera supprimé, puis votre nouveau prompt sera envoyé. Continuer ?",
-        "removeAttachment": "Supprimer la pièce jointe",
-        "deleteMessageTitle": "Supprimer le message",
-        "deleteMessageConfirm": "Supprimer ce message ? Cette action est irréversible.",
-        "edited": "modifié",
-        "ollamaErrorDismiss": "Fermer",
-        "manageMembers": "Membres",
-        "membersModalTitle": "Membres du projet",
-        "membersEmpty": "Aucun membre pour l'instant.",
-        "memberOwner": "Propriétaire",
-        "memberMember": "Membre",
-        "memberRemove": "Retirer",
-        "memberInviteLabel": "Inviter par e-mail",
-        "memberInviteSubmit": "Inviter",
-        "memberAlreadyMember": "Déjà membre du projet",
-        "memberNotFound": "Aucun utilisateur actif avec cet e-mail"
-      },
-      "admin": {
-        "title": "Administration",
-        "userListTitle": "Utilisateurs",
-        "subtitle": "Gérez les comptes et les rôles d'accès.",
-        "backToChat": "Retour au chat",
-        "addUser": "Ajouter un utilisateur",
-        "userCount": "{{count}} utilisateur(s)",
-        "colName": "Nom",
-        "colEmail": "E-mail",
-        "colRole": "Rôle",
-        "colStatus": "Statut",
-        "colCreated": "Créé le",
-        "colActions": "Actions",
-        "modalNew": "Nouvel utilisateur",
-        "modalEdit": "Modifier l'utilisateur",
-        "email": "E-mail",
-        "name": "Nom affiché",
-        "password": "Mot de passe (vide = inchangé)",
-        "role": "Rôle",
-        "accountState": "État du compte",
-        "roleUser": "Utilisateur",
-        "roleAdmin": "Administrateur",
-        "deleteTitle": "Supprimer l'utilisateur",
-        "deleteMessage": "Supprimer définitivement {{email}} ? Cette action est irréversible.",
-        "error": "Échec de la requête",
-        "anonymous": "Anonyme",
-        "tabsLabel": "Sections d’administration",
-        "tabUsers": "Utilisateurs",
-        "tabOllama": "Ollama",
-        "tabTts": "Voix TTS",
-        "ttsTitle": "Synthèse & Reconnaissance vocale",
-        "ttsSubtitle": "Testez et choisissez la voix par défaut pour la lecture automatique des réponses IA.",
-        "ttsVoicesLoading": "Chargement des voix…",
-        "ttsVoicesError": "Impossible de charger les voix.",
-        "ttsTestLabel": "Texte de test",
-        "ttsTestPlaceholder": "Saisissez un texte à lire par la voix…",
-        "ttsSpeedLabel": "Vitesse",
-        "ttsPlay": "Écouter",
-        "ttsPlaying": "Lecture…",
-        "ttsVoiceSetDefault": "Choisir par défaut",
-        "ttsVoiceIsDefault": "Voix par défaut",
-        "ttsDefaultVoiceLabel": "Voix active",
-        "ollamaTitle": "Ollama (IA globale)",
-        "ollamaSubtitle": "Ces réglages s’appliquent à tous les utilisateurs. Réservés aux administrateurs.",
-        "ollamaEnabledLabel": "Réponses IA",
-        "ollamaEnabledManaged": "L’activation est pilotée uniquement par la configuration serveur (pas de forçage dans l’admin).",
-        "ollamaEnabledInherit": "Selon la configuration serveur (.env)",
-        "ollamaEnabledOn": "Forcer l’activation",
-        "ollamaEnabledOff": "Forcer la désactivation",
-        "ollamaEnabledHint": "OLLAMA_ENABLED côté serveur est actuellement : {{env}}.",
-        "ollamaModelLabel": "Modèle",
-        "ollamaModelEnv": "Valeur serveur (.env / OLLAMA_MODEL)",
-        "ollamaModelPlaceholder": "Choisir une suggestion ou saisir un nom (vide = défaut serveur)",
-        "ollamaModelSearchPlaceholder": "Rechercher dans les modèles en cache...",
-        "ollamaClearSearch": "Vider la recherche",
-        "ollamaRefreshModels": "Rafraîchir la liste des modèles",
-        "ollamaClearModel": "Vider le modèle sélectionné",
-        "ollamaModelsRefreshed": "Liste des modèles rafraîchie ({{count}}).",
-        "ollamaTestPrompt": "Tester la réponse Ollama",
-        "ollamaTestOk": "Ollama répond (modèle : {{model}}, {{ms}} ms). Réponse : {{reply}}",
-        "ollamaRefreshError": "Impossible de rafraîchir la liste des modèles depuis Ollama.",
-        "ollamaDegradedBanner": "Impossible de charger les réglages via l’API. Vous pouvez saisir un nom de modèle ; les suggestions viennent de VITE_OLLAMA_MODEL_HINTS si défini. Si l’enregistrement échoue, redémarrez l’API.",
-        "ollamaModelsListWarningIntro": "Le serveur d’application n’a pas pu joindre Ollama pour actualiser la liste des modèles. Détail :",
-        "ollamaModelHint": "Modèle effectif pour tout le monde : {{model}}",
-        "ollamaSave": "Enregistrer Ollama",
-        "ollamaSaved": "Réglages enregistrés.",
-        "ollamaError": "Impossible de charger ou d’enregistrer les réglages Ollama."
-      },
-      "common": {
-        "appName": "ZERUX IA",
-        "cancel": "Annuler",
-        "save": "Enregistrer",
-        "delete": "Supprimer",
-        "edit": "Modifier",
-        "close": "Fermer",
-        "active": "Actif",
-        "inactive": "Inactif",
-        "loading": "Chargement...",
-        "logout": "Déconnexion",
-        "darkMode": "Mode sombre",
-        "lightMode": "Mode clair"
-      }
-    }
-  }
-};
+import frTranslation from './locales/fr.json';
 
 i18n
   .use(initReactI18next)
   .init({
-    resources,
-    lng: 'fr',
+    resources: {
+      fr: { translation: frTranslation },
+    },
+    lng: localStorage.getItem('i18nextLng') || navigator.language?.split('-')[0] || 'fr',
     fallbackLng: 'fr',
-    interpolation: {
-      escapeValue: false
-    }
-  })
+    interpolation: { escapeValue: false },
+  });
 
-export default i18n
+// HMR : quand fr.json change, on met à jour i18next sans rechargement de page
+if (import.meta.hot) {
+  import.meta.hot.accept('./locales/fr.json', (newMod) => {
+    i18n.addResourceBundle('fr', 'translation', newMod.default, true, true);
+    i18n.reloadResources(['fr']).then(() => i18n.changeLanguage(i18n.language));
+  });
+}
+
+export default i18n;
+
