@@ -11,6 +11,7 @@ import {
   Check, Info, Euro, Shield,
   Wrench, Package, Sparkles, RefreshCw, Plus, Trash2,
   MessageCircleReply, Clock, FolderOpen, LayoutGrid, LayoutPanelLeft, PanelBottom,
+  Mic, MicOff,
 } from 'lucide-react'
 import { MarkdownRenderer } from '../components/MarkdownRenderer.jsx'
 import api from '../api/index.js'
@@ -320,7 +321,7 @@ function LeftPanel({
 // ── COLONNE DROITE : Chat Gemma ───────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════════════════
 function RightPanel({
-  row, aiRow, aiMessages, aiInput, setAiInput, aiLoading, askAI, aiEndRef, aiInputRef, conseils, onAnalyzeConseils, onApplyConseil,
+  row, aiRow, aiMessages, aiInput, setAiInput, aiLoading, askAI, aiEndRef, aiInputRef, aiRecording, toggleAiMic, conseils, onAnalyzeConseils, onApplyConseil,
   /** 'right' = sidebar (panelWidth); 'bottom' = full width under center */
   layoutMode = 'right',
   panelWidth = 380,
@@ -536,16 +537,30 @@ function RightPanel({
               value={aiInput}
               onChange={(e) => setAiInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), askAI())}
-              placeholder="Posez votre question…"
+              placeholder={aiRecording ? 'Dictée en cours…' : 'Posez votre question…'}
               disabled={aiLoading}
               style={{
                 flex: 1, padding: '8px 12px', borderRadius: '8px',
-                border: '1px solid var(--color-border)',
+                border: `1px solid ${aiRecording ? 'var(--color-danger)' : 'var(--color-border)'}`,
                 background: 'var(--color-input-bg, var(--color-surface-2))',
                 color: 'var(--color-text)', fontSize: '12px', outline: 'none',
                 fontFamily: 'var(--font-body)',
               }}
             />
+            <button
+              onClick={toggleAiMic}
+              title={aiRecording ? 'Arrêter la dictée' : 'Dicter'}
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                padding: '8px 10px', borderRadius: '8px',
+                border: `1px solid ${aiRecording ? 'var(--color-danger)' : 'var(--color-border)'}`,
+                background: aiRecording ? 'color-mix(in srgb, var(--color-danger) 12%, var(--color-surface))' : 'var(--color-surface)',
+                color: aiRecording ? 'var(--color-danger)' : 'var(--color-text-2)',
+                cursor: 'pointer',
+              }}
+            >
+              {aiRecording ? <MicOff size={14} /> : <Mic size={14} />}
+            </button>
             <button
               onClick={() => askAI()}
               disabled={!aiInput.trim() || aiLoading}
@@ -631,6 +646,31 @@ export default function Devis() {
   const [aiLoading, setAiLoading] = useState(false)
   const aiEndRef = useRef(null)
   const aiInputRef = useRef(null)
+  const [aiRecording, setAiRecording] = useState(false)
+  const aiSpeechRef = useRef(null)
+
+  const toggleAiMic = () => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (!SR) { alert('Reconnaissance vocale non supportée par ce navigateur.'); return }
+    if (aiRecording) {
+      aiSpeechRef.current?.stop()
+      setAiRecording(false)
+      return
+    }
+    const rec = new SR()
+    rec.lang = 'fr-FR'
+    rec.continuous = false
+    rec.interimResults = false
+    rec.onresult = (e) => {
+      const text = Array.from(e.results).map(r => r[0].transcript).join(' ')
+      setAiInput(prev => (prev ? prev + ' ' + text : text))
+    }
+    rec.onend = () => setAiRecording(false)
+    rec.onerror = () => setAiRecording(false)
+    aiSpeechRef.current = rec
+    rec.start()
+    setAiRecording(true)
+  }
 
   // Modal devis
   const [devisOpen, setDevisOpen] = useState(false)
@@ -872,6 +912,8 @@ export default function Devis() {
     aiEndRef,
     aiInputRef,
     conseils,
+    aiRecording,
+    toggleAiMic,
     onAnalyzeConseils: handleAnalyzeConseils,
     onApplyConseil: handleApplyConseil,
   }

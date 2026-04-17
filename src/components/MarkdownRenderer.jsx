@@ -2,34 +2,9 @@ import React, { useState } from 'react'
 import { createPortal } from 'react-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { Maximize2, X } from 'lucide-react'
 
-// Minimal theme that inherits CSS variables instead of hardcoded colors
-const codeStyle = {
-  'code[class*="language-"]': {
-    color: 'var(--md-code-text)',
-    fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace',
-    fontSize: '0.8125rem',
-    lineHeight: 1.6,
-  },
-  'pre[class*="language-"]': {
-    background: 'var(--md-code-block-bg)',
-    borderRadius: '6px',
-    padding: '1rem',
-    overflowX: 'auto',
-    margin: 0,
-  },
-  '.token.comment, .token.prolog, .token.doctype, .token.cdata': { color: 'var(--md-token-comment)' },
-  '.token.punctuation': { color: 'var(--md-token-punctuation)' },
-  '.token.property, .token.tag, .token.boolean, .token.number, .token.constant, .token.symbol, .token.deleted': { color: 'var(--md-token-number)' },
-  '.token.selector, .token.attr-name, .token.string, .token.char, .token.builtin, .token.inserted': { color: 'var(--md-token-string)' },
-  '.token.operator, .token.entity, .token.url': { color: 'var(--md-token-text)' },
-  '.token.atrule, .token.attr-value, .token.keyword': { color: 'var(--md-token-keyword)' },
-  '.token.function, .token.class-name': { color: 'var(--md-token-function)' },
-  '.token.regex, .token.important, .token.variable': { color: 'var(--md-token-variable)' },
-}
-
+// Render simple Pre/Code blocks without any heavy syntax highlighting library
 export function MarkdownRenderer({ content, streaming = false }) {
   return (
     <div className={`chat-md-body${streaming ? ' chat-md-body--streaming' : ''}`}>
@@ -40,14 +15,21 @@ export function MarkdownRenderer({ content, streaming = false }) {
             const match = /language-(\w+)/.exec(className || '')
             if (!inline && match) {
               return (
-                <SyntaxHighlighter
-                  style={codeStyle}
-                  language={match[1]}
-                  PreTag="div"
-                  {...props}
-                >
-                  {String(children).replace(/\n$/, '')}
-                </SyntaxHighlighter>
+                <div style={{
+                  background: 'var(--md-code-block-bg, #1a1b26)',
+                  borderRadius: '6px',
+                  padding: '1rem',
+                  overflowX: 'auto',
+                  margin: '0.5rem 0',
+                  color: 'var(--md-code-text, #a9b1d6)',
+                  fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace',
+                  fontSize: '0.8125rem',
+                  lineHeight: 1.6,
+                }}>
+                  <code className={className} {...props}>
+                    {String(children).replace(/\n$/, '')}
+                  </code>
+                </div>
               )
             }
             return (

@@ -125,6 +125,57 @@ export async function ensureDbSchema() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `)
     console.log('✅ DB: document_pages table ready')
+    // ── devis (quote headers) ─────────────────────────────────────────────
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS devis (
+        id              INT AUTO_INCREMENT PRIMARY KEY,
+        deal_id         VARCHAR(50) DEFAULT NULL,
+        company_id      VARCHAR(50) DEFAULT NULL,
+        client_name     VARCHAR(255) DEFAULT NULL,
+        name            VARCHAR(255) NOT NULL DEFAULT 'Nouveau devis',
+        status          ENUM('draft','analysis','editing','generated','sent') NOT NULL DEFAULT 'draft',
+        source_file     VARCHAR(255) DEFAULT NULL,
+        analysis_json   JSON DEFAULT NULL,
+        total_ht        DECIMAL(12,2) DEFAULT NULL,
+        pdf_path        VARCHAR(500) DEFAULT NULL,
+        hubspot_note_id VARCHAR(50) DEFAULT NULL,
+        created_by      INT DEFAULT NULL,
+        created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        CONSTRAINT fk_devis_user FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `)
+    console.log('✅ DB: devis table ready')
+
+    // ── devis_lines (individual quote line items) ───────────────────────
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS devis_lines (
+        id                INT AUTO_INCREMENT PRIMARY KEY,
+        devis_id          INT NOT NULL,
+        position          INT NOT NULL DEFAULT 0,
+        designation       VARCHAR(500) DEFAULT NULL,
+        type_porte        VARCHAR(100) DEFAULT NULL,
+        gamme             VARCHAR(50) DEFAULT NULL,
+        vantail           VARCHAR(5) DEFAULT NULL,
+        hauteur_mm        INT DEFAULT NULL,
+        largeur_mm        INT DEFAULT NULL,
+        prix_base_ht      DECIMAL(12,2) DEFAULT NULL,
+        options_json      JSON DEFAULT NULL,
+        serrure_ref       VARCHAR(255) DEFAULT NULL,
+        serrure_prix      DECIMAL(12,2) DEFAULT NULL,
+        ferme_porte_ref   VARCHAR(255) DEFAULT NULL,
+        ferme_porte_prix  DECIMAL(12,2) DEFAULT NULL,
+        equipements_json  JSON DEFAULT NULL,
+        total_ligne_ht    DECIMAL(12,2) DEFAULT NULL,
+        alertes_json      JSON DEFAULT NULL,
+        docs_json         JSON DEFAULT NULL,
+        created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at        DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        CONSTRAINT fk_dl_devis FOREIGN KEY (devis_id) REFERENCES devis(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `)
+    console.log('✅ DB: devis_lines table ready')
+
   } catch (err) {
     console.error('ensureDbSchema:', err.message)
     throw err
