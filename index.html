@@ -17,12 +17,16 @@
       height: 100%;
     }
 
-    #root:empty {
+    #root {
+      min-height: 100%;
+    }
+
+    .app-loader-wrapper {
       display: flex;
       align-items: center;
       justify-content: center;
-      height: 100%;
-      color: #8ab8c0;
+      height: 100vh;
+      width: 100vw;
     }
 
     .app-loader {
@@ -44,7 +48,9 @@
 
 <body>
   <div id="root">
-    <div class="app-loader"></div>
+    <div class="app-loader-wrapper">
+      <div class="app-loader"></div>
+    </div>
   </div>
   <script type="module" src="/src/main.jsx"></script>
 </body>

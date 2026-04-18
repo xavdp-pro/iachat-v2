@@ -89,20 +89,68 @@ router.post('/analyze', (req, res, next) => {
 })
 
 // ── POST /api/devis/ask ─────────────────────────────────────────────────────
-// body: { rows: [...], question: string, mdFiles: [string] }
+// body: { rows: [...], question: string, mdFiles: [string], scope: 'line'|'all' }
 router.post('/ask', async (req, res) => {
-  const { rows = [], question, mdFiles = [] } = req.body
+  const { rows = [], question, mdFiles = [], scope = 'line' } = req.body
   if (!question?.trim()) return res.status(400).json({ error: 'Question requise' })
+
+  // ── Enrichissement automatique des markdowns selon les caractéristiques de la ligne ──
+  // Objectif : garantir que Gemma a toujours accès aux bons référentiels croisés,
+  // même si detect_nexus.py ne les a pas listés explicitement.
+  const ALWAYS_LOAD = ['GUIDE-DEVIS.md', 'BASE.md', 'EQUIP-COMMUN.md']
+  // En mode "all", on prend toutes les lignes pour extraire les gammes/options ; sinon row[0]
+  const contextRows = (scope === 'all' || rows.length > 1) ? rows : (rows[0] ? [rows[0]] : [])
+  const row = contextRows[0] || {}
+
+  const crossRefs = new Set()
+  for (const r of contextRows) {
+    const gamme = String(r.gamme || '').toUpperCase()
+    const options = Array.isArray(r.options) ? r.options : []
+    const optionsText = options.map(o => String(o.label || '').toUpperCase()).join(' ')
+    const extraText = String(r.type || '') + ' ' + optionsText + ' ' + JSON.stringify(r.alertes || [])
+    const extraUpper = extraText.toUpperCase()
+
+    if (gamme.includes('CR3')) crossRefs.add('CR3.md')
+    if (gamme.includes('CR4')) crossRefs.add('CR4.md')
+    if (gamme.includes('CR5')) crossRefs.add('CR5.md')
+    if (gamme.includes('CR6')) crossRefs.add('CR6.md')
+    if (gamme.includes('FB6') || gamme.includes('FB7')) crossRefs.add('FB6-7.md')
+    if (gamme.includes('EI60')) crossRefs.add('EI60.md')
+    if (gamme.includes('EI120')) crossRefs.add('EI120.md')
+    if (gamme.includes('PRISON')) crossRefs.add('PRISON.md')
+    if (gamme.includes('ANTI-BÉLIER') || gamme.includes('BELIER')) crossRefs.add('ANTI-BELIER.md')
+    if (gamme.includes('BLAST')) crossRefs.add('BLAST.md')
+    if (gamme.includes('EF2')) crossRefs.add('EF2.md')
+    if (/EI\s?(30|60|120)/.test(extraUpper)) {
+      crossRefs.add('EQUIP-EI.md')
+      if (extraUpper.includes('EI60')) crossRefs.add('EI60.md')
+      if (extraUpper.includes('EI120')) crossRefs.add('EI120.md')
+    }
+    if (/FB[4-7]/.test(extraUpper)) crossRefs.add('EQUIP-FB.md')
+    if (extraUpper.includes('SÉISME') || extraUpper.includes('SEISME') || extraUpper.includes('AEV')) {
+      crossRefs.add('SEISME-AEV.md')
+    }
+    if (extraUpper.includes('BLAST')) crossRefs.add('BLAST.md')
+  }
+
+  // Consolider : docs détectés + cross-refs + fichiers transverses systématiques
+  const allDocs = [...new Set([
+    ...mdFiles,
+    ...Array.from(crossRefs),
+    ...ALWAYS_LOAD,
+  ])]
 
   // Chargement des markdowns référencés (protection path-traversal)
   const mdParts = []
-  for (const name of mdFiles) {
+  const loadedDocs = []
+  for (const name of allDocs) {
     const safe = basename(name)                      // strip any path component
     const p = join(XLSX_DIR, safe)
     if (p.startsWith(XLSX_DIR) && existsSync(p)) {  // double-check prefix
       try {
         const content = await readFile(p, 'utf-8')
         mdParts.push(`### 📄 ${safe}\n\n${content}`)
+        loadedDocs.push(safe)
       } catch { /* ignore unreadable files */ }
     }
   }
@@ -110,7 +158,10 @@ router.post('/ask', async (req, res) => {
   const context = mdParts.join('\n\n---\n\n')
 
   // Inject approved commercial experiences from knowledge base
-  const expHits = await searchExperiences({ text: question, topK: 3 }).catch(() => [])
+  // Augmenter topK si la question porte explicitement sur les expériences terrain
+  const expKeywords = /expérience|commercial|précédent|collègue|équipe|terrain|cas vécu|autre(s)? commercial|ont traité|ont fait/i
+  const expTopK = expKeywords.test(question) ? 8 : 3
+  const expHits = await searchExperiences({ text: question, topK: expTopK }).catch(() => [])
   const expBlock = expHits.length
     ? `\n\n[Expériences terrain des commerciaux — à prendre en compte :]\n` +
     expHits.map((h, i) => `${i + 1}. [${h.category || 'Général'}] ${h.title} — ${h.excerpt || ''}`).join('\n')
@@ -131,14 +182,40 @@ Pour trouver le bon prix :
 
 Exemple : Pour un CR4 1V avec H=1800 mm et L=900 mm :
 - Hauteurs du tableau : 2060, 2180, 2300, 2600 → plus petite >= 1800 = 2060
-- Largeurs du tableau : 800, 960, 1415 → plus petite >= 900 = 960
+- Largeurs du tableau : 800, 960, 1415 → plus petite >= 960
 - Prix = intersection (2060, 960) = 4 882 € HT
-${context ? `\n\nBase documentaire NEXUS 2026 mise à disposition :\n\n${context}` : ''}${expBlock}
+
+RÈGLE DE CROISEMENT DES RÉFÉRENTIELS (IMPORTANT) :
+Pour chiffrer une porte correctement, tu dois TOUJOURS croiser plusieurs markdowns :
+- GUIDE-DEVIS.md : la méthodologie globale de chiffrage (règles d'arrondi, logique de gamme, etc.)
+- BASE.md : le catalogue de base (dimensions standards, serrures, ferme-portes communs)
+- Le markdown de la GAMME détectée (CR3/CR4/CR5/CR6/FB6-7/EI60/EI120/PRISON/BLAST/ANTI-BELIER/EF2)
+- EQUIP-COMMUN.md : les équipements communs (judas, œilletons, plinthes, poignées)
+- EQUIP-EI.md : si option coupe-feu (EI30/EI60/EI120)
+- EQUIP-FB.md : si option pare-balles (FB4/FB6/FB7)
+- SEISME-AEV.md : si option anti-séisme ou AEV
+
+Si deux markdowns se contredisent, privilégie le markdown de la gamme principale. Signale la contradiction.
+Les fichiers transverses (GUIDE-DEVIS, BASE, EQUIP-COMMUN) sont TOUJOURS chargés pour toi — consulte-les systématiquement.
+${context ? `\n\nBase documentaire NEXUS 2026 mise à disposition (${loadedDocs.length} fichiers : ${loadedDocs.join(', ')}) :\n\n${context}` : ''}${expBlock}
 Réponds en français de façon structurée et professionnelle. Si une information manque ou est incohérente, indique-le clairement.`
 
-  const userContent = rows.length
-    ? `Données de la ligne de devis en cours (si tu en as besoin pour la question) :\n\`\`\`json\n${JSON.stringify(rows[0] || rows, null, 2)}\n\`\`\`\n\nQuestion / Message : ${question}`
-    : question
+  const userContent = (() => {
+    if (!rows.length) return question
+
+    if (scope === 'all' || rows.length > 1) {
+      // Résumé synthétique du devis complet
+      const summary = rows.map((r, i) => {
+        const opts = (r.options || []).map(o => o.label).join(', ') || '—'
+        const alts = (r.alertes || []).join(' | ') || '—'
+        return `Ligne ${i + 1}: ${r.gamme || '?'} ${r.vantail || ''} — H${r.dim_standard?.h ?? '?'}×L${r.dim_standard?.l ?? '?'} — Base: ${r.prix_base_ht != null ? r.prix_base_ht + ' €' : '?'} HT — Total: ${r.prix_total_min_ht != null ? r.prix_total_min_ht + ' €' : '?'} HT — Options: ${opts} — Alertes: ${alts}`
+      }).join('\n')
+      return `Ensemble du devis (${rows.length} ligne${rows.length > 1 ? 's' : ''}) :\n\`\`\`\n${summary}\n\`\`\`\n\nQuestion / Message : ${question}`
+    }
+
+    // Scope ligne unique
+    return `Données de la ligne de devis en cours :\n\`\`\`json\n${JSON.stringify(rows[0], null, 2)}\n\`\`\`\n\nQuestion / Message : ${question}`
+  })()
 
   try {
     const model = await getGlobalOllamaModel()

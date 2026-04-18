@@ -11,7 +11,7 @@ import {
   Check, Info, Euro, Shield,
   Wrench, Package, Sparkles, RefreshCw, Plus, Trash2,
   MessageCircleReply, Clock, FolderOpen, LayoutGrid, LayoutPanelLeft, PanelBottom,
-  Mic, MicOff,
+  Mic, MicOff, Users,
 } from 'lucide-react'
 import { MarkdownRenderer } from '../components/MarkdownRenderer.jsx'
 import api from '../api/index.js'
@@ -34,6 +34,12 @@ const SUGGESTIONS = [
   'Quelles sont les alertes importantes ?',
   'Génère une ligne de devis formatée',
   'Quel est le délai de pose estimé ?',
+]
+
+const SUGGESTIONS_EXP = [
+  'Comment les autres commerciaux ont-ils traité ce cas ?',
+  'Précédents similaires dans l\'équipe ?',
+  'Conseils terrain pour cette gamme ?',
 ]
 
 const prixFmt = (v) => v != null ? `${v.toLocaleString('fr-FR')} €` : null
@@ -321,13 +327,18 @@ function LeftPanel({
 // ── COLONNE DROITE : Chat Gemma ───────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════════════════
 function RightPanel({
-  row, aiRow, aiMessages, aiInput, setAiInput, aiLoading, askAI, aiEndRef, aiInputRef, aiRecording, toggleAiMic, conseils, onAnalyzeConseils, onApplyConseil,
+  row, aiRow, aiScope, setAiScope, aiMessages, aiInput, setAiInput, aiLoading, askAI, aiEndRef, aiInputRef, aiRecording, toggleAiMic, conseils, onAnalyzeConseils, onApplyConseil,
   /** 'right' = sidebar (panelWidth); 'bottom' = full width under center */
   layoutMode = 'right',
   panelWidth = 380,
 }) {
   const [voletOpen, setVoletOpen] = useState(false)
   const dockBottom = layoutMode === 'bottom'
+
+  const handleScopeToggle = (s) => {
+    setAiScope(s)
+    localStorage.setItem('devis_ui_ai_scope', s)
+  }
 
   const handleAnalyze = () => {
     if (!voletOpen) setVoletOpen(true)
@@ -360,11 +371,30 @@ function RightPanel({
         <Bot size={16} color="var(--color-primary)" />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 700, fontSize: '13px' }}>Assistant Gemma</div>
-          {row && (
+          {row && aiScope === 'line' && (
             <div style={{ fontSize: '10px', color: 'var(--color-text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               Ligne {(aiRow ?? 0) + 1} — {row.gamme} {row.vantail} · {row.docs?.join(', ')}
             </div>
           )}
+          {aiScope === 'all' && (
+            <div style={{ fontSize: '10px', color: 'var(--color-primary)', fontWeight: 600 }}>Contexte : tout le devis</div>
+          )}
+        </div>
+        {/* Toggle scope : ligne / tout le devis */}
+        <div style={{ display: 'flex', gap: 2, background: 'var(--color-surface-2, rgba(53,67,70,0.06))', borderRadius: 10, padding: '2px', flexShrink: 0 }}>
+          {[['line', 'Ligne'], ['all', 'Devis']].map(([val, label]) => (
+            <button
+              key={val}
+              onClick={() => handleScopeToggle(val)}
+              title={val === 'line' ? 'Contexte : ligne sélectionnée' : 'Contexte : toutes les lignes du devis'}
+              style={{
+                padding: '3px 8px', borderRadius: 8, border: 'none', cursor: 'pointer',
+                fontSize: '10px', fontWeight: 700,
+                background: aiScope === val ? 'var(--color-primary)' : 'transparent',
+                color: aiScope === val ? '#fff' : 'var(--color-text-3)',
+              }}
+            >{label}</button>
+          ))}
         </div>
         {/* Toggle volet conseils */}
         <button
@@ -474,10 +504,30 @@ function RightPanel({
                   <button key={i} onClick={() => askAI(s)} style={{
                     padding: '4px 9px', borderRadius: '14px', border: '1px solid var(--color-border)',
                     background: 'transparent', color: 'var(--color-text)', fontSize: '11px',
-                    cursor: 'pointer', transition: 'background 0.12s',
+                    cursor: 'pointer',
                   }}
                   onMouseEnter={e => e.currentTarget.style.background = 'var(--color-input-bg)'}
                   onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+              {/* Raccourcis expériences commerciaux */}
+              <div style={{ fontSize: '10px', color: 'var(--color-text-3)', margin: '8px 0 4px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', display: 'flex', alignItems: 'center', gap: 5 }}>
+                <Users size={10} />
+                Expériences commerciaux
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px' }}>
+                {SUGGESTIONS_EXP.map((s, i) => (
+                  <button key={i} onClick={() => askAI(s)} style={{
+                    padding: '4px 9px', borderRadius: '14px',
+                    border: '1px solid color-mix(in srgb, var(--color-primary) 35%, var(--color-border))',
+                    background: 'color-mix(in srgb, var(--color-primary) 6%, transparent)',
+                    color: 'var(--color-primary)', fontSize: '11px', cursor: 'pointer',
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.background = 'color-mix(in srgb, var(--color-primary) 14%, transparent)'}
+                  onMouseLeave={e => e.currentTarget.style.background = 'color-mix(in srgb, var(--color-primary) 6%, transparent)'}
                   >
                     {s}
                   </button>
@@ -641,6 +691,7 @@ export default function Devis() {
 
   // Panel IA
   const [aiRow, setAiRow] = useState(null)
+  const [aiScope, setAiScope] = useState(() => localStorage.getItem('devis_ui_ai_scope') || 'line')
   const [aiMessages, setAiMessages] = useState([])
   const [aiInput, setAiInput] = useState('')
   const [aiLoading, setAiLoading] = useState(false)
@@ -809,14 +860,20 @@ export default function Devis() {
     const q = (question || aiInput).trim()
     if (!q || aiLoading) return
     const row = aiRow !== null ? results[aiRow] : null
+    // Scope : ligne sélectionnée ou tout le devis
+    const contextRows = aiScope === 'all' ? results : (row ? [row] : [])
+    const contextDocs = aiScope === 'all'
+      ? [...new Set(results.flatMap(r => r.docs ?? []))]
+      : (row?.docs ?? [])
     setAiMessages(prev => [...prev, { role: 'user', content: q }])
     setAiInput('')
     setAiLoading(true)
     try {
       const data = await api.post('/devis/ask', {
-        rows: row ? [row] : [],
+        rows: contextRows,
         question: q,
-        mdFiles: row?.docs ?? [],
+        mdFiles: contextDocs,
+        scope: aiScope,
       })
       setAiMessages(prev => [...prev, { role: 'assistant', content: data.answer }])
     } catch (err) {
@@ -904,6 +961,8 @@ export default function Devis() {
   const rightPanelProps = {
     row: aiRowData,
     aiRow,
+    aiScope,
+    setAiScope,
     aiMessages,
     aiInput,
     setAiInput,

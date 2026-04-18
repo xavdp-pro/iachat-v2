@@ -6,7 +6,7 @@ import {
   MoreVertical, Archive, ArchiveRestore,
   Menu, X, Paperclip, Mic, MicOff, FileText, ZoomIn,
   Volume2, VolumeX, Copy, Check, RotateCcw,
-  Users, UserPlus, ChevronRight, BookOpen, FileSpreadsheet, Building2,
+  Users, UserPlus, ChevronRight, BookOpen, FileSpreadsheet, Building2, Database,
 } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/useAuthStore.js'
@@ -872,6 +872,10 @@ export default function Chat() {
         </nav>
 
         <div className="chat-sidebar-footer">
+          <Link to="/knowledge" className="chat-footer-link">
+            <Database size={16} strokeWidth={2} />
+            Connaissance IA
+          </Link>
           <Link to="/experiences" className="chat-footer-link">
             <BookOpen size={16} strokeWidth={2} />
             Expériences
@@ -879,6 +883,10 @@ export default function Chat() {
           <Link to="/devis" className="chat-footer-link">
             <FileSpreadsheet size={16} strokeWidth={2} />
             Devis NEXUS
+          </Link>
+          <Link to="/devis/legacy" className="chat-footer-link">
+            <FileText size={16} strokeWidth={2} />
+            Devis (classique)
           </Link>
           <Link to="/prospects" className="chat-footer-link">
             <Building2 size={16} strokeWidth={2} />

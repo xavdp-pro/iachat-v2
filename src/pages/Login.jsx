@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Loader2, Sun, Moon, Eye, EyeOff } from 'lucide-react'
+import { Sun, Moon, Eye, EyeOff } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useTranslation } from 'react-i18next'
 import { useAuthStore } from '../store/useAuthStore.js'
@@ -122,11 +122,7 @@ export default function Login() {
               </AnimatePresence>
 
               <button type="submit" className="login-submit" disabled={loading}>
-                {loading ? (
-                  <Loader2 className="animate-spin" size={20} style={{ display: 'inline-block' }} />
-                ) : (
-                  t('login.submit')
-                )}
+                {t('login.submit')}
               </button>
             </form>
           </div>

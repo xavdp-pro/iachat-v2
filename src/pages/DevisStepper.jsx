@@ -667,11 +667,34 @@ function StepAnalysis({
 function StepEditor({
   devisId, lines, setLines, onRefresh,
   aiMessages, aiInput, setAiInput, aiLoading, askAIEditor, aiEndRef, aiInputRef,
-  chatRatio, setChatRatio,
 }) {
   const [saving, setSaving] = useState(null)
-  const chatWidth = chatRatio === '1/3' ? 340 : chatRatio === '1/2' ? '50%' : 580
-  const RatioIcon = chatRatio === '1/3' ? Columns3 : chatRatio === '1/2' ? Columns2 : Columns
+  const [chatHeight, setChatHeight] = useState(300)
+  const isResizing = useRef(false)
+  const startY = useRef(null)
+  const startH = useRef(null)
+
+  const onMouseDown = useCallback(e => {
+    e.preventDefault()
+    isResizing.current = true
+    startY.current = e.clientY
+    startH.current = chatHeight
+
+    const onMouseMove = moveE => {
+      if (!isResizing.current) return
+      const delta = startH.current + (startY.current - moveE.clientY)
+      const newH = Math.max(150, Math.min(window.innerHeight * 0.8, delta))
+      setChatHeight(newH)
+    }
+    const onMouseUp = () => {
+      isResizing.current = false
+      document.removeEventListener('mousemove', onMouseMove)
+      document.removeEventListener('mouseup', onMouseUp)
+    }
+
+    document.addEventListener('mousemove', onMouseMove)
+    document.addEventListener('mouseup', onMouseUp)
+  }, [chatHeight])
 
   const updateLine = async (lineId, field, value) => {
     setSaving(lineId)
@@ -725,9 +748,9 @@ function StepEditor({
   const numInputStyle = { ...inputStyle, width: 80, textAlign: 'right' }
 
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'row', overflow: 'hidden', minHeight: 0 }}>
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
       {/* Table editor */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
         <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <FileText size={15} color="var(--color-primary)" />
@@ -764,28 +787,28 @@ function StepEditor({
                     transition: 'background 0.15s',
                   }}>
                     <td style={{ ...cellStyle, width: 30, fontWeight: 700, color: 'var(--color-text-3)', fontSize: '11px' }}>{idx + 1}</td>
-                    <td style={{ ...cellStyle, minWidth: 180 }}>
-                      <input style={inputStyle} value={line.designation || ''} onBlur={(e) => updateLine(line.id, 'designation', e.target.value)}
+                    <td style={{ ...cellStyle, minWidth: 220 }}>
+                      <input style={{ ...inputStyle, width: '100%' }} spellCheck={false} title={line.designation || ''} value={line.designation || ''} onBlur={(e) => updateLine(line.id, 'designation', e.target.value)}
                         onChange={(e) => setLines(ls => ls.map(l => l.id === line.id ? { ...l, designation: e.target.value } : l))} />
                     </td>
-                    <td style={{ ...cellStyle, width: 80 }}>
-                      <input style={{ ...inputStyle, width: 70 }} value={line.gamme || ''} onBlur={(e) => updateLine(line.id, 'gamme', e.target.value)}
+                    <td style={{ ...cellStyle, width: 120 }}>
+                      <input style={{ ...inputStyle, width: 110, textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', color: line.gamme?.startsWith('⚠️') ? '#f59e0b' : 'var(--color-text)' }} spellCheck={false} title={line.gamme || ''} value={line.gamme || ''} onBlur={(e) => updateLine(line.id, 'gamme', e.target.value)}
                         onChange={(e) => setLines(ls => ls.map(l => l.id === line.id ? { ...l, gamme: e.target.value } : l))} />
                     </td>
-                    <td style={{ ...cellStyle, width: 45 }}>
-                      <input style={{ ...inputStyle, width: 35, textAlign: 'center' }} value={line.vantail || ''} onBlur={(e) => updateLine(line.id, 'vantail', e.target.value)}
+                    <td style={{ ...cellStyle, width: 50 }}>
+                      <input style={{ ...inputStyle, width: 40, textAlign: 'center' }} spellCheck={false} value={line.vantail || ''} onBlur={(e) => updateLine(line.id, 'vantail', e.target.value)}
                         onChange={(e) => setLines(ls => ls.map(l => l.id === line.id ? { ...l, vantail: e.target.value } : l))} />
                     </td>
                     <td style={{ ...cellStyle, width: 70 }}>
-                      <input type="number" style={numInputStyle} value={line.hauteur_mm || ''} onBlur={(e) => updateLine(line.id, 'hauteur_mm', parseInt(e.target.value) || null)}
+                      <input style={numInputStyle} value={line.hauteur_mm || ''} onBlur={(e) => updateLine(line.id, 'hauteur_mm', parseInt(e.target.value) || null)}
                         onChange={(e) => setLines(ls => ls.map(l => l.id === line.id ? { ...l, hauteur_mm: e.target.value } : l))} />
                     </td>
                     <td style={{ ...cellStyle, width: 70 }}>
-                      <input type="number" style={numInputStyle} value={line.largeur_mm || ''} onBlur={(e) => updateLine(line.id, 'largeur_mm', parseInt(e.target.value) || null)}
+                      <input style={numInputStyle} value={line.largeur_mm || ''} onBlur={(e) => updateLine(line.id, 'largeur_mm', parseInt(e.target.value) || null)}
                         onChange={(e) => setLines(ls => ls.map(l => l.id === line.id ? { ...l, largeur_mm: e.target.value } : l))} />
                     </td>
                     <td style={{ ...cellStyle, width: 90 }}>
-                      <input type="number" style={numInputStyle} value={line.prix_base_ht || ''} onBlur={(e) => updateLine(line.id, 'prix_base_ht', parseFloat(e.target.value) || null)}
+                      <input style={numInputStyle} value={line.prix_base_ht || ''} onBlur={(e) => updateLine(line.id, 'prix_base_ht', parseFloat(e.target.value) || null)}
                         onChange={(e) => setLines(ls => ls.map(l => l.id === line.id ? { ...l, prix_base_ht: e.target.value } : l))} />
                     </td>
                     <td style={{ ...cellStyle, minWidth: 120, fontSize: '11px', color: 'var(--color-text-2)' }}>
@@ -831,25 +854,25 @@ function StepEditor({
         </div>
       </div>
 
-      {/* Right: Gemma chat for editor context */}
+      {/* Resizer */}
+      <div
+        onMouseDown={onMouseDown}
+        style={{
+          height: '6px', cursor: 'row-resize', background: 'var(--color-border)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0
+        }}
+      >
+        <div style={{ width: 40, height: 2, borderRadius: 1, background: 'var(--color-text-3)' }} />
+      </div>
+
+      {/* Bottom: Gemma chat for editor context */}
       <div style={{
-        width: chatWidth, minWidth: chatWidth, flexShrink: 0, display: 'flex', flexDirection: 'column',
-        height: '100%', overflow: 'hidden', borderLeft: '1px solid var(--color-border)', background: 'var(--color-surface)',
+        height: chatHeight, minHeight: 150, flexShrink: 0, display: 'flex', flexDirection: 'column',
+        width: '100%', overflow: 'hidden', background: 'var(--color-surface)',
       }}>
         <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
           <Bot size={16} color="var(--color-primary)" />
           <div style={{ flex: 1, fontWeight: 700, fontSize: '13px' }}>Assistant Gemma</div>
-          <button
-            onClick={() => {
-              const ratios = ['1/3', '1/2', '2/3']
-              const idx = ratios.indexOf(chatRatio)
-              setChatRatio(ratios[(idx + 1) % ratios.length])
-            }}
-            style={{ ...iconBtn(), padding: 6 }}
-            title={`Largeur chat: ${chatRatio}`}
-          >
-            <RatioIcon size={14} />
-          </button>
         </div>
         <div style={{ flex: 1, overflowY: 'auto', padding: '12px', minHeight: 0 }}>
           {aiMessages.length === 0 && (
