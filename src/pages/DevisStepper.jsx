@@ -736,19 +736,42 @@ function StepEditor({
 
   const grandTotal = lines.reduce((s, l) => s + (Number(l.total_ligne_ht) || 0), 0)
 
-  const cellStyle = {
-    padding: '6px 8px', fontSize: '12px', borderBottom: '1px solid var(--color-border)',
-    verticalAlign: 'middle',
+  const handleKeyDown = (e, rowIdx, colIdx) => {
+    const cols = ['designation', 'gamme', 'vantail', 'hauteur', 'largeur', 'prix']
+    if (['ArrowUp', 'ArrowDown', 'Enter'].includes(e.key)) {
+      e.preventDefault()
+      const nr = e.key === 'ArrowUp' ? Math.max(0, rowIdx - 1) : Math.min(lines.length - 1, rowIdx + 1)
+      const el = document.getElementById(`cell-${nr}-${cols[colIdx]}`)
+      if (el) { el.focus(); setTimeout(() => el.select(), 0) }
+    } else if (e.key === 'ArrowRight' && e.target.selectionStart === e.target.value.length) {
+      e.preventDefault()
+      const nc = Math.min(cols.length - 1, colIdx + 1)
+      const el = document.getElementById(`cell-${rowIdx}-${cols[nc]}`)
+      if (el) { el.focus(); setTimeout(() => el.select(), 0) }
+    } else if (e.key === 'ArrowLeft' && e.target.selectionEnd === 0) {
+      e.preventDefault()
+      const nc = Math.max(0, colIdx - 1)
+      const el = document.getElementById(`cell-${rowIdx}-${cols[nc]}`)
+      if (el) { el.focus(); setTimeout(() => el.select(), 0) }
+    }
   }
-  const inputStyle = {
-    width: '100%', padding: '5px 7px', borderRadius: '6px',
-    border: '1px solid var(--color-border)', background: 'var(--color-input-bg, var(--color-surface-2))',
-    color: 'var(--color-text)', fontSize: '12px', outline: 'none', fontFamily: 'var(--font-body)',
-  }
-  const numInputStyle = { ...inputStyle, width: 80, textAlign: 'right' }
+
+  const tdStyle = { padding: 0, border: '1px solid var(--color-border)', position: 'relative', background: 'var(--color-surface)', verticalAlign: 'middle' }
+  const roStyle = { padding: '6px 8px', fontSize: '11px', color: 'var(--color-text-2)', background: 'var(--color-surface-2, transparent)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', verticalAlign: 'middle', border: '1px solid var(--color-border)' }
+  const inputClass = "excel-input"
+  const numInputClass = "excel-input excel-input-num"
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
+      {/* Excel sheet styles */}
+      <style dangerouslySetInnerHTML={{__html:`
+        .excel-table { width: 100%; min-width: 1000px; border-collapse: collapse; font-family: var(--font-body); }
+        .excel-table th { background: var(--color-surface-2, transparent); border: 1px solid var(--color-border); padding: 8px; font-size: 10px; font-weight: 700; color: var(--color-text-3); text-transform: uppercase; letter-spacing: 0.04em; text-align: left; position: sticky; top: 0; z-index: 10; white-space: nowrap; }
+        .excel-input { display: block; width: 100%; height: 100%; min-height: 28px; padding: 6px 8px; border: none; background: transparent; color: var(--color-text); font-size: 12px; outline: none; font-family: inherit; font-weight: 500; }
+        .excel-input-num { text-align: right; font-variant-numeric: tabular-nums; }
+        .excel-input:focus { box-shadow: inset 0 0 0 2px var(--color-primary); background: color-mix(in srgb, var(--color-primary) 5%, transparent); z-index: 5; position: relative; }
+        .excel-row:hover td { background: color-mix(in srgb, var(--color-text) 2%, var(--color-surface)); }
+      `}} />
       {/* Table editor */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
         <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
@@ -765,15 +788,11 @@ function StepEditor({
           </button>
         </div>
         <div style={{ flex: 1, overflowX: 'auto', overflowY: 'auto' }}>
-          <table style={{ width: '100%', minWidth: 900, borderCollapse: 'collapse' }}>
+          <table className="excel-table">
             <thead>
-              <tr style={{ background: 'var(--color-surface-2, rgba(53,67,70,0.04))' }}>
+              <tr>
                 {['#', 'Désignation', 'Gamme', 'V.', 'H (mm)', 'L (mm)', 'Base HT', 'Options', 'Serrure', 'F.-porte', 'Total HT', ''].map((h, i) => (
-                  <th key={i} style={{
-                    padding: '8px', fontSize: '10px', fontWeight: 700, textAlign: 'left',
-                    color: 'var(--color-text-3)', borderBottom: '2px solid var(--color-border)',
-                    whiteSpace: 'nowrap', textTransform: 'uppercase', letterSpacing: '0.04em',
-                  }}>{h}</th>
+                  <th key={i}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -782,49 +801,32 @@ function StepEditor({
                 const opts = (() => { try { return JSON.parse(line.options_json || '[]') } catch { return [] } })()
                 const optStr = opts.map(o => `${o.label} +${(o.prix || 0).toLocaleString('fr-FR')}€`).join(', ')
                 return (
-                  <tr key={line.id} style={{
-                    background: saving === line.id ? 'color-mix(in srgb, var(--color-primary) 5%, var(--color-surface))' : 'var(--color-surface)',
-                    transition: 'background 0.15s',
-                  }}>
-                    <td style={{ ...cellStyle, width: 30, fontWeight: 700, color: 'var(--color-text-3)', fontSize: '11px' }}>{idx + 1}</td>
-                    <td style={{ ...cellStyle, minWidth: 220 }}>
-                      <input style={{ ...inputStyle, width: '100%' }} spellCheck={false} title={line.designation || ''} value={line.designation || ''} onBlur={(e) => updateLine(line.id, 'designation', e.target.value)}
-                        onChange={(e) => setLines(ls => ls.map(l => l.id === line.id ? { ...l, designation: e.target.value } : l))} />
+                  <tr key={line.id} className="excel-row" style={{ background: saving === line.id ? 'color-mix(in srgb, var(--color-primary) 5%, var(--color-surface))' : 'var(--color-surface)' }}>
+                    <td style={{ ...roStyle, width: 30, fontWeight: 700, textAlign: 'center' }}>{idx + 1}</td>
+                    <td style={{ ...tdStyle, minWidth: 220 }}>
+                      <input id={`cell-${idx}-designation`} className={inputClass} spellCheck={false} title={line.designation || ''} value={line.designation || ''} onBlur={(e) => updateLine(line.id, 'designation', e.target.value)} onKeyDown={e => handleKeyDown(e, idx, 0)} onChange={(e) => setLines(ls => ls.map(l => l.id === line.id ? { ...l, designation: e.target.value } : l))} />
                     </td>
-                    <td style={{ ...cellStyle, width: 120 }}>
-                      <input style={{ ...inputStyle, width: 110, textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', color: line.gamme?.startsWith('⚠️') ? '#f59e0b' : 'var(--color-text)' }} spellCheck={false} title={line.gamme || ''} value={line.gamme || ''} onBlur={(e) => updateLine(line.id, 'gamme', e.target.value)}
-                        onChange={(e) => setLines(ls => ls.map(l => l.id === line.id ? { ...l, gamme: e.target.value } : l))} />
+                    <td style={{ ...tdStyle, width: 120 }}>
+                      <input id={`cell-${idx}-gamme`} className={inputClass} spellCheck={false} style={{ color: line.gamme?.startsWith('⚠️') ? '#f59e0b' : 'inherit' }} title={line.gamme || ''} value={line.gamme || ''} onBlur={(e) => updateLine(line.id, 'gamme', e.target.value)} onKeyDown={e => handleKeyDown(e, idx, 1)} onChange={(e) => setLines(ls => ls.map(l => l.id === line.id ? { ...l, gamme: e.target.value } : l))} />
                     </td>
-                    <td style={{ ...cellStyle, width: 50 }}>
-                      <input style={{ ...inputStyle, width: 40, textAlign: 'center' }} spellCheck={false} value={line.vantail || ''} onBlur={(e) => updateLine(line.id, 'vantail', e.target.value)}
-                        onChange={(e) => setLines(ls => ls.map(l => l.id === line.id ? { ...l, vantail: e.target.value } : l))} />
+                    <td style={{ ...tdStyle, width: 50 }}>
+                      <input id={`cell-${idx}-vantail`} className={inputClass} style={{ textAlign: 'center' }} spellCheck={false} value={line.vantail || ''} onBlur={(e) => updateLine(line.id, 'vantail', e.target.value)} onKeyDown={e => handleKeyDown(e, idx, 2)} onChange={(e) => setLines(ls => ls.map(l => l.id === line.id ? { ...l, vantail: e.target.value } : l))} />
                     </td>
-                    <td style={{ ...cellStyle, width: 70 }}>
-                      <input style={numInputStyle} value={line.hauteur_mm || ''} onBlur={(e) => updateLine(line.id, 'hauteur_mm', parseInt(e.target.value) || null)}
-                        onChange={(e) => setLines(ls => ls.map(l => l.id === line.id ? { ...l, hauteur_mm: e.target.value } : l))} />
+                    <td style={{ ...tdStyle, width: 70 }}>
+                      <input id={`cell-${idx}-hauteur`} className={numInputClass} value={line.hauteur_mm || ''} onBlur={(e) => updateLine(line.id, 'hauteur_mm', parseInt(e.target.value) || null)} onKeyDown={e => handleKeyDown(e, idx, 3)} onChange={(e) => setLines(ls => ls.map(l => l.id === line.id ? { ...l, hauteur_mm: e.target.value } : l))} />
                     </td>
-                    <td style={{ ...cellStyle, width: 70 }}>
-                      <input style={numInputStyle} value={line.largeur_mm || ''} onBlur={(e) => updateLine(line.id, 'largeur_mm', parseInt(e.target.value) || null)}
-                        onChange={(e) => setLines(ls => ls.map(l => l.id === line.id ? { ...l, largeur_mm: e.target.value } : l))} />
+                    <td style={{ ...tdStyle, width: 70 }}>
+                      <input id={`cell-${idx}-largeur`} className={numInputClass} value={line.largeur_mm || ''} onBlur={(e) => updateLine(line.id, 'largeur_mm', parseInt(e.target.value) || null)} onKeyDown={e => handleKeyDown(e, idx, 4)} onChange={(e) => setLines(ls => ls.map(l => l.id === line.id ? { ...l, largeur_mm: e.target.value } : l))} />
                     </td>
-                    <td style={{ ...cellStyle, width: 90 }}>
-                      <input style={numInputStyle} value={line.prix_base_ht || ''} onBlur={(e) => updateLine(line.id, 'prix_base_ht', parseFloat(e.target.value) || null)}
-                        onChange={(e) => setLines(ls => ls.map(l => l.id === line.id ? { ...l, prix_base_ht: e.target.value } : l))} />
+                    <td style={{ ...tdStyle, width: 90 }}>
+                      <input id={`cell-${idx}-prix`} className={numInputClass} value={line.prix_base_ht || ''} onBlur={(e) => updateLine(line.id, 'prix_base_ht', parseFloat(e.target.value) || null)} onKeyDown={e => handleKeyDown(e, idx, 5)} onChange={(e) => setLines(ls => ls.map(l => l.id === line.id ? { ...l, prix_base_ht: e.target.value } : l))} />
                     </td>
-                    <td style={{ ...cellStyle, minWidth: 120, fontSize: '11px', color: 'var(--color-text-2)' }}>
-                      {optStr || '—'}
-                    </td>
-                    <td style={{ ...cellStyle, fontSize: '11px', color: 'var(--color-text-2)', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {line.serrure_ref || '—'}
-                    </td>
-                    <td style={{ ...cellStyle, fontSize: '11px', color: 'var(--color-text-2)', maxWidth: 100, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {line.ferme_porte_ref || '—'}
-                    </td>
-                    <td style={{ ...cellStyle, width: 100, fontWeight: 700, textAlign: 'right', whiteSpace: 'nowrap' }}>
-                      {prixFmt(line.total_ligne_ht) || '—'}
-                    </td>
-                    <td style={{ ...cellStyle, width: 36, textAlign: 'center' }}>
-                      <button onClick={() => deleteLine(line.id)} style={{ ...iconBtn(), color: '#a33c3c' }} title="Supprimer la ligne">
+                    <td style={{ ...roStyle, minWidth: 120 }}>{optStr || '—'}</td>
+                    <td style={{ ...roStyle, maxWidth: 120 }}>{line.serrure_ref || '—'}</td>
+                    <td style={{ ...roStyle, maxWidth: 100 }}>{line.ferme_porte_ref || '—'}</td>
+                    <td style={{ ...roStyle, width: 100, fontWeight: 700, textAlign: 'right' }}>{prixFmt(line.total_ligne_ht) || '—'}</td>
+                    <td style={{ ...tdStyle, width: 36, textAlign: 'center' }}>
+                      <button onClick={() => deleteLine(line.id)} style={{ ...iconBtn(), color: '#a33c3c', width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }} title="Supprimer la ligne">
                         <Trash2 size={14} />
                       </button>
                     </td>
@@ -832,7 +834,7 @@ function StepEditor({
                 )
               })}
               {lines.length === 0 && (
-                <tr><td colSpan={12} style={{ ...cellStyle, textAlign: 'center', color: 'var(--color-text-3)', padding: 30 }}>
+                <tr><td colSpan={12} style={{ ...roStyle, textAlign: 'center', color: 'var(--color-text-3)', padding: 30 }}>
                   Aucune ligne. Cliquez « Ajouter une ligne » pour commencer.
                 </td></tr>
               )}
@@ -840,13 +842,13 @@ function StepEditor({
             {lines.length > 0 && (
               <tfoot>
                 <tr style={{ background: 'var(--color-surface-2, rgba(53,67,70,0.04))' }}>
-                  <td colSpan={10} style={{ ...cellStyle, textAlign: 'right', fontWeight: 700, fontSize: '13px', borderTop: '2px solid var(--color-border)' }}>
+                  <td colSpan={10} style={{ ...roStyle, textAlign: 'right', fontWeight: 700, fontSize: '13px', borderTop: '2px solid var(--color-border)' }}>
                     Total général HT
                   </td>
-                  <td style={{ ...cellStyle, textAlign: 'right', fontWeight: 800, fontSize: '14px', borderTop: '2px solid var(--color-border)', whiteSpace: 'nowrap' }}>
+                  <td style={{ ...roStyle, textAlign: 'right', fontWeight: 800, fontSize: '14px', borderTop: '2px solid var(--color-border)', whiteSpace: 'nowrap' }}>
                     {grandTotal.toLocaleString('fr-FR')} €
                   </td>
-                  <td style={{ ...cellStyle, borderTop: '2px solid var(--color-border)' }} />
+                  <td style={{ ...roStyle, borderTop: '2px solid var(--color-border)' }} />
                 </tr>
               </tfoot>
             )}
