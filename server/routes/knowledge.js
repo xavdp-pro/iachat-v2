@@ -26,6 +26,7 @@ const DOC_ORDER = [
   'EI60.md', 'EI120.md',
   'EQUIP-COMMUN.md', 'EQUIP-EI.md', 'EQUIP-FB.md',
   'BLAST.md', 'ANTI-BELIER.md', 'PRISON.md', 'EF2.md', 'SEISME-AEV.md',
+  'SERRURES-GARNITURES.md',
 ]
 
 const DOC_META = {
@@ -46,6 +47,7 @@ const DOC_META = {
   'PRISON.md': { label: 'Porte Prison', category: 'spec' },
   'EF2.md': { label: 'Porte EF2', category: 'spec' },
   'SEISME-AEV.md': { label: 'Anti-séisme / AEV', category: 'spec' },
+  'SERRURES-GARNITURES.md': { label: 'Serrures & garnitures par défaut', category: 'equip' },
 }
 
 // ── GET /api/knowledge — inventaire global ──────────────────────────────────
