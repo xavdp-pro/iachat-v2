@@ -98,7 +98,7 @@ router.post('/ask', async (req, res) => {
   // ── Enrichissement automatique des markdowns selon les caractéristiques de la ligne ──
   // Objectif : garantir que Gemma a toujours accès aux bons référentiels croisés,
   // même si detect_nexus.py ne les a pas listés explicitement.
-  const ALWAYS_LOAD = ['GUIDE-DEVIS.md', 'BASE.md', 'EQUIP-COMMUN.md']
+  const ALWAYS_LOAD = ['GUIDE-DEVIS.md', 'BASE.md', 'EQUIP-COMMUN.md', 'SERRURES-GARNITURES.md']
   // En mode "all", on prend toutes les lignes pour extraire les gammes/options ; sinon row[0]
   const contextRows = (scope === 'all' || rows.length > 1) ? rows : (rows[0] ? [rows[0]] : [])
   const row = contextRows[0] || {}
@@ -195,6 +195,7 @@ Pour chiffrer une porte correctement, tu dois TOUJOURS croiser plusieurs markdow
 - EQUIP-EI.md : si option coupe-feu (EI30/EI60/EI120)
 - EQUIP-FB.md : si option pare-balles (FB4/FB6/FB7)
 - SEISME-AEV.md : si option anti-séisme ou AEV
+- SERRURES-GARNITURES.md : TOUJOURS consulter pour connaître la serrure et les garnitures livrées par défaut avec chaque gamme. Ne jamais laisser serrure_ref vide sans avoir vérifié ce fichier.
 
 Si deux markdowns se contredisent, privilégie le markdown de la gamme principale. Signale la contradiction.
 Les fichiers transverses (GUIDE-DEVIS, BASE, EQUIP-COMMUN) sont TOUJOURS chargés pour toi — consulte-les systématiquement.
