@@ -443,7 +443,14 @@ function TablesView({ tables, active, setActive }) {
   const isNewFormat = Array.isArray(tables)
   if (!isNewFormat && !tables?.tables_prix) return <div>Tableaux indisponibles.</div>
 
-  const tabs = isNewFormat ? tables : Object.entries(tables.tables_prix).map(([id, t]) => ({ id, gamme: t.gamme, vantaux: t.vantail === '2V' ? 2 : 1, grid: {} }))
+  const tabs = isNewFormat ? tables : Object.entries(tables.tables_prix).map(([id, t]) => ({
+    id,
+    gamme: t.gamme,
+    vantaux: t.vantail === '2V' ? 2 : 1,
+    grid: Array.isArray(t.grid)
+      ? t.grid.reduce((acc, row) => { acc[String(row.hauteur)] = row.prix; return acc }, {})
+      : (t.grid || {})
+  }))
   const active_tab = tabs.find(t => t.id === active) ?? tabs[0]
 
   let hauteurs = [], largeurs = []
@@ -578,14 +585,14 @@ function TablesView({ tables, active, setActive }) {
                   }}>
                     H ↓ / L →
                   </th>
-                  {largeurs.map(l => (
+                  {largeurs.map((l, i) => (
                     <th key={l} style={{
                       background: '#234d82',
                       color: TEXT_HEADER, padding: '8px 14px', textAlign: 'center',
                       fontWeight: 700, whiteSpace: 'nowrap', minWidth: 115,
                       borderLeft: '1px solid rgba(255,255,255,0.1)',
                     }}>
-                      {l} mm
+                      {i === 0 ? `${l} à ${largeurs[1] ?? l}` : `${largeurs[i - 1] + 1} à ${l}`} mm
                     </th>
                   ))}
                 </tr>
@@ -599,7 +606,7 @@ function TablesView({ tables, active, setActive }) {
                       whiteSpace: 'nowrap', position: 'sticky', left: 0, zIndex: 1,
                       borderRight: '2px solid rgba(255,255,255,0.15)',
                     }}>
-                      {h} mm
+                      {hi === hauteurs.length - 1 ? `${h} à ${hauteurs[hi - 1] ?? h}` : `${hauteurs[hi + 1] + 1} à ${h}`} mm
                     </th>
                     {largeurs.map(l => {
                       const cell = active_tab.grid[String(h)]?.[String(l)]

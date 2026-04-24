@@ -80,6 +80,7 @@ router.post('/analyze', (req, res, next) => {
     const results = JSON.parse(raw)
     res.json({ results })
   } catch (err) {
+    console.error("ERREUR lors de l'appel Python ou lecture:", err)
     const detail = err.stderr || err.stdout || err.message || 'Erreur inconnue'
     res.status(500).json({ error: 'Erreur lors du traitement Python', details: detail })
   } finally {
@@ -228,7 +229,7 @@ Réponds en français de façon structurée et professionnelle. Si une informati
     })
     res.json({ answer })
   } catch (err) {
-    res.status(500).json({ error: err.message })
+    console.error("CRASH:", err); res.status(500).json({ error: err.message })
   }
 })
 
@@ -245,7 +246,7 @@ router.get('/', async (req, res) => {
     )
     res.json(rows)
   } catch (err) {
-    res.status(500).json({ error: err.message })
+    console.error("CRASH:", err); res.status(500).json({ error: err.message })
   }
 })
 
@@ -261,7 +262,7 @@ router.get('/:id', async (req, res) => {
     )
     res.json({ ...devis, lines })
   } catch (err) {
-    res.status(500).json({ error: err.message })
+    console.error("CRASH:", err); res.status(500).json({ error: err.message })
   }
 })
 
@@ -277,7 +278,7 @@ router.post('/', async (req, res) => {
     const [rows] = await db.query('SELECT * FROM devis WHERE id = ?', [result.insertId])
     res.status(201).json(rows[0])
   } catch (err) {
-    res.status(500).json({ error: err.message })
+    console.error("CRASH:", err); res.status(500).json({ error: err.message })
   }
 })
 
@@ -299,7 +300,7 @@ router.put('/:id', async (req, res) => {
     const [rows] = await db.query('SELECT * FROM devis WHERE id = ?', [req.params.id])
     res.json(rows[0])
   } catch (err) {
-    res.status(500).json({ error: err.message })
+    console.error("CRASH:", err); res.status(500).json({ error: err.message })
   }
 })
 
@@ -309,7 +310,7 @@ router.delete('/:id', async (req, res) => {
     await db.query('DELETE FROM devis WHERE id = ? AND created_by = ?', [req.params.id, req.user.id])
     res.json({ success: true })
   } catch (err) {
-    res.status(500).json({ error: err.message })
+    console.error("CRASH:", err); res.status(500).json({ error: err.message })
   }
 })
 
@@ -326,7 +327,7 @@ router.get('/:id/lines', async (req, res) => {
     )
     res.json(rows)
   } catch (err) {
-    res.status(500).json({ error: err.message })
+    console.error("CRASH:", err); res.status(500).json({ error: err.message })
   }
 })
 
@@ -363,7 +364,7 @@ router.post('/:id/lines', async (req, res) => {
     const [rows] = await db.query('SELECT * FROM devis_lines WHERE id = ?', [result.insertId])
     res.status(201).json(rows[0])
   } catch (err) {
-    res.status(500).json({ error: err.message })
+    console.error("CRASH:", err); res.status(500).json({ error: err.message })
   }
 })
 
@@ -408,7 +409,7 @@ router.post('/:id/lines/bulk', async (req, res) => {
     const [allLines] = await db.query('SELECT * FROM devis_lines WHERE devis_id = ? ORDER BY position ASC', [req.params.id])
     res.json(allLines)
   } catch (err) {
-    res.status(500).json({ error: err.message })
+    console.error("CRASH:", err); res.status(500).json({ error: err.message })
   }
 })
 
@@ -436,7 +437,7 @@ router.put('/:id/lines/:lineId', async (req, res) => {
     const [rows] = await db.query('SELECT * FROM devis_lines WHERE id = ?', [req.params.lineId])
     res.json(rows[0])
   } catch (err) {
-    res.status(500).json({ error: err.message })
+    console.error("CRASH:", err); res.status(500).json({ error: err.message })
   }
 })
 
@@ -452,7 +453,7 @@ router.delete('/:id/lines/:lineId', async (req, res) => {
     await db.query('UPDATE devis SET total_ht = ? WHERE id = ?', [sumRows[0].total, req.params.id])
     res.json({ success: true })
   } catch (err) {
-    res.status(500).json({ error: err.message })
+    console.error("CRASH:", err); res.status(500).json({ error: err.message })
   }
 })
 
