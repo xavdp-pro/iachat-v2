@@ -6,7 +6,7 @@
  * expériences commerciaux validées qui servent de points de contrôle).
  */
 import { useState, useEffect, useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   BookOpen, FileText, Table2, Wrench, Shield, Settings, ArrowLeft,
   Search, ChevronRight, Info, CheckCircle2, Users, Database, AlertTriangle,
@@ -34,14 +34,33 @@ const SECTION_LABELS = {
 
 export default function Knowledge() {
   const nav = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [inventory, setInventory] = useState(null)
   const [tables, setTables] = useState(null)
-  const [activeSection, setActiveSection] = useState('overview')
-  const [activeDoc, setActiveDoc] = useState(null)
+
+  // État dérivé des query params (source de vérité = URL)
+  const activeSection = searchParams.get('s') || 'overview'
+  const activeDoc     = searchParams.get('doc') || null
+  const activeTable   = searchParams.get('table') || null
+
+  // Helpers pour naviguer sans perdre les autres params
+  function goSection(id) {
+    setSearchParams({ s: id })
+  }
+  function goDoc(name) {
+    setSearchParams({ s: 'doc', doc: name })
+  }
+  function setActiveTable(id) {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      next.set('table', id)
+      return next
+    })
+  }
+
   const [docContent, setDocContent] = useState('')
   const [loadingDoc, setLoadingDoc] = useState(false)
   const [search, setSearch] = useState('')
-  const [activeTable, setActiveTable] = useState(null)
 
   // ── Chargement initial ──────────────────────────────────────────────
   useEffect(() => {
@@ -53,10 +72,13 @@ export default function Knowledge() {
         ])
         setInventory(inv)
         setTables(tbl)
-        if (Array.isArray(tbl) && tbl.length > 0) {
-          setActiveTable(tbl[0].id)
-        } else if (tbl?.tables_prix) {
-          setActiveTable(Object.keys(tbl.tables_prix)[0])
+        // Initialiser activeTable seulement si pas déjà dans l'URL
+        if (!searchParams.get('table')) {
+          if (Array.isArray(tbl) && tbl.length > 0) {
+            setActiveTable(tbl[0].id)
+          } else if (tbl?.tables_prix) {
+            setActiveTable(Object.keys(tbl.tables_prix)[0])
+          }
         }
       } catch (err) {
         console.error(err)
@@ -133,7 +155,7 @@ export default function Knowledge() {
             const Icon = s.icon
             return (
               <button key={s.id}
-                onClick={() => { setActiveSection(s.id); setActiveDoc(null); }}
+                onClick={() => goSection(s.id)}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
                   padding: '8px 12px', borderRadius: 8, border: 'none', background: activeSection === s.id && !activeDoc
@@ -177,7 +199,7 @@ export default function Knowledge() {
                 </div>
                 {docs.map(d => (
                   <button key={d.name}
-                    onClick={() => { setActiveDoc(d.name); setActiveSection('doc'); }}
+                    onClick={() => goDoc(d.name)}
                     style={{
                       display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
                       padding: '5px 12px 5px 22px', borderRadius: 6, border: 'none',
@@ -201,7 +223,7 @@ export default function Knowledge() {
           {/* Tableaux de prix */}
           {(Array.isArray(tables) ? tables.length > 0 : tables?.tables_prix) && (
             <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--color-border)' }}>
-              <button onClick={() => { setActiveSection('tables'); setActiveDoc(null); }}
+              <button onClick={() => goSection('tables')}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
                   padding: '8px 12px', borderRadius: 8, border: 'none',
@@ -212,7 +234,7 @@ export default function Knowledge() {
                 <Table2 size={14} /> Tableaux de prix ({Array.isArray(tables) ? tables.length : Object.keys(tables.tables_prix).length})
               </button>
 
-              <button onClick={() => { setActiveSection('options'); setActiveDoc(null); }}
+              <button onClick={() => goSection('options')}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
                   padding: '8px 12px', borderRadius: 8, border: 'none',
@@ -223,7 +245,7 @@ export default function Knowledge() {
                 <Wrench size={14} /> Options & équipements
               </button>
 
-              <button onClick={() => { setActiveSection('certifications'); setActiveDoc(null); }}
+              <button onClick={() => goSection('certifications')}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
                   padding: '8px 12px', borderRadius: 8, border: 'none',
@@ -446,7 +468,7 @@ function TablesView({ tables, active, setActive }) {
   const tabs = isNewFormat ? tables : Object.entries(tables.tables_prix).map(([id, t]) => ({
     id,
     gamme: t.gamme,
-    vantaux: t.vantail === '2V' ? 2 : 1,
+    vantail: t.vantail,
     grid: Array.isArray(t.grid)
       ? t.grid.reduce((acc, row) => { acc[String(row.hauteur)] = row.prix; return acc }, {})
       : (t.grid || {})
@@ -491,8 +513,8 @@ function TablesView({ tables, active, setActive }) {
           fontSize: 13, lineHeight: 1.7, color: 'var(--color-text-2)',
         }}>
           <strong style={{ color: 'var(--color-text)' }}>Comment l'IA lit ces tableaux :</strong> pour une dimension demandée, elle prend
-          la <strong>plus petite hauteur ≥ hauteur demandée</strong> (arrondi au plafond),
-          puis la plus petite largeur ≥ largeur demandée. Le prix est à l'intersection.
+          la <strong>plus grande hauteur ≤ hauteur demandée</strong> (arrondi au plancher),
+          puis la plus grande largeur ≤ largeur demandée. Le prix est à l'intersection.
         </div>
         <div style={{
           flex: 1, minWidth: 220,
@@ -532,7 +554,7 @@ function TablesView({ tables, active, setActive }) {
               display: 'flex', alignItems: 'center', gap: 5,
             }}>
               {tHasCert && <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#3b9dd8', flexShrink: 0 }} />}
-              {t.gamme} · {t.vantaux === 2 ? '2V' : '1V'}
+              {t.gamme} · {t.vantail}
             </button>
           )
         })}
@@ -592,7 +614,7 @@ function TablesView({ tables, active, setActive }) {
                       fontWeight: 700, whiteSpace: 'nowrap', minWidth: 115,
                       borderLeft: '1px solid rgba(255,255,255,0.1)',
                     }}>
-                      {i === 0 ? `${l} à ${largeurs[1] ?? l}` : `${largeurs[i - 1] + 1} à ${l}`} mm
+                      {i === largeurs.length - 1 ? `≥ ${l}` : `${l} à ${largeurs[i + 1] - 1}`} mm
                     </th>
                   ))}
                 </tr>
@@ -606,7 +628,7 @@ function TablesView({ tables, active, setActive }) {
                       whiteSpace: 'nowrap', position: 'sticky', left: 0, zIndex: 1,
                       borderRight: '2px solid rgba(255,255,255,0.15)',
                     }}>
-                      {hi === hauteurs.length - 1 ? `${h} à ${hauteurs[hi - 1] ?? h}` : `${hauteurs[hi + 1] + 1} à ${h}`} mm
+                      {hi === 0 ? `≥ ${h}` : `${h} à ${hauteurs[hi - 1] - 1}`} mm
                     </th>
                     {largeurs.map(l => {
                       const cell = active_tab.grid[String(h)]?.[String(l)]

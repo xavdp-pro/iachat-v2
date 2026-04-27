@@ -27,6 +27,8 @@ const DOC_ORDER = [
   'EQUIP-COMMUN.md', 'EQUIP-EI.md', 'EQUIP-FB.md',
   'BLAST.md', 'ANTI-BELIER.md', 'PRISON.md', 'EF2.md', 'SEISME-AEV.md',
   'SERRURES-GARNITURES.md',
+  'CHASSIS.md',
+  'GUICHET.md',
 ]
 
 const DOC_META = {

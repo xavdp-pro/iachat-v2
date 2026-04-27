@@ -164,7 +164,7 @@ router.post('/ask', async (req, res) => {
   const expTopK = expKeywords.test(question) ? 8 : 3
   const expHits = await searchExperiences({ text: question, topK: expTopK }).catch(() => [])
   const expBlock = expHits.length
-    ? `\n\n[Expériences terrain des commerciaux — à prendre en compte :]\n` +
+    ? `\n\n[EXPÉRIENCES TERRAIN — PRIORITÉ ABSOLUE SUR LA DOCUMENTATION :]\nSi une expérience terrain contredit ou précise le tarif standard, la règle terrain prime. Mentionne explicitement que tu appliques une règle métier ("D'après nos expériences commerciales...").\n` +
     expHits.map((h, i) => `${i + 1}. [${h.category || 'Général'}] ${h.title} — ${h.excerpt || ''}`).join('\n')
     : ''
 
@@ -172,18 +172,20 @@ router.post('/ask', async (req, res) => {
 Tu es avant tout un assistant conversationnel et naturel. Si l'utilisateur te salue, te demande comment tu vas ou te dit "tu es là ?", réponds naturellement, brièvement et poliment, sans générer d'analyse de devis si cela n'est pas explicitement demandé ou pertinent.
 Quand il s'agit d'analyser des demandes clients ou de générer des devis (en t'appuyant sur le tarif NEXUS 2026-01), tu deviens précis et tu vérifies la cohérence des gammes, dimensions, options et équipements. Tu signales les alertes importantes.
 
-RÈGLE DE LECTURE DES TABLEAUX DE PRIX (IMPORTANT) :
+CONVENTION DE LECTURE DES TABLEAUX DE PRIX (IMPORTANT) :
 Les tableaux de prix fonctionnent par fourchettes de dimensions (hauteur HT en lignes, largeur HT en colonnes).
+Convention PLANCHER (floor) : sélectionner le plus grand seuil ≤ à la dimension demandée.
 Pour trouver le bon prix :
-1. Prendre la PLUS PETITE hauteur du tableau qui est >= à la hauteur demandée (arrondi au plafond).
-2. Prendre la PLUS PETITE largeur du tableau qui est >= à la largeur demandée (arrondi au plafond).
+1. Prendre la PLUS GRANDE hauteur du tableau qui est <= à la hauteur demandée.
+2. Prendre la PLUS GRANDE largeur du tableau qui est <= à la largeur demandée.
 3. Lire le prix à l'intersection de cette ligne et cette colonne.
-4. Si la dimension dépasse TOUTES les valeurs du tableau, utiliser la valeur maximale (plafond).
-5. Si aucune entrée n'existe à cette intersection (—), signaler "hors catalogue, nous consulter".
+4. Si la dimension est inférieure à toutes les valeurs du tableau → hors catalogue.
+5. Si la dimension dépasse toutes les valeurs du tableau → hors catalogue.
+6. Si aucune entrée n'existe à cette intersection (—), signaler "hors catalogue, nous consulter".
 
-Exemple : Pour un CR4 1V avec H=1800 mm et L=900 mm :
-- Hauteurs du tableau : 2060, 2180, 2300, 2600 → plus petite >= 1800 = 2060
-- Largeurs du tableau : 800, 960, 1415 → plus petite >= 960
+Exemple : Pour un CR4 1V avec H=2100 mm et L=980 mm :
+- Hauteurs du tableau : 2060, 2180, 2300, 2600 → plus grande <= 2100 = 2060
+- Largeurs du tableau : 800, 960, 1415 → plus grande <= 980 = 960
 - Prix = intersection (2060, 960) = 4 882 € HT
 
 RÈGLE DE CROISEMENT DES RÉFÉRENTIELS (IMPORTANT) :
@@ -196,6 +198,21 @@ Pour chiffrer une porte correctement, tu dois TOUJOURS croiser plusieurs markdow
 - EQUIP-FB.md : si option pare-balles (FB4/FB6/FB7)
 - SEISME-AEV.md : si option anti-séisme ou AEV
 - SERRURES-GARNITURES.md : TOUJOURS consulter pour connaître la serrure et les garnitures livrées par défaut avec chaque gamme. Ne jamais laisser serrure_ref vide sans avoir vérifié ce fichier.
+
+CAS HORS CATALOGUE — traitement manuel obligatoire (ne jamais générer de prix automatique) :
+- "Chassis vitré" ou toute porte avec H < 1500 mm (1V) / H < 1890 mm (2V) : hors plage catalogue, dimensions incompatibles avec les tableaux standard. Indiquer clairement "nous consulter — devis sur mesure" et ne pas chiffrer de prix de base.
+- L > max de la gamme + H < minimum : impossible à fabriquer en standard.
+- Toute configuration signalée "hors catalogue" dans GUIDE-DEVIS.md section "Cas hors catalogue" doit déclencher une alerte explicite sans estimation de prix.
+
+CONVENTION DE LECTURE DES TABLEAUX DE PRIX (CRITIQUE) :
+- Utiliser TOUJOURS la convention PLANCHER (floor) : sélectionner le plus grand seuil ≤ à la dimension demandée.
+  Ex : H=2100 dans [1890, 2180, 2300, 2600] → utiliser H=1890.
+  Ex : L=980 dans [800, 960, 1150] → utiliser L=960.
+- Si dimension < minimum du tableau → hors catalogue.
+- Si dimension > maximum du tableau → hors catalogue (sauf avis de chantier).
+- Pour CR4+EI60 ou CR3+EI60 : la table de base est la table de la GAMME ANTI-EFFRACTION (CR4, CR3…), l'EI60 est une option en plus-value.
+- Pour CR5+EI30 ou CR5+EI60 : utiliser la table CR5EI60 (pas de table CR5EI30 séparée).
+- CR6 2 vantaux : non disponible au catalogue standard — hors catalogue.
 
 Si deux markdowns se contredisent, privilégie le markdown de la gamme principale. Signale la contradiction.
 Les fichiers transverses (GUIDE-DEVIS, BASE, EQUIP-COMMUN) sont TOUJOURS chargés pour toi — consulte-les systématiquement.

@@ -254,7 +254,7 @@ export default function Experiences() {
       </header>
 
       {/* ── Main ── */}
-      <main className="admin-main" style={{ overflow: 'visible' }}>
+      <main className="admin-main">
         {/* Intro banner */}
         <div style={{
           padding: '1rem 1.25rem',

@@ -167,6 +167,11 @@ function TableExpand({ children }) {
             .chat-md-table-expanded tr:nth-child(even) td {
               background: var(--md-table-row-alt);
             }
+            .chat-md-table-expanded th:last-child,
+            .chat-md-table-expanded td:last-child {
+              text-align: right;
+              font-variant-numeric: tabular-nums;
+            }
           `}</style>
         </>,
         document.body
