@@ -475,4 +475,83 @@ router.delete('/:id/lines/:lineId', async (req, res) => {
   }
 })
 
+// ── GET /api/devis/:id/pdf — generate Playwright PDF for a devis ───────────
+router.get('/:id/pdf', async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'ID invalide' })
+  try {
+    const [devisRows] = await db.query('SELECT * FROM devis WHERE id = ?', [id])
+    if (!devisRows.length) return res.status(404).json({ error: 'Devis introuvable' })
+    const devis = devisRows[0]
+
+    const [lines] = await db.query(
+      'SELECT * FROM devis_lines WHERE devis_id = ? ORDER BY position ASC',
+      [id]
+    )
+
+    // Lazy-load PDF builder to avoid Playwright startup on every server boot
+    const { buildDevisNexusPdf } = await import('../devis-pdf.js')
+    const { buffer, filename } = await buildDevisNexusPdf({ devis, lines })
+
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+      'Content-Length': buffer.length,
+    })
+    res.end(buffer)
+  } catch (err) {
+    console.error('devis pdf generation error:', err)
+    res.status(500).json({ error: 'Erreur génération PDF', details: err.message })
+  }
+})
+
+// ── GET /api/devis/sample-pdf — preview PDF with demo data (no auth needed for dev) ──
+router.get('/sample-pdf', async (req, res) => {
+  try {
+    const { buildDevisNexusPdf } = await import('../devis-pdf.js')
+    const devis = {
+      id: 0,
+      name: 'DEMO-2026-00',
+      deal_id: 'P26-DEMO-1B',
+      client_name: 'CLIENT DÉMO — DEMO LOGISTICS SAS',
+      total_ht: null,
+      created_at: new Date().toISOString(),
+    }
+    const lines = [
+      {
+        position: 1,
+        designation: 'NEXUS CR4 — 1 VANTAIL — H 2180 × L 960 MM',
+        gamme: 'CR4',
+        vantail: '1V',
+        hauteur_mm: 2180,
+        largeur_mm: 960,
+        total_ligne_ht: 5962,
+        options_json: JSON.stringify([]),
+        serrure_ref: 'À définir — voir GUIDE-DEVIS.md',
+      },
+      {
+        position: 2,
+        designation: 'NEXUS CR6 — 1 VANTAIL — H 2300 × L 1150 MM',
+        gamme: 'CR6',
+        vantail: '1V',
+        hauteur_mm: 2300,
+        largeur_mm: 1150,
+        total_ligne_ht: 25412,
+        options_json: JSON.stringify([{ label: 'FB7', prix: 8000 }]),
+        serrure_ref: 'À définir — voir CR6.md',
+      },
+    ]
+    const { buffer, filename } = await buildDevisNexusPdf({ devis, lines })
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `inline; filename="${filename}"`,
+      'Content-Length': buffer.length,
+    })
+    res.end(buffer)
+  } catch (err) {
+    console.error('sample pdf error:', err)
+    res.status(500).json({ error: 'Erreur génération PDF démo', details: err.message })
+  }
+})
+
 export default router
