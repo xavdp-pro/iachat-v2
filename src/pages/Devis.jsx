@@ -92,9 +92,19 @@ function Cell({ icon, label, value, highlight }) {
 }
 
 // ── Ligne de résultat (compact pour la colonne centre) ─────────────────────
-function RowCard({ row, index, active, expanded, onToggle, onSelect }) {
+function RowCard({ row, index, active, expanded, onToggle, onSelect, validation }) {
   const hasAlerts = row.alertes?.length > 0
   const alertColor = row.alertes?.some(a => a.startsWith('❌')) ? '#a33c3c' : '#a06a2c'
+
+  // Compteurs de verdicts pour la pastille en tête
+  const verdicts = validation?.verdicts || []
+  const counts = verdicts.reduce((acc, v) => {
+    acc[v.status] = (acc[v.status] || 0) + 1
+    return acc
+  }, { ok: 0, warning: 0, violation: 0, na: 0 })
+  const hasValidation = verdicts.length > 0
+  const violationCount = counts.violation || 0
+  const warningCount = counts.warning || 0
 
   return (
     <div style={{
@@ -130,6 +140,17 @@ function RowCard({ row, index, active, expanded, onToggle, onSelect }) {
           </span>
         )}
         {hasAlerts && <AlertTriangle size={13} color={alertColor} />}
+        {hasValidation && (
+          <span title={`${counts.ok} OK · ${warningCount} ⚠ · ${violationCount} ❌`}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 3,
+                  padding: '2px 6px', borderRadius: 5, fontSize: 10, fontWeight: 700,
+                  background: violationCount ? 'rgba(163,60,60,0.12)' : warningCount ? 'rgba(160,106,44,0.12)' : 'rgba(34,139,84,0.12)',
+                  color: violationCount ? '#a33c3c' : warningCount ? '#a06a2c' : '#228b54',
+                }}>
+            {violationCount ? `❌${violationCount}` : warningCount ? `⚠${warningCount}` : '✅'}
+          </span>
+        )}
         <button onClick={(e) => { e.stopPropagation(); onToggle() }} style={{ background: 'none', border: 'none', padding: 2, cursor: 'pointer', color: 'var(--color-text-3)' }}>
           {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
         </button>
@@ -151,6 +172,42 @@ function RowCard({ row, index, active, expanded, onToggle, onSelect }) {
                   {a}
                 </div>
               ))}
+            </div>
+          )}
+
+          {hasValidation && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--color-text-3)', textTransform: 'uppercase', letterSpacing: '0.05em', marginTop: 2 }}>
+                Audit règles métier ({verdicts.length})
+              </div>
+              {verdicts
+                .slice()
+                .sort((a, b) => {
+                  const order = { violation: 0, warning: 1, ok: 2, na: 3 }
+                  return (order[a.status] ?? 9) - (order[b.status] ?? 9)
+                })
+                .map((v, i) => {
+                  const palette = {
+                    violation: { bg: 'rgba(163,60,60,0.08)', fg: '#a33c3c', icon: '❌' },
+                    warning:   { bg: 'rgba(160,106,44,0.08)', fg: '#a06a2c', icon: '⚠️' },
+                    ok:        { bg: 'rgba(34,139,84,0.08)',  fg: '#228b54', icon: '✅' },
+                    na:        { bg: 'rgba(120,120,120,0.06)', fg: '#777',   icon: '➖' },
+                  }[v.status] || { bg: 'transparent', fg: '#777', icon: '?' }
+                  return (
+                    <details key={i} style={{
+                      fontSize: 11, padding: '5px 8px', borderRadius: 5,
+                      background: palette.bg, color: palette.fg,
+                      borderLeft: `3px solid ${palette.fg}`,
+                    }}>
+                      <summary style={{ cursor: 'pointer', fontWeight: 600, listStyle: 'none', display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span>{palette.icon}</span>
+                        <span style={{ flex: 1 }}>{v.rule_title || v.rule_id}</span>
+                      </summary>
+                      {v.reason && <div style={{ marginTop: 4, color: 'var(--color-text-2)', fontWeight: 400 }}>{v.reason}</div>}
+                      {v.fix && <div style={{ marginTop: 3, color: 'var(--color-text-2)', fontStyle: 'italic', fontWeight: 400 }}>→ {v.fix}</div>}
+                    </details>
+                  )
+                })}
             </div>
           )}
 
@@ -651,6 +708,38 @@ export default function Devis() {
   const fileInputRef = useRef(null)
 
   const results = activeSession?.results || []
+  const validationReport = activeSession?.validation || null
+  const [validating, setValidating] = useState(false)
+  const [validationError, setValidationError] = useState('')
+
+  const handleValidateRules = async () => {
+    if (!activeSession || results.length === 0) return
+    setValidating(true)
+    setValidationError('')
+    try {
+      const lines = results.map(r => ({
+        gamme: r.gamme,
+        vantail: r.vantail,
+        type: r.type,
+        haut_mm: r.dim_standard?.h,
+        larg_mm: r.dim_standard?.l,
+        options: r.options,
+        equip_extra: r.equip_extra,
+        serrure: r.serrure,
+        ferme_porte: r.ferme_porte,
+        garnitures: r.garnitures,
+        autres: r.autres,
+        prix_base_ht: r.prix_base_ht,
+        prix_total_min_ht: r.prix_total_min_ht,
+      }))
+      const report = await api.post('/devis/validate-lines', { lines }, { timeout: 180000 })
+      setSessions(prev => prev.map(s => (s.id === activeSession.id ? { ...s, validation: report } : s)))
+    } catch (err) {
+      setValidationError(String(err.error || err.message || err))
+    } finally {
+      setValidating(false)
+    }
+  }
 
   const [conseils, setConseils] = useState([])
   const [conseilsLoading, setConseilsLoading] = useState(false)
@@ -1016,6 +1105,33 @@ export default function Devis() {
             </button>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {validationError && (
+              <div style={{
+                fontSize: 11, padding: '6px 10px', borderRadius: 6,
+                background: 'rgba(163,60,60,0.08)', color: '#a33c3c',
+                borderLeft: '3px solid #a33c3c',
+              }}>
+                Erreur audit : {validationError}
+              </div>
+            )}
+            {validationReport && (
+              <div style={{
+                fontSize: 11, padding: '8px 10px', borderRadius: 6,
+                background: 'var(--color-surface-2, rgba(0,0,0,0.03))',
+                border: '1px solid var(--color-border)',
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+              }}>
+                <span style={{ color: 'var(--color-text-2)' }}>
+                  Audit : {validationReport.lines?.length || 0} ligne(s) × {validationReport.rules_count} règle(s)
+                </span>
+                <span style={{ display: 'flex', gap: 8, fontWeight: 700 }}>
+                  <span style={{ color: '#228b54' }}>✅ {validationReport.summary?.ok || 0}</span>
+                  <span style={{ color: '#a06a2c' }}>⚠️ {validationReport.summary?.warning || 0}</span>
+                  <span style={{ color: '#a33c3c' }}>❌ {validationReport.summary?.violation || 0}</span>
+                  <span style={{ color: '#888' }}>➖ {validationReport.summary?.na || 0}</span>
+                </span>
+              </div>
+            )}
             {results.map((row, i) => (
               <RowCard
                 key={i}
@@ -1025,6 +1141,7 @@ export default function Devis() {
                 expanded={expandedRow === i}
                 onToggle={() => setExpandedRow(expandedRow === i ? null : i)}
                 onSelect={() => selectRow(i)}
+                validation={validationReport?.lines?.[i]}
               />
             ))}
           </div>
@@ -1067,9 +1184,31 @@ export default function Devis() {
         </div>
         <div className="admin-topbar-actions">
           {results.length > 0 && (
-            <button className="admin-btn-primary" onClick={openDevis} style={{ fontSize: '0.8125rem' }}>
-              <FileText size={14} /> Générer devis
-            </button>
+            <>
+              <button
+                type="button"
+                className="admin-btn-ghost"
+                onClick={handleValidateRules}
+                disabled={validating}
+                title={validationReport ? `Audité ${validationReport.lines?.length || 0} ligne(s) — règles : ${validationReport.rules_count}` : 'Auditer chaque ligne contre les règles métier approuvées'}
+                style={{ fontSize: '0.8125rem' }}
+              >
+                {validating
+                  ? <><Loader2 size={14} className="spin" style={{ animation: 'spin 1s linear infinite' }} /> Audit…</>
+                  : <><Sparkles size={14} /> {validationReport ? 'Re-valider' : 'Auditer règles'}
+                      {validationReport && (
+                        <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700 }}>
+                          {validationReport.summary?.violation > 0 && <span style={{ color: '#a33c3c' }}>❌{validationReport.summary.violation} </span>}
+                          {validationReport.summary?.warning > 0 && <span style={{ color: '#a06a2c' }}>⚠{validationReport.summary.warning} </span>}
+                          {validationReport.summary?.violation === 0 && validationReport.summary?.warning === 0 && <span style={{ color: '#228b54' }}>✅</span>}
+                        </span>
+                      )}
+                    </>}
+              </button>
+              <button className="admin-btn-primary" onClick={openDevis} style={{ fontSize: '0.8125rem' }}>
+                <FileText size={14} /> Générer devis
+              </button>
+            </>
           )}
           <button type="button" className="admin-btn-ghost" onClick={() => navigate('/chat')}>
             <MessageCircleReply size={16} />
