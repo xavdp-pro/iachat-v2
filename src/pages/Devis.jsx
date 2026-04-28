@@ -842,6 +842,19 @@ export default function Devis() {
   useEffect(() => {
     localStorage.setItem(UI_KEY.rightWidth, String(rightWidth))
   }, [rightWidth])
+
+  // Clamp rightWidth pour qu'il reste au moins 360px de centerColumn (visible + utilisable)
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const clamp = () => {
+      const leftW = leftCollapsed ? LEFT_COLLAPSED_W : LEFT_W
+      const dynMax = Math.max(RIGHT_W_MIN, Math.min(RIGHT_W_MAX, window.innerWidth - leftW - 360 - 6))
+      setRightWidth(prev => Math.min(prev, dynMax))
+    }
+    clamp()
+    window.addEventListener('resize', clamp)
+    return () => window.removeEventListener('resize', clamp)
+  }, [leftCollapsed])
   useEffect(() => {
     localStorage.setItem(UI_KEY.bottomHeight, String(bottomHeight))
   }, [bottomHeight])
@@ -852,7 +865,9 @@ export default function Devis() {
     const startW = rightWidth
     const onMove = (ev) => {
       const delta = startX - ev.clientX
-      setRightWidth(Math.min(RIGHT_W_MAX, Math.max(RIGHT_W_MIN, startW + delta)))
+      const leftW = leftCollapsed ? LEFT_COLLAPSED_W : LEFT_W
+      const dynMax = Math.max(RIGHT_W_MIN, Math.min(RIGHT_W_MAX, window.innerWidth - leftW - 360 - 6))
+      setRightWidth(Math.min(dynMax, Math.max(RIGHT_W_MIN, startW + delta)))
     }
     const onUp = () => {
       window.removeEventListener('mousemove', onMove)
@@ -1067,7 +1082,7 @@ export default function Devis() {
   }
 
   const centerColumn = (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 360 }}>
       {analyzing ? (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, color: 'var(--color-text-3)' }}>
           <Loader2 size={22} style={{ animation: 'spin 0.8s linear infinite' }} />
