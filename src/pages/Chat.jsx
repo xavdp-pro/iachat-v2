@@ -45,6 +45,7 @@ export default function Chat() {
   const [inputMessage, setInputMessage] = useState('')
   const [pendingAttachments, setPendingAttachments] = useState([])
   const [isRecording, setIsRecording] = useState(false)
+  const [sttLoading, setSttLoading] = useState(false)
   const [ttsEnabled, setTtsEnabled] = useState(() => localStorage.getItem('tts_enabled') !== 'false')
   const [ttsPlaying, setTtsPlaying] = useState(false)
   const [copiedId, setCopiedId] = useState(null)
@@ -476,6 +477,8 @@ export default function Chat() {
     mr.onstop = async () => {
       stream.getTracks().forEach((track) => track.stop())
       setIsRecording(false)
+      if (audioChunksRef.current.length === 0) return
+      setSttLoading(true)
       const blob = new Blob(audioChunksRef.current, { type: mr.mimeType || 'audio/webm' })
       const formData = new FormData()
       formData.append('audio', blob, 'recording.webm')
@@ -490,11 +493,17 @@ export default function Chat() {
         if (data.text) {
           setInputMessage((prev) => (prev ? `${prev} ${data.text}` : data.text))
           setTimeout(autoResizeTextarea, 0)
+        } else if (data.error) {
+          alert(`Transcription échouée : ${data.error}`)
         }
-      } catch { /* ignore */ }
+      } catch (err) {
+        alert(`Erreur micro : ${err.message}`)
+      } finally {
+        setSttLoading(false)
+      }
     }
 
-    mr.start()
+    mr.start(250)
     mediaRecorderRef.current = mr
     setIsRecording(true)
   }, [isRecording, t])
@@ -1010,6 +1019,7 @@ export default function Chat() {
                   placeholder={composerPlaceholder}
                   isRecording={isRecording}
                   toggleMic={toggleMic}
+                  sttLoading={sttLoading}
                   ttsEnabled={ttsEnabled}
                   ttsPlaying={ttsPlaying}
                   toggleTts={toggleTts}
@@ -1248,6 +1258,7 @@ export default function Chat() {
                   placeholder={t('chat.messagePlaceholder')}
                   isRecording={isRecording}
                   toggleMic={toggleMic}
+                  sttLoading={sttLoading}
                   ttsEnabled={ttsEnabled}
                   ttsPlaying={ttsPlaying}
                   toggleTts={toggleTts}
@@ -1662,7 +1673,7 @@ function ComposerField({
   onComposerPaste, onFileInputChange, onComposerKeyDown,
   handleSendMessage, autoResizeTextarea,
   canSend, loading, disabled, placeholder,
-  isRecording, toggleMic,
+  isRecording, toggleMic, sttLoading,
   ttsEnabled, ttsPlaying, toggleTts,
   t, setLightboxSrc,
 }) {
@@ -1744,12 +1755,14 @@ function ComposerField({
           </button>
           <button
             type="button"
-            className={`chat-composer-tool-btn ${isRecording ? 'chat-composer-tool-btn--recording' : ''}`}
-            disabled={disabled}
-            aria-label={isRecording ? t('chat.stopRecording') : t('chat.startRecording')}
+            className={`chat-composer-tool-btn ${isRecording ? 'chat-composer-tool-btn--recording' : ''} ${sttLoading ? 'chat-composer-tool-btn--stt-loading' : ''}`}
+            disabled={disabled || sttLoading}
+            aria-label={sttLoading ? 'Transcription…' : isRecording ? t('chat.stopRecording') : t('chat.startRecording')}
             onClick={() => { toggleMic(); }}
           >
-            {isRecording ? <MicOff size={17} strokeWidth={2} /> : <Mic size={17} strokeWidth={2} />}
+            {sttLoading
+              ? <span className="chat-composer-tool-spinner" aria-hidden="true" />
+              : isRecording ? <MicOff size={17} strokeWidth={2} /> : <Mic size={17} strokeWidth={2} />}
           </button>
           <button
             type="button"

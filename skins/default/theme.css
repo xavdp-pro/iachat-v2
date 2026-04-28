@@ -1420,6 +1420,26 @@ textarea::placeholder {
   50%       { opacity: 0.5; }
 }
 
+.chat-composer-tool-btn--stt-loading {
+  color: var(--color-primary);
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.chat-composer-tool-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: stt-spin 0.7s linear infinite;
+}
+
+@keyframes stt-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* ── Attachment preview chips in composer ── */
 .chat-composer-chips {
   display: flex;
