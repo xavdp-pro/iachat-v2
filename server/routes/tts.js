@@ -82,31 +82,15 @@ router.post('/synthesize', authenticate, async (req, res) => {
 
 /**
  * POST /api/tts/stt
- * Proxifie l'audio vers faster-whisper et retourne la transcription.
+ * Transcrit l'audio via Gemma 4 (vLLM local).
  * Corps : multipart/form-data avec le champ "audio" (blob audio WebM/WAV).
  */
 router.post('/stt', authenticate, upload.single('audio'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Fichier audio requis.' })
-
   try {
-    const formData = new FormData()
-    formData.append(
-      'file',
-      new Blob([req.file.buffer], { type: req.file.mimetype || 'audio/webm' }),
-      req.file.originalname || 'audio.webm',
-    )
-
-    const sttRes = await fetch(`${STT_BASE}/stt`, { method: 'POST', body: formData })
-    if (!sttRes.ok) {
-      const errText = await sttRes.text()
-      return res.status(sttRes.status).json({ error: errText })
-    }
-    const data = await sttRes.json()
-    res.json({
-      text: data.text || '',
-      language: data.language || null,
-      duration: data.duration || null,
-    })
+    const { transcribeWithGemma } = await import('../services/stt-gemma.js')
+    const text = await transcribeWithGemma(req.file.buffer, req.file.mimetype || 'audio/webm')
+    res.json({ text, language: 'fr', duration: null })
   } catch (err) {
     res.status(502).json({ error: `Service STT indisponible : ${err.message}` })
   }

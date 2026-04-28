@@ -68,6 +68,8 @@ export default function Chat() {
   const speechRef = useRef(null)
   const mediaRecorderRef = useRef(null)
   const audioChunksRef = useRef([])
+  const vadIntervalRef = useRef(null)
+  const isRecordingRef = useRef(false)
   const ttsAudioRef = useRef(null)
   const prevStreamingRef = useRef(false)
   const ttsQueueRef = useRef([])
@@ -439,11 +441,56 @@ export default function Chat() {
     addFilesAsAttachments(imageItems.map((it) => it.getAsFile()))
   }, [addFilesAsAttachments])
 
-  // ── Microphone / STT (faster-whisper) ─────────────────────────────────────
+  // ── Microphone / STT Gemma 4 (VAD temps réel) ────────────────────────────
+  //
+  // Principe :
+  //  1. AnalyserNode surveille le niveau sonore toutes les 80ms
+  //  2. Dès qu'un silence ≥ VAD_SILENCE_MS est détecté APRÈS une phrase,
+  //     on coupe le MediaRecorder → onstop envoie le segment à Gemma 4
+  //     → texte ajouté progressivement dans l'input
+  //  3. Un nouveau MediaRecorder repart immédiatement pour la phrase suivante
+  //  4. Cliquer à nouveau sur le bouton arrête tout proprement
+
+  const VAD_SILENCE_MS  = 900   // silence (ms) déclenchant la segmentation
+  const VAD_MIN_SPEECH_MS = 300 // durée min de parole pour envoyer le segment
+  const VAD_THRESHOLD   = 12    // niveau RMS (0-255) sous lequel = silence
+
+  /** Envoie un Blob audio à /api/tts/stt (Gemma 4) et appende le résultat */
+  const sendSegment = useCallback(async (blob) => {
+    if (!blob || blob.size < 1000) return          // trop court = bruit
+    setSttLoading(true)
+    const formData = new FormData()
+    formData.append('audio', blob, 'segment.webm')
+    try {
+      const token = localStorage.getItem('token') || ''
+      const resp = await fetch('/api/tts/stt', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      })
+      const data = await resp.json()
+      if (data.text?.trim()) {
+        setInputMessage((prev) => {
+          const sep = prev && !prev.endsWith(' ') ? ' ' : ''
+          return prev ? `${prev}${sep}${data.text}` : data.text
+        })
+        setTimeout(autoResizeTextarea, 0)
+      }
+    } catch {
+      /* silencieux — on ne coupe pas l'enregistrement pour une erreur réseau */
+    } finally {
+      setSttLoading(false)
+    }
+  }, [autoResizeTextarea])
 
   const toggleMic = useCallback(async () => {
+    // ── STOP ──
     if (isRecording) {
-      mediaRecorderRef.current?.stop()
+      clearInterval(vadIntervalRef.current)
+      vadIntervalRef.current = null
+      isRecordingRef.current = false
+      mediaRecorderRef.current?.stop()   // déclenchera onstop → dernier segment
+      setIsRecording(false)
       return
     }
 
@@ -462,51 +509,93 @@ export default function Chat() {
       return
     }
 
-    audioChunksRef.current = []
+    setIsRecording(true)
+    isRecordingRef.current = true
+
     const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
       ? 'audio/webm;codecs=opus'
       : MediaRecorder.isTypeSupported('audio/webm')
       ? 'audio/webm'
       : ''
-    const mr = new MediaRecorder(stream, mimeType ? { mimeType } : {})
 
-    mr.ondataavailable = (e) => {
-      if (e.data.size > 0) audioChunksRef.current.push(e.data)
-    }
+    // ── AudioContext pour le VAD ──
+    const audioCtx   = new (window.AudioContext || window.webkitAudioContext)()
+    const source     = audioCtx.createMediaStreamSource(stream)
+    const analyser   = audioCtx.createAnalyser()
+    analyser.fftSize = 256
+    source.connect(analyser)
+    const buf = new Uint8Array(analyser.frequencyBinCount)
 
-    mr.onstop = async () => {
-      stream.getTracks().forEach((track) => track.stop())
-      setIsRecording(false)
-      if (audioChunksRef.current.length === 0) return
-      setSttLoading(true)
-      const blob = new Blob(audioChunksRef.current, { type: mr.mimeType || 'audio/webm' })
-      const formData = new FormData()
-      formData.append('audio', blob, 'recording.webm')
-      try {
-        const token = localStorage.getItem('token') || ''
-        const resp = await fetch('/api/tts/stt', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}` },
-          body: formData,
-        })
-        const data = await resp.json()
-        if (data.text) {
-          setInputMessage((prev) => (prev ? `${prev} ${data.text}` : data.text))
-          setTimeout(autoResizeTextarea, 0)
-        } else if (data.error) {
-          alert(`Transcription échouée : ${data.error}`)
-        }
-      } catch (err) {
-        alert(`Erreur micro : ${err.message}`)
-      } finally {
-        setSttLoading(false)
+    let silenceStart   = null   // timestamp début du silence courant
+    let speechStart    = null   // timestamp début de la phrase courante
+    let currentChunks  = []     // chunks du segment courant
+
+    /** Démarre un nouveau MediaRecorder pour capter la prochaine phrase */
+    function startSegmentRecorder() {
+      const mr = new MediaRecorder(stream, mimeType ? { mimeType } : {})
+      currentChunks = []
+
+      mr.ondataavailable = (e) => {
+        if (e.data.size > 0) currentChunks.push(e.data)
       }
+
+      mr.onstop = () => {
+        const blob = new Blob(currentChunks, { type: mr.mimeType || 'audio/webm' })
+        const duration = speechStart ? (Date.now() - speechStart) : 0
+        if (duration >= VAD_MIN_SPEECH_MS) {
+          sendSegment(blob)
+        }
+        speechStart  = null
+        silenceStart = null
+      }
+
+      mr.start(100)
+      mediaRecorderRef.current = mr
     }
 
-    mr.start(250)
-    mediaRecorderRef.current = mr
-    setIsRecording(true)
-  }, [isRecording, t])
+    startSegmentRecorder()
+
+    // ── Boucle VAD ──
+    vadIntervalRef.current = setInterval(() => {
+      analyser.getByteFrequencyData(buf)
+      const rms = buf.reduce((s, v) => s + v, 0) / buf.length
+
+      if (rms > VAD_THRESHOLD) {
+        // Voix détectée
+        if (!speechStart) speechStart = Date.now()
+        silenceStart = null
+      } else {
+        // Silence
+        if (!silenceStart) silenceStart = Date.now()
+        const silenceDuration = Date.now() - silenceStart
+
+        // Silence assez long après de la parole → segmenter
+        if (speechStart && silenceDuration >= VAD_SILENCE_MS) {
+          const mr = mediaRecorderRef.current
+          if (mr && mr.state === 'recording') {
+            mr.stop()             // déclenche onstop → sendSegment
+            // Redémarre immédiatement pour la prochaine phrase
+            setTimeout(() => {
+              if (isRecordingRef.current) {
+                startSegmentRecorder()
+              }
+            }, 80)
+          }
+        }
+      }
+    }, 80)
+
+    // Nettoyage quand le stream s'arrête (ex. navigateur coupe le micro)
+    stream.getAudioTracks()[0].addEventListener('ended', () => {
+      clearInterval(vadIntervalRef.current)
+      vadIntervalRef.current = null
+      isRecordingRef.current = false
+      audioCtx.close().catch(() => {})
+      stream.getTracks().forEach((t) => t.stop())
+      setIsRecording(false)
+    })
+
+  }, [isRecording, sendSegment, t])
 
   // ── TTS (Kokoro) ───────────────────────────────────────────────────────────
 
