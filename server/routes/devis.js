@@ -158,11 +158,27 @@ router.post('/ask', async (req, res) => {
 
   const context = mdParts.join('\n\n---\n\n')
 
-  // Inject approved commercial experiences from knowledge base
-  // Augmenter topK si la question porte explicitement sur les expériences terrain
+  // ── Règles métier : chargement SYSTÉMATIQUE (toujours injectées, indépendamment de la question) ──
+  // Les règles métier approuvées s'appliquent à CHAQUE analyse — ne pas les filtrer par similarité.
+  let mandatoryRulesBlock = ''
+  try {
+    const [rulesRows] = await db.query(
+      `SELECT id, title, content, category FROM experiences WHERE status = 'approved' AND category = 'Règle métier' ORDER BY id ASC`
+    )
+    if (rulesRows.length) {
+      mandatoryRulesBlock =
+        `\n\n[RÈGLES MÉTIER APPROUVÉES — À APPLIQUER SYSTÉMATIQUEMENT SUR CHAQUE LIGNE :]\n` +
+        `Ces règles s'appliquent à TOUTES les analyses, sans exception. Vérifie chacune d'elles pour chaque porte.\n` +
+        rulesRows.map((r, i) => `${i + 1}. [${r.category}] ${r.title}\n${r.content}`).join('\n\n')
+    }
+  } catch { /* non-bloquant */ }
+
+  // ── Expériences terrain : recherche sémantique (contexte-dépendant) ──
   const expKeywords = /expérience|commercial|précédent|collègue|équipe|terrain|cas vécu|autre(s)? commercial|ont traité|ont fait/i
-  const expTopK = expKeywords.test(question) ? 8 : 3
-  const expHits = await searchExperiences({ text: question, topK: expTopK }).catch(() => [])
+  const expTopK = expKeywords.test(question) ? 8 : 5
+  const expHitsRaw = await searchExperiences({ text: question, topK: expTopK }).catch(() => [])
+  // Exclure les règles métier déjà injectées ci-dessus (éviter doublons)
+  const expHits = expHitsRaw.filter(h => h.category !== 'Règle métier')
   const expBlock = expHits.length
     ? `\n\n[EXPÉRIENCES TERRAIN — PRIORITÉ ABSOLUE SUR LA DOCUMENTATION :]\nSi une expérience terrain contredit ou précise le tarif standard, la règle terrain prime. Mentionne explicitement que tu appliques une règle métier ("D'après nos expériences commerciales...").\n` +
     expHits.map((h, i) => `${i + 1}. [${h.category || 'Général'}] ${h.title} — ${h.excerpt || ''}`).join('\n')
@@ -216,7 +232,7 @@ CONVENTION DE LECTURE DES TABLEAUX DE PRIX (CRITIQUE) :
 
 Si deux markdowns se contredisent, privilégie le markdown de la gamme principale. Signale la contradiction.
 Les fichiers transverses (GUIDE-DEVIS, BASE, EQUIP-COMMUN) sont TOUJOURS chargés pour toi — consulte-les systématiquement.
-${context ? `\n\nBase documentaire NEXUS 2026 mise à disposition (${loadedDocs.length} fichiers : ${loadedDocs.join(', ')}) :\n\n${context}` : ''}${expBlock}
+${context ? `\n\nBase documentaire NEXUS 2026 mise à disposition (${loadedDocs.length} fichiers : ${loadedDocs.join(', ')}) :\n\n${context}` : ''}${mandatoryRulesBlock}${expBlock}
 Réponds en français de façon structurée et professionnelle. Si une information manque ou est incohérente, indique-le clairement.`
 
   const userContent = (() => {
