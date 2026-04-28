@@ -147,6 +147,16 @@ export async function ensureDbSchema() {
     `)
     console.log('✅ DB: devis table ready')
 
+    // ── devis.validation_json (idempotent patch) ──────────────────────────
+    const [validationCols] = await db.query(
+      `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'devis' AND COLUMN_NAME = 'validation_json'`
+    )
+    if (!validationCols.length) {
+      await db.query('ALTER TABLE devis ADD COLUMN validation_json JSON DEFAULT NULL')
+      console.log('✅ DB: devis.validation_json column added')
+    }
+
     // ── devis_lines (individual quote line items) ───────────────────────
     await db.query(`
       CREATE TABLE IF NOT EXISTS devis_lines (

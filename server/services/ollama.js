@@ -138,12 +138,13 @@ export async function listModels() {
  * @param {AbortSignal} [opts.signal]
  * @returns {Promise<string>} assistant text
  */
-export async function chatCompletion({ model, messages, signal }) {
+export async function chatCompletion({ model, messages, signal, responseFormat, temperature, maxTokens }) {
   const url = `${baseUrl()}/v1/chat/completions`
-  const body = JSON.stringify({
-    model,
-    messages,
-  })
+  const payload = { model, messages }
+  if (responseFormat) payload.response_format = responseFormat
+  if (typeof temperature === 'number') payload.temperature = temperature
+  if (typeof maxTokens === 'number') payload.max_tokens = maxTokens
+  const body = JSON.stringify(payload)
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

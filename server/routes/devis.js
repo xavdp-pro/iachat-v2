@@ -163,11 +163,11 @@ router.post('/ask', async (req, res) => {
   let mandatoryRulesBlock = ''
   try {
     const [rulesRows] = await db.query(
-      `SELECT id, title, content, category FROM experiences WHERE status = 'approved' AND category = 'Règle métier' ORDER BY id ASC`
+      `SELECT id, title, content, category FROM experiences WHERE status = 'approved' AND category IN ('Règle métier', 'Chiffrage') ORDER BY id ASC`
     )
     if (rulesRows.length) {
       mandatoryRulesBlock =
-        `\n\n[RÈGLES MÉTIER APPROUVÉES — À APPLIQUER SYSTÉMATIQUEMENT SUR CHAQUE LIGNE :]\n` +
+        `\n\n[RÈGLES MÉTIER ET CHIFFRAGE APPROUVÉES — À APPLIQUER SYSTÉMATIQUEMENT SUR CHAQUE LIGNE :]\n` +
         `Ces règles s'appliquent à TOUTES les analyses, sans exception. Vérifie chacune d'elles pour chaque porte.\n` +
         rulesRows.map((r, i) => `${i + 1}. [${r.category}] ${r.title}\n${r.content}`).join('\n\n')
     }
@@ -178,7 +178,7 @@ router.post('/ask', async (req, res) => {
   const expTopK = expKeywords.test(question) ? 8 : 5
   const expHitsRaw = await searchExperiences({ text: question, topK: expTopK }).catch(() => [])
   // Exclure les règles métier déjà injectées ci-dessus (éviter doublons)
-  const expHits = expHitsRaw.filter(h => h.category !== 'Règle métier')
+  const expHits = expHitsRaw.filter(h => !['Règle métier', 'Chiffrage'].includes(h.category))
   const expBlock = expHits.length
     ? `\n\n[EXPÉRIENCES TERRAIN — PRIORITÉ ABSOLUE SUR LA DOCUMENTATION :]\nSi une expérience terrain contredit ou précise le tarif standard, la règle terrain prime. Mentionne explicitement que tu appliques une règle métier ("D'après nos expériences commerciales...").\n` +
     expHits.map((h, i) => `${i + 1}. [${h.category || 'Général'}] ${h.title} — ${h.excerpt || ''}`).join('\n')
@@ -318,7 +318,7 @@ router.post('/', async (req, res) => {
 
 // PUT /api/devis/:id — update devis header
 router.put('/:id', async (req, res) => {
-  const allowed = ['deal_id', 'company_id', 'client_name', 'name', 'status', 'source_file', 'analysis_json', 'total_ht', 'pdf_path', 'hubspot_note_id']
+  const allowed = ['deal_id', 'company_id', 'client_name', 'name', 'status', 'source_file', 'analysis_json', 'validation_json', 'total_ht', 'pdf_path', 'hubspot_note_id']
   const sets = []
   const vals = []
   for (const key of allowed) {
@@ -567,6 +567,88 @@ router.get('/sample-pdf', async (req, res) => {
   } catch (err) {
     console.error('sample pdf error:', err)
     res.status(500).json({ error: 'Erreur génération PDF démo', details: err.message })
+  }
+})
+
+// ── POST /api/devis/:id/validate-rules ──────────────────────────────────────
+// Audite chaque ligne du devis contre TOUTES les règles métier approuvées.
+// Pour chaque (ligne, règle) → verdict { status, reason, fix } via Gemma 4.
+router.post('/:id/validate-rules', async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'ID invalide' })
+  try {
+    const { validateDevis } = await import('../services/rules-validator.js')
+    const report = await validateDevis({ devisId: id })
+
+    // Persister le rapport dans devis.validation_json (si la colonne existe)
+    try {
+      await db.query('UPDATE devis SET validation_json = ? WHERE id = ?', [JSON.stringify(report), id])
+    } catch { /* colonne absente → ignorer, on retourne quand même le rapport */ }
+
+    res.json(report)
+  } catch (err) {
+    console.error('validate-rules error:', err)
+    res.status(500).json({ error: 'Erreur validation des règles', details: err.message })
+  }
+})
+
+// ── POST /api/devis/validate-lines ──────────────────────────────────────────
+// Variante stateless : audit d'un tableau de lignes fourni dans le body
+// (pratique juste après /analyze, avant persistance en DB).
+// Body : { lines: [...] }
+router.post('/validate-lines', async (req, res) => {
+  const { lines } = req.body
+  if (!Array.isArray(lines) || !lines.length) {
+    return res.status(400).json({ error: 'lines array required' })
+  }
+  try {
+    const { loadApprovedRules, validateLine } = await import('../services/rules-validator.js')
+    const rules = await loadApprovedRules()
+    if (!rules.length) {
+      return res.json({ rules_count: 0, lines: [], summary: { ok: 0, warning: 0, violation: 0, na: 0 } })
+    }
+    const model = await getGlobalOllamaModel()
+    const summary = { ok: 0, warning: 0, violation: 0, na: 0 }
+    const results = []
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i]
+      // Adapter le format /analyze → format DB attendu par validateLine
+      const lineLike = {
+        id: l.id ?? null,
+        position: l.position ?? i,
+        designation: l.designation || l.type || null,
+        type_porte: l.type || null,
+        gamme: l.gamme || null,
+        vantail: l.vantail || null,
+        hauteur_mm: l.haut_mm || l.hauteur_mm || null,
+        largeur_mm: l.larg_mm || l.largeur_mm || null,
+        prix_base_ht: l.prix_base_ht ?? null,
+        options_json: l.options ?? null,
+        serrure_ref: l.serrure?.ref ?? null,
+        ferme_porte_ref: l.ferme_porte?.ref ?? null,
+        equipements_json: l.equip_extra ?? null,
+        alertes_json: l.alertes ?? null,
+        total_ligne_ht: l.prix_total_min_ht ?? null,
+      }
+      const verdicts = await validateLine({ line: lineLike, rules, model }).catch(() => [])
+      for (const v of verdicts) summary[v.status] = (summary[v.status] || 0) + 1
+      results.push({
+        position: lineLike.position,
+        designation: lineLike.designation,
+        gamme: lineLike.gamme,
+        vantail: lineLike.vantail,
+        verdicts,
+      })
+    }
+    res.json({
+      generated_at: new Date().toISOString(),
+      rules_count: rules.length,
+      lines: results,
+      summary,
+    })
+  } catch (err) {
+    console.error('validate-lines error:', err)
+    res.status(500).json({ error: 'Erreur validation', details: err.message })
   }
 })
 
