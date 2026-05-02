@@ -1,11 +1,14 @@
 /**
  * /api/devis — Analyse Excel NEXUS + assistant Gemma + CRUD devis/lines
  *
- * POST /api/devis/conseils — session + résultats → conseils (expériences)
- * POST /api/devis/analyze   — upload .xlsx → exécute detect_nexus.py → retourne JSON
- * POST /api/devis/ask       — question Gemma avec contexte markdowns + lignes devis
- * CRUD /api/devis            — devis headers
- * CRUD /api/devis/:id/lines  — devis line items
+ * POST /api/devis/conseils     — session + résultats → conseils (expériences)
+ * POST /api/devis/analyze      — upload .xlsx → exécute detect_nexus.py → retourne JSON
+ * POST /api/devis/ask          — question Gemma avec contexte markdowns + lignes devis
+ * GET  /api/devis/types-options — liste des types depuis knowledge_tables.json
+ * POST /api/devis/recompute-row — recalcule une ligne via detect_nexus.py --recompute
+ * POST /api/devis/parse-line   — parse texte libre → _raw[17] via Gemma 4 (vLLM)
+ * CRUD /api/devis              — devis headers
+ * CRUD /api/devis/:id/lines   — devis line items
  */
 import { Router } from 'express'
 import { authenticate } from '../middleware/auth.js'
@@ -86,6 +89,154 @@ router.post('/analyze', (req, res, next) => {
   } finally {
     unlink(inPath).catch(() => { })
     unlink(outPath).catch(() => { })
+  }
+})
+
+// ── GET /api/devis/types-options ────────────────────────────────────────────
+// Retourne la liste des "types" (combinaison VL + gamme) lus depuis knowledge_tables.json
+router.get('/types-options', async (_req, res) => {
+  try {
+    const { readFile } = await import('node:fs/promises')
+    const path = await import('node:path')
+    const ktPath = path.join(XLSX_DIR, 'knowledge_tables.json')
+    const raw = await readFile(ktPath, 'utf8')
+    const data = JSON.parse(raw)
+    const tables = data?.tables_prix || data?.tables || data || {}
+    const opts = []
+    for (const key of Object.keys(tables)) {
+      // Format clés: "<gamme>|<vl>"  ex: "CR4|1V", "CR4|2V", "CR4|Chassis", "BLAST|Chassis"
+      const [gamme, vl] = key.split('|')
+      if (!gamme || !vl) continue
+      const isChassis = /^chassis$/i.test(vl)
+      const isGuichet = /^guichet/i.test(vl)
+      let label
+      if (isChassis) label = `Chassis ${gamme}`
+      else if (isGuichet) label = `Guichet ${gamme}`
+      else label = `BP ${vl} ${gamme}` // ex: BP 1V CR4
+      opts.push({ value: label, label, gamme, vl })
+    }
+    // Tri stable: BP avant Chassis avant Guichet, par gamme
+    const order = (o) => (o.label.startsWith('BP ') ? 0 : o.label.startsWith('Chassis') ? 1 : 2)
+    opts.sort((a, b) => order(a) - order(b) || a.label.localeCompare(b.label, 'fr'))
+    // Dédoublonnage par label
+    const seen = new Set()
+    const uniq = opts.filter(o => seen.has(o.label) ? false : (seen.add(o.label), true))
+    res.json({ options: uniq })
+  } catch (err) {
+    res.status(500).json({ error: 'Erreur types-options', details: err.message })
+  }
+})
+
+// ── POST /api/devis/recompute-row ───────────────────────────────────────────
+// body: { row: [16 cols] } — recalcule une ligne en passant par detect_nexus.py --recompute
+router.post('/recompute-row', async (req, res) => {
+  const rowArr = req.body?.row
+  if (!Array.isArray(rowArr)) return res.status(400).json({ error: 'row (array) requis' })
+  try {
+    const { spawn } = await import('node:child_process')
+    const child = spawn('python3', [SCRIPT, '--recompute'], { cwd: XLSX_DIR })
+    let stdout = '', stderr = ''
+    child.stdout.on('data', d => { stdout += d.toString() })
+    child.stderr.on('data', d => { stderr += d.toString() })
+    child.stdin.write(JSON.stringify({ row: rowArr }))
+    child.stdin.end()
+    const exitCode = await new Promise(resolve => child.on('close', resolve))
+    if (exitCode !== 0) {
+      return res.status(500).json({ error: 'detect_nexus.py a échoué', details: stderr || stdout })
+    }
+    // Le script écrit info + JSON sur stdout ; on prend la dernière ligne JSON
+    const lines = stdout.trim().split('\n').filter(Boolean)
+    const lastLine = lines[lines.length - 1] || '{}'
+    const result = JSON.parse(lastLine)
+    res.json({ result })
+  } catch (err) {
+    res.status(500).json({ error: 'Erreur recompute', details: err.message })
+  }
+})
+
+// ── POST /api/devis/parse-line ───────────────────────────────────────────────
+// body: { text: string }
+// Retourne: { raw: [17 valeurs], parsed: { type, larg_mm, haut_mm, rc, pb, cf, ... } }
+// Gemma 4 (vLLM) parse le texte libre → JSON _raw
+router.post('/parse-line', async (req, res) => {
+  const text = req.body?.text?.trim()
+  if (!text) return res.status(400).json({ error: 'text requis' })
+  const model = process.env.OLLAMA_MODEL || 'google/gemma-4-E2B-it'
+  const systemPrompt = `Tu es un assistant spécialisé dans les portes coupe-feu/anti-effraction NEXUS.
+Tu dois extraire depuis une description libre les champs d'une ligne de devis et retourner UNIQUEMENT un objet JSON valide, sans texte autour.
+
+Format JSON attendu (toutes les clés présentes, null si absent):
+{
+  "type": "<ex: BP 1V, BP 2V, Chassis CR4, Guichet CR4>",
+  "larg_mm": <largeur en mm entier ou null>,
+  "haut_mm": <hauteur en mm entier ou null>,
+  "rc": "<CR3|CR4|CR5|CR6 ou null>",
+  "pb": "<FB4|FB5|FB6|FB7 ou null>",
+  "cf": "<EI30|EI60|EI120 ou null>",
+  "blast": "<2t/m²|4t/m²|5t/m² ou null>",
+  "belier": "<Bélier ou null>",
+  "prison": "<Prison ou null>",
+  "tornade": null,
+  "seisme": null,
+  "aev": null,
+  "serrure": "<libellé serrure ou null>",
+  "garn_int": "<libellé garniture intérieure ou null>",
+  "garn_ext": "<libellé garniture extérieure ou null>",
+  "fp": "<finition peinture ex: RAL 7016 ou null>",
+  "autres": "<autres équipements, RAL si thermolaquage, ou null>"
+}
+
+Règles:
+- Les dimensions peuvent être données comme "1300x2100", "H=2100 L=1300", "1300 2100" → larg=1300, haut=2100
+- "CR4", "FB4", "EI60" peuvent être dans la description principale
+- Si la gamme est dans le type (ex "BP 1V CR4"), ne la duplique pas dans rc
+- "thermolaquage", "TL", "RAL XXXX" → mettre dans autres
+- Réponds UNIQUEMENT avec le JSON, aucun commentaire, aucun markdown`
+
+  try {
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), 30000)
+    const raw = await chatCompletion({
+      model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: text },
+      ],
+      temperature: 0.1,
+      maxTokens: 512,
+      signal: ctrl.signal,
+    }).finally(() => clearTimeout(timer))
+
+    // Extrait le JSON (parfois Gemma entoure avec ```)
+    const jsonMatch = raw.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) return res.status(422).json({ error: 'Gemma n\'a pas retourné de JSON', raw })
+    const parsed = JSON.parse(jsonMatch[0])
+
+    // Construit le _raw[17] dans l'ordre attendu par detect_nexus.py
+    const rowArr = [
+      parsed.type || null,   // 0
+      parsed.larg_mm != null ? Number(parsed.larg_mm) : null, // 1
+      parsed.haut_mm != null ? Number(parsed.haut_mm) : null, // 2
+      parsed.rc || null,  // 3
+      parsed.pb || null,  // 4
+      parsed.cf || null,  // 5
+      parsed.blast || null,  // 6
+      parsed.belier || null,  // 7
+      parsed.prison || null,  // 8
+      parsed.tornade || null,  // 9
+      parsed.seisme || null,  // 10
+      parsed.aev || null,  // 11
+      parsed.serrure || null,  // 12
+      parsed.garn_int || null,  // 13
+      parsed.garn_ext || null,  // 14
+      parsed.fp || null,  // 15
+      parsed.autres || null,  // 16
+    ]
+
+    res.json({ parsed, row: rowArr })
+  } catch (err) {
+    if (err.name === 'AbortError') return res.status(504).json({ error: 'Timeout vLLM (30s)' })
+    res.status(500).json({ error: 'Erreur parse-line', details: err.message })
   }
 })
 

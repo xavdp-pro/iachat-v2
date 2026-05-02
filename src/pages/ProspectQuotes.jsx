@@ -149,7 +149,16 @@ function RowCard({ row, index, active, expanded, onToggle, onSelect }) {
         )}
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            <Cell icon={<Package size={11} />} label="Prix base" value={prixFmt(row.prix_base_ht) ?? '→ hors catalogue'} />
+            <Cell icon={<Package size={11} />} label="Prix base" value={
+              <span>
+                {prixFmt(row.prix_base_ht) ?? '→ hors catalogue'}
+                {row.ref_base && (
+                  <span style={{ marginLeft: 8, padding: '1px 5px', borderRadius: 3, background: 'rgba(255,210,80,0.13)', border: '1px solid rgba(255,200,50,0.35)', fontSize: 10, fontWeight: 700, color: 'var(--color-text-2)' }}>
+                    réf. {row.ref_base}
+                  </span>
+                )}
+              </span>
+            } />
             {row.options?.length > 0 && (
               <Cell icon={<Euro size={11} />} label="Options" value={
                 row.options.map(o => `${o.label}${o.prix != null ? ` +${o.prix.toLocaleString('fr-FR')}€` : ''}`).join(' · ')

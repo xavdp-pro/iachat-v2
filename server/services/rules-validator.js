@@ -38,6 +38,7 @@ function buildPrompt(line, rules) {
     hauteur_mm: line.hauteur_mm,
     largeur_mm: line.largeur_mm,
     prix_base_ht: line.prix_base_ht,
+    ref_base: line.ref_base,
     options: safeJson(line.options_json),
     serrure_ref: line.serrure_ref,
     ferme_porte_ref: line.ferme_porte_ref,

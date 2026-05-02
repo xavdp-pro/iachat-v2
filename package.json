@@ -22,8 +22,10 @@
     "test:hubspot:crm": "node scripts/test-hubspot-crm.mjs"
   },
   "dependencies": {
+    "@google/genai": "^1.50.1",
     "@qdrant/js-client-rest": "^1.17.0",
     "@tailwindcss/vite": "^4.2.2",
+    "@tanstack/react-table": "^8.21.3",
     "axios": "^1.14.0",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
@@ -43,6 +45,7 @@
     "react-i18next": "^17.0.1",
     "react-markdown": "^10.1.0",
     "react-router-dom": "^7.13.2",
+    "react-select": "^5.10.2",
     "remark-gfm": "^4.0.1",
     "sharp": "^0.34.5",
     "tailwindcss": "^4.2.2",

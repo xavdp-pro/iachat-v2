@@ -134,11 +134,20 @@ function RowCard({ row, index, active, expanded, onToggle, onSelect, validation 
         <span style={{ fontSize: '11px', color: 'var(--color-text-3)', whiteSpace: 'nowrap' }}>
           H{row.dim_standard?.h ?? '?'} × L{row.dim_standard?.l ?? '?'}
         </span>
-        {row.prix_base_ht != null && (
-          <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-text)', whiteSpace: 'nowrap' }}>
-            {prixFmt(row.prix_total_min_ht ?? row.prix_base_ht)} HT
-          </span>
-        )}
+        {row.prix_base_ht != null && (() => {
+          const base = row.prix_base_ht || 0
+          const pv = (row.options || []).reduce((s, o) => s + (o.prix || 0), 0)
+          const total = row.prix_total_min_ht ?? (base + pv)
+          return (
+            <span style={{ display: 'flex', alignItems: 'baseline', gap: 6, whiteSpace: 'nowrap', fontSize: 11 }}>
+              <span title="Prix de base" style={{ color: 'var(--color-text-2)' }}>{prixFmt(base)}</span>
+              <span style={{ color: 'var(--color-text-3)' }}>+</span>
+              <span title="Plus-values (options détectées)" style={{ color: pv > 0 ? '#a06a2c' : 'var(--color-text-3)' }}>{prixFmt(pv)}</span>
+              <span style={{ color: 'var(--color-text-3)' }}>=</span>
+              <span title="Prix total HT" style={{ fontWeight: 700, fontSize: 12, color: 'var(--color-text)' }}>{prixFmt(total)} HT</span>
+            </span>
+          )
+        })()}
         {hasAlerts && <AlertTriangle size={13} color={alertColor} />}
         {hasValidation && (
           <span title={`${counts.ok} OK · ${warningCount} ⚠ · ${violationCount} ❌`}
@@ -212,7 +221,16 @@ function RowCard({ row, index, active, expanded, onToggle, onSelect, validation 
           )}
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
-            <Cell icon={<Package size={11} />} label="Prix base" value={prixFmt(row.prix_base_ht) ?? '→ hors catalogue'} />
+            <Cell icon={<Package size={11} />} label="Prix base" value={
+              <span>
+                {prixFmt(row.prix_base_ht) ?? '→ hors catalogue'}
+                {row.ref_base && (
+                  <span style={{ marginLeft: 8, padding: '1px 5px', borderRadius: 3, background: 'rgba(255,210,80,0.13)', border: '1px solid rgba(255,200,50,0.35)', fontSize: 10, fontWeight: 700, color: 'var(--color-text-2)' }}>
+                    réf. {row.ref_base}
+                  </span>
+                )}
+              </span>
+            } />
             {row.options?.length > 0 && (
               <Cell icon={<Euro size={11} />} label="Options" value={
                 row.options.map(o => `${o.label}${o.prix != null ? ` +${o.prix.toLocaleString('fr-FR')}€` : ''}`).join(' · ')
@@ -730,6 +748,7 @@ export default function Devis() {
         garnitures: r.garnitures,
         autres: r.autres,
         prix_base_ht: r.prix_base_ht,
+        ref_base: r.ref_base,
         prix_total_min_ht: r.prix_total_min_ht,
       }))
       const report = await api.post('/devis/validate-lines', { lines }, { timeout: 180000 })
@@ -1161,16 +1180,24 @@ export default function Devis() {
             ))}
           </div>
           {(() => {
+            const totalBase = results.reduce((s, r) => s + (r.prix_base_ht ?? 0), 0)
+            const totalPv = results.reduce((s, r) => s + ((r.options || []).reduce((a, o) => a + (o.prix || 0), 0)), 0)
             const total = results.reduce((s, r) => s + (r.prix_total_min_ht ?? 0), 0)
             if (!total) return null
             return (
               <div style={{
                 marginTop: 14, padding: '12px 16px', borderRadius: '10px',
                 background: 'var(--color-surface)', border: '2px solid var(--color-primary)',
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap',
               }}>
                 <span style={{ fontWeight: 700, fontSize: '13px' }}>💶 Total général estimé</span>
-                <span style={{ fontWeight: 800, fontSize: '16px' }}>{total.toLocaleString('fr-FR')} € HT TG</span>
+                <span style={{ display: 'flex', alignItems: 'baseline', gap: 8, fontSize: 12 }}>
+                  <span title="Somme des prix de base">Base&nbsp;<b>{totalBase.toLocaleString('fr-FR')} €</b></span>
+                  <span style={{ color: 'var(--color-text-3)' }}>+</span>
+                  <span title="Somme des plus-values" style={{ color: totalPv > 0 ? '#a06a2c' : 'inherit' }}>PV&nbsp;<b>{totalPv.toLocaleString('fr-FR')} €</b></span>
+                  <span style={{ color: 'var(--color-text-3)' }}>=</span>
+                  <span style={{ fontWeight: 800, fontSize: '16px' }}>{total.toLocaleString('fr-FR')} € HT TG</span>
+                </span>
               </div>
             )
           })()}
@@ -1225,6 +1252,10 @@ export default function Devis() {
               </button>
             </>
           )}
+          <button type="button" className="admin-btn-ghost" onClick={() => navigate('/devis/grid')} title="Vue tableur (mode Armand)">
+            <LayoutGrid size={16} />
+            <span>Mode tableur</span>
+          </button>
           <button type="button" className="admin-btn-ghost" onClick={() => navigate('/chat')}>
             <MessageCircleReply size={16} />
             <span>Retour au chat</span>

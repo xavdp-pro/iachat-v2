@@ -118,7 +118,7 @@
 
 - [ ] Table `devis_lines` :
   - id, devis_id, position, designation, gamme, vantail
-  - hauteur_mm, largeur_mm, prix_base_ht
+  - hauteur_mm, largeur_mm, prix_base_ht, ref_base (référence module catalogue, ex: 3100.02)
   - options_json, serrure_ref, serrure_prix
   - ferme_porte_ref, ferme_porte_prix
   - equipements_json, total_ligne_ht
@@ -191,6 +191,7 @@ CREATE TABLE devis_lines (
   hauteur_mm    INT,
   largeur_mm    INT,
   prix_base_ht  DECIMAL(12,2),
+  ref_base      VARCHAR(50),         -- référence module catalogue (ex: 3100.02, 4742.10)
   options_json  JSON,                 -- [{label, prix, note}]
   serrure_ref   VARCHAR(255),
   serrure_prix  DECIMAL(12,2),
