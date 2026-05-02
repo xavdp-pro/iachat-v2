@@ -82,15 +82,26 @@ router.post('/synthesize', authenticate, async (req, res) => {
 
 /**
  * POST /api/tts/stt
- * Transcrit l'audio via Gemma 4 (vLLM local).
+ * Transcrit l'audio via Whisper (stt.zerux.com).
  * Corps : multipart/form-data avec le champ "audio" (blob audio WebM/WAV).
  */
 router.post('/stt', authenticate, upload.single('audio'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Fichier audio requis.' })
   try {
-    const { transcribeWithGemma } = await import('../services/stt-gemma.js')
-    const text = await transcribeWithGemma(req.file.buffer, req.file.mimetype || 'audio/webm')
-    res.json({ text, language: 'fr', duration: null })
+    const formData = new FormData()
+    formData.append('file', new Blob([req.file.buffer], { type: req.file.mimetype || 'audio/webm' }), 'audio.webm')
+
+    const sttUrl = process.env.STT_URL || 'https://stt.zerux.com'
+    const resp = await fetch(`${sttUrl}/stt`, {
+      method: 'POST',
+      body: formData,
+    })
+
+    if (!resp.ok) {
+      throw new Error(`STT HTTP ${resp.status}`)
+    }
+    const data = await resp.json()
+    res.json({ text: data.text || '', language: 'fr', duration: null })
   } catch (err) {
     res.status(502).json({ error: `Service STT indisponible : ${err.message}` })
   }

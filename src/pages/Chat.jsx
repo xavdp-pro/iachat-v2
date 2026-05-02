@@ -6,7 +6,7 @@ import {
   MoreVertical, Archive, ArchiveRestore,
   Menu, X, Paperclip, Mic, MicOff, FileText, ZoomIn,
   Volume2, VolumeX, Copy, Check, RotateCcw,
-  Users, UserPlus, ChevronRight, BookOpen, FileSpreadsheet, Building2, Database,
+  Users, UserPlus, ChevronRight, BookOpen, FileSpreadsheet, Building2, Database, LayoutGrid,
 } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/useAuthStore.js'
@@ -384,12 +384,16 @@ export default function Chat() {
     await relaunchEditMessage(m)
   }, [confirmRelaunchMessage, relaunchEditMessage])
 
-  const autoResizeTextarea = () => {
+  const autoResizeTextarea = useCallback(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
       textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`
     }
-  }
+  }, [])
+
+  useEffect(() => {
+    autoResizeTextarea()
+  }, [inputMessage, autoResizeTextarea])
 
   // ── File attachment helpers ────────────────────────────────────────────────
 
@@ -451,13 +455,17 @@ export default function Chat() {
   //  3. Un nouveau MediaRecorder repart immédiatement pour la phrase suivante
   //  4. Cliquer à nouveau sur le bouton arrête tout proprement
 
-  const VAD_SILENCE_MS  = 900   // silence (ms) déclenchant la segmentation
-  const VAD_MIN_SPEECH_MS = 300 // durée min de parole pour envoyer le segment
-  const VAD_THRESHOLD   = 12    // niveau RMS (0-255) sous lequel = silence
+  const VAD_SILENCE_MS  = 350   // silence (ms) déclenchant la segmentation
+  const VAD_MIN_SPEECH_MS = 180 // durée min de parole pour envoyer le segment
+  const VAD_MAX_SPEECH_MS = 1200 // durée max d'un segment (quasi-streaming HTTP)
+  const VAD_THRESHOLD   = 6     // niveau RMS (0-255) sous lequel = silence (sensibilité accrue)
 
-  /** Envoie un Blob audio à /api/tts/stt (Gemma 4) et appende le résultat */
+  /** Envoie un Blob audio à /api/tts/stt (Whisper) et appende le résultat */
   const sendSegment = useCallback(async (blob) => {
-    if (!blob || blob.size < 1000) return          // trop court = bruit
+    if (!blob || blob.size < 500) {
+      console.debug('[STT] segment ignoré (trop court)', blob?.size)
+      return
+    }
     setSttLoading(true)
     const formData = new FormData()
     formData.append('audio', blob, 'segment.webm')
@@ -468,7 +476,12 @@ export default function Chat() {
         headers: { Authorization: `Bearer ${token}` },
         body: formData,
       })
+      if (!resp.ok) {
+        console.warn('[STT] HTTP', resp.status, await resp.text().catch(() => ''))
+        return
+      }
       const data = await resp.json()
+      console.debug('[STT] reçu:', data.text)
       if (data.text?.trim()) {
         setInputMessage((prev) => {
           const sep = prev && !prev.endsWith(' ') ? ' ' : ''
@@ -476,8 +489,8 @@ export default function Chat() {
         })
         setTimeout(autoResizeTextarea, 0)
       }
-    } catch {
-      /* silencieux — on ne coupe pas l'enregistrement pour une erreur réseau */
+    } catch (err) {
+      console.warn('[STT] erreur réseau', err)
     } finally {
       setSttLoading(false)
     }
@@ -528,12 +541,14 @@ export default function Chat() {
 
     let silenceStart   = null   // timestamp début du silence courant
     let speechStart    = null   // timestamp début de la phrase courante
+    let segmentStart   = null   // timestamp début du recorder courant
     let currentChunks  = []     // chunks du segment courant
 
     /** Démarre un nouveau MediaRecorder pour capter la prochaine phrase */
     function startSegmentRecorder() {
       const mr = new MediaRecorder(stream, mimeType ? { mimeType } : {})
       currentChunks = []
+      segmentStart = Date.now()
 
       mr.ondataavailable = (e) => {
         if (e.data.size > 0) currentChunks.push(e.data)
@@ -541,12 +556,14 @@ export default function Chat() {
 
       mr.onstop = () => {
         const blob = new Blob(currentChunks, { type: mr.mimeType || 'audio/webm' })
-        const duration = speechStart ? (Date.now() - speechStart) : 0
-        if (duration >= VAD_MIN_SPEECH_MS) {
+        const speechDuration = speechStart ? (Date.now() - speechStart) : 0
+        // Envoie si parole détectée OU si segment > 0.8s (Whisper filtrera le bruit)
+        if (speechDuration >= VAD_MIN_SPEECH_MS || (segmentStart && Date.now() - segmentStart >= 800)) {
           sendSegment(blob)
         }
         speechStart  = null
         silenceStart = null
+        segmentStart = null
       }
 
       mr.start(100)
@@ -567,20 +584,24 @@ export default function Chat() {
       } else {
         // Silence
         if (!silenceStart) silenceStart = Date.now()
-        const silenceDuration = Date.now() - silenceStart
+      }
 
-        // Silence assez long après de la parole → segmenter
-        if (speechStart && silenceDuration >= VAD_SILENCE_MS) {
-          const mr = mediaRecorderRef.current
-          if (mr && mr.state === 'recording') {
-            mr.stop()             // déclenche onstop → sendSegment
-            // Redémarre immédiatement pour la prochaine phrase
-            setTimeout(() => {
-              if (isRecordingRef.current) {
-                startSegmentRecorder()
-              }
-            }, 80)
-          }
+      // Conditions de coupe : silence prolongé OU segment trop long (en absolu)
+      const silenceDuration = silenceStart ? (Date.now() - silenceStart) : 0
+      const segmentDuration = segmentStart ? (Date.now() - segmentStart) : 0
+      const shouldCutSilence = speechStart && silenceDuration >= VAD_SILENCE_MS
+      const shouldCutMaxLen  = segmentDuration >= VAD_MAX_SPEECH_MS
+
+      if (shouldCutSilence || shouldCutMaxLen) {
+        const mr = mediaRecorderRef.current
+        if (mr && mr.state === 'recording') {
+          mr.stop()             // déclenche onstop → sendSegment
+          // Redémarre immédiatement pour la prochaine phrase
+          setTimeout(() => {
+            if (isRecordingRef.current) {
+              startSegmentRecorder()
+            }
+          }, 80)
         }
       }
     }, 80)
@@ -982,6 +1003,10 @@ export default function Chat() {
             <FileSpreadsheet size={16} strokeWidth={2} />
             Devis NEXUS
           </Link>
+          <Link to="/devis/grid" className="chat-footer-link">
+            <LayoutGrid size={16} strokeWidth={2} />
+            Devis tableur
+          </Link>
           <Link to="/devis/legacy" className="chat-footer-link">
             <FileText size={16} strokeWidth={2} />
             Devis (classique)
@@ -1104,7 +1129,7 @@ export default function Chat() {
                   autoResizeTextarea={autoResizeTextarea}
                   canSend={canSend}
                   loading={loading}
-                  disabled={!activeProject}
+                  disabled={false}
                   placeholder={composerPlaceholder}
                   isRecording={isRecording}
                   toggleMic={toggleMic}
@@ -1845,13 +1870,13 @@ function ComposerField({
           <button
             type="button"
             className={`chat-composer-tool-btn ${isRecording ? 'chat-composer-tool-btn--recording' : ''} ${sttLoading ? 'chat-composer-tool-btn--stt-loading' : ''}`}
-            disabled={disabled || sttLoading}
-            aria-label={sttLoading ? 'Transcription…' : isRecording ? t('chat.stopRecording') : t('chat.startRecording')}
+            disabled={disabled}
+            aria-label={isRecording ? t('chat.stopRecording') : t('chat.startRecording')}
             onClick={() => { toggleMic(); }}
           >
-            {sttLoading
+            {isRecording ? <MicOff size={17} strokeWidth={2} /> : sttLoading
               ? <span className="chat-composer-tool-spinner" aria-hidden="true" />
-              : isRecording ? <MicOff size={17} strokeWidth={2} /> : <Mic size={17} strokeWidth={2} />}
+              : <Mic size={17} strokeWidth={2} />}
           </button>
           <button
             type="button"
