@@ -7,8 +7,8 @@
  *   STT_GEMMA_MODEL   → modèle STT (défaut = OLLAMA_MODEL)
  */
 
-const VLLM_BASE  = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:8000'
-const STT_MODEL  = process.env.STT_GEMMA_MODEL || process.env.OLLAMA_MODEL || 'google/gemma-4-E2B-it'
+const VLLM_BASE = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:8000'
+const STT_MODEL = process.env.STT_GEMMA_MODEL || process.env.OLLAMA_MODEL || 'google/gemma-4-E2B-it'
 
 const STT_PROMPT =
   "Transcris l'audio. Réponds UNIQUEMENT avec le texte transcrit en français, " +
@@ -59,6 +59,6 @@ export async function transcribeWithGemma(audioBuffer, mimeType = 'audio/webm') 
   }
 
   const data = await resp.json()
-  const raw  = data.choices?.[0]?.message?.content ?? ''
+  const raw = data.choices?.[0]?.message?.content ?? ''
   return clean(raw)
 }

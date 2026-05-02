@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import {
-  Plus, Pencil, Trash2, ShieldCheck, User, Loader2, Moon, Sun, MessageSquare, LogOut, Bot, RefreshCw, X,
+  Plus, Pencil, Trash2, ShieldCheck, User, Loader2, Moon, Sun, MessageSquare, LogOut, Mic, Bot, RefreshCw, X,
   Headphones, Play, Square, Volume2, Menu, Undo2, CornerUpLeft, MessageCircleReply, BookOpen, CheckCircle2, XCircle, Clock,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -11,15 +11,10 @@ import { useThemeStore } from '../store/useThemeStore.js'
 import api from '../api/index.js'
 
 const TAB_USERS = 'users'
-const TAB_OLLAMA = 'ollama'
+const TAB_STT = 'stt'
 const TAB_TTS = 'tts'
 const TAB_EXPERIENCES = 'experiences'
-const VALID_TABS = new Set([TAB_USERS, TAB_OLLAMA, TAB_TTS, TAB_EXPERIENCES])
-
-function modelHintsFromVite() {
-  const raw = import.meta.env.VITE_OLLAMA_MODEL_HINTS || ''
-  return raw.split(',').map((s) => s.trim()).filter(Boolean).map((name) => ({ name }))
-}
+const VALID_TABS = new Set([TAB_USERS, TAB_STT, TAB_TTS, TAB_EXPERIENCES])
 
 export default function Admin() {
   const { t } = useTranslation()
@@ -45,15 +40,12 @@ export default function Admin() {
   const [modalUser, setModalUser] = useState(undefined)
   const [confirmDelete, setConfirmDelete] = useState(null)
 
-  const [ollamaCfg, setOllamaCfg] = useState(null)
-  const [ollamaForm, setOllamaForm] = useState({ modelChoice: '' })
-  const [modelSearch, setModelSearch] = useState('')
-  const [ollamaLoading, setOllamaLoading] = useState(true)
-  const [ollamaSaving, setOllamaSaving] = useState(false)
-  const [modelsRefreshing, setModelsRefreshing] = useState(false)
-  const [ollamaTesting, setOllamaTesting] = useState(false)
-  const [ollamaTestResult, setOllamaTestResult] = useState(null)
-  const [ollamaFeedback, setOllamaFeedback] = useState('')
+  const [sttTesting, setSttTesting] = useState(false)
+  const [sttResult, setSttResult] = useState('')
+  const [sttError, setSttError] = useState('')
+  const [isRecording, setIsRecording] = useState(false)
+  const mediaRecorderRef = useRef(null)
+  const sttChunksRef = useRef([])
 
   // ── TTS state ────────────────────────────────────────────────────────────
   const [ttsVoices, setTtsVoices] = useState([])
@@ -131,41 +123,67 @@ export default function Admin() {
     fetchUsers()
   }, [])
 
-  const loadOllamaSettings = useCallback(async () => {
-    setOllamaLoading(true)
-    setOllamaFeedback('')
+    const handleStartRecording = async () => {
     try {
-      const d = await api.get('/admin/ollama-settings', { timeout: 45000 })
-      setOllamaCfg(d)
-      setOllamaForm({
-        modelChoice: d.dbModelOverride ?? '',
-      })
-      setModelSearch('')
-    } catch {
-      const hints = modelHintsFromVite()
-      setOllamaCfg({
-        defaultModel: '',
-        dbModelOverride: null,
-        enabledMode: 'inherit',
-        effectiveEnabled: true,
-        envOllamaEnabled: true,
-        envDefaultModel: '',
-        models: hints,
-        modelsWarning: null,
-        modelsSource: 'client-fallback',
-        loadDegraded: true,
-      })
-      setOllamaForm({ modelChoice: '' })
-      setModelSearch('')
-    } finally {
-      setOllamaLoading(false)
-    }
-  }, [])
+      setSttTesting(true)
+      setSttError('')
+      setSttResult('')
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const mr = new MediaRecorder(stream, { mimeType: 'audio/webm' })
+      sttChunksRef.current = []
+      
+      mr.ondataavailable = e => { if (e.data.size > 0) sttChunksRef.current.push(e.data) }
+      mr.onstop = async () => {
+        setIsRecording(false)
+        setSttTesting(true)
+        stream.getTracks().forEach(t => t.stop())
+        if (sttChunksRef.current.length === 0) {
+          setSttTesting(false)
+          setSttError("Aucun audio enregistré (fichier vide).")
+          return
+        }
+        
+        const audioBlob = new Blob(sttChunksRef.current, { type: 'audio/webm' })
+        const formData = new FormData()
+        formData.append('audio', audioBlob, 'test.webm')
+        formData.append('sampleRate', '48000')
 
-  useEffect(() => {
-    if (activeTab !== TAB_OLLAMA) return
-    loadOllamaSettings()
-  }, [activeTab, loadOllamaSettings])
+        try {
+          const resp = await fetch('/api/stt/transcribe', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${localStorage.getItem('token') || ''}` },
+            body: formData
+          })
+          if (!resp.ok) {
+            const err = await resp.json()
+            setSttError(err.error || 'Erreur STT')
+            setSttTesting(false)
+            return
+          }
+          const data = await resp.json()
+          setSttResult(data.text || "Aucun texte retourné.")
+        } catch (err) {
+          setSttError(err.message || 'Erreur requête STT')
+        } finally {
+          setSttTesting(false)
+        }
+      }
+      
+      mediaRecorderRef.current = mr
+      mr.start()
+      setIsRecording(true)
+    } catch (err) {
+      setSttError('Erreur accès micro : ' + err.message)
+      setSttTesting(false)
+    }
+  }
+
+  const handleStopRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      mediaRecorderRef.current.stop()
+    }
+  }
+
 
   // ── TTS callbacks ─────────────────────────────────────────────────────────
 
@@ -242,52 +260,7 @@ export default function Admin() {
     setTtsDefaultVoice(voiceId)
   }
 
-  const saveOllamaSettings = async (e) => {
-    e.preventDefault()
-    setOllamaSaving(true)
-    setOllamaFeedback('')
-    try {
-      await api.put('/admin/ollama-settings', {
-        defaultModel: ollamaForm.modelChoice,
-        enabledMode: 'inherit',
-      })
-      setOllamaFeedback('saved')
-      await loadOllamaSettings()
-    } catch (err) {
-      setOllamaFeedback(err?.error || 'save_failed')
-    } finally {
-      setOllamaSaving(false)
-    }
-  }
-
-  const refreshOllamaModels = async () => {
-    setModelsRefreshing(true)
-    setOllamaFeedback('')
-    try {
-      const result = await api.post('/admin/ollama-models/refresh')
-      setOllamaFeedback(`models_refreshed:${result?.count || 0}`)
-      await loadOllamaSettings()
-    } catch (err) {
-      setOllamaFeedback(err?.error || 'models_refresh_failed')
-    } finally {
-      setModelsRefreshing(false)
-    }
-  }
-
-  const testOllamaPrompt = async () => {
-    setOllamaTesting(true)
-    setOllamaFeedback('')
-    setOllamaTestResult(null)
-    try {
-      const result = await api.post('/admin/ollama-test')
-      setOllamaFeedback('test_ok')
-      setOllamaTestResult(result)
-    } catch (err) {
-      setOllamaFeedback(err?.error || 'test_failed')
-    } finally {
-      setOllamaTesting(false)
-    }
-  }
+  
 
   const handleDelete = async () => {
     if (!confirmDelete) return
@@ -296,10 +269,7 @@ export default function Admin() {
     fetchUsers()
   }
 
-  const filteredModels = (ollamaCfg?.models || []).filter((m) => {
-    if (!modelSearch.trim()) return true
-    return String(m.name || '').toLowerCase().includes(modelSearch.trim().toLowerCase())
-  })
+  
 
   return (
     <div className="admin-shell">
@@ -338,14 +308,14 @@ export default function Admin() {
           <button
             type="button"
             role="tab"
-            id="admin-tab-ollama"
-            aria-selected={activeTab === TAB_OLLAMA}
-            aria-controls="admin-panel-ollama"
-            className={`admin-tab ${activeTab === TAB_OLLAMA ? 'admin-tab--active' : ''}`}
-            onClick={() => setActiveTab(TAB_OLLAMA)}
+            id="admin-tab-stt"
+            aria-selected={activeTab === TAB_STT}
+            aria-controls="admin-panel-stt"
+            className={`admin-tab ${activeTab === TAB_STT ? 'admin-tab--active' : ''}`}
+            onClick={() => setActiveTab(TAB_STT)}
           >
-            <Bot size={17} strokeWidth={2} aria-hidden />
-            {t('admin.tabOllama')}
+            <Mic size={17} strokeWidth={2} aria-hidden />
+            Test STT
           </button>
           <button
             type="button"
@@ -378,268 +348,57 @@ export default function Admin() {
           </button>
         </div>
 
-        {activeTab === TAB_OLLAMA && (
+        {activeTab === TAB_STT && (
         <section
-          id="admin-panel-ollama"
+          id="admin-panel-stt"
           role="tabpanel"
-          aria-labelledby="admin-tab-ollama"
-          className="admin-ollama-panel"
+          aria-labelledby="admin-tab-stt"
+          className="admin-stt-panel admin-ollama-panel"
         >
           <div className="admin-ollama-head">
             <div className="admin-ollama-icon" aria-hidden>
-              <Bot size={22} strokeWidth={2} />
+              <Mic size={24} />
             </div>
-            <div>
-              <h2 id="admin-ollama-heading">{t('admin.ollamaTitle')}</h2>
-              <p className="admin-ollama-desc">{t('admin.ollamaSubtitle')}</p>
+            <div className="admin-ollama-head-texts">
+              <h2>Test Speech-To-Text (Microphone)</h2>
+              <p>Cliquez sur "Enregistrer" pour tester la reconnaissance vocale de votre navigateur vers l'API STT.</p>
             </div>
           </div>
-          {ollamaLoading ? (
-            <div className="admin-loading admin-loading--inline">
-              <Loader2 size={24} className="animate-spin" style={{ color: 'var(--color-primary)' }} />
-            </div>
-          ) : ollamaCfg ? (
-            <form className="admin-ollama-form" onSubmit={saveOllamaSettings}>
-              <div className="admin-ollama-grid">
-                <div className="admin-ollama-field">
-                  <label className="admin-ollama-label">
-                    {t('admin.ollamaEnabledLabel')}
-                  </label>
-                  <p className="admin-ollama-hint">
-                    {t('admin.ollamaEnabledManaged')}
-                  </p>
-                  <p className="admin-ollama-hint">
-                    {t('admin.ollamaEnabledHint', {
-                      env: ollamaCfg.envOllamaEnabled ? t('common.active') : t('common.inactive'),
-                    })}
-                  </p>
-                </div>
-                <div className="admin-ollama-field">
-                  <label className="admin-ollama-label" htmlFor="ollama-model">
-                    {t('admin.ollamaModelLabel')}
-                  </label>
-                  <div className="admin-ollama-search-row">
-                    <input
-                      id="ollama-model"
-                      className="admin-ollama-select"
-                      type="text"
-                      autoComplete="off"
-                      value={modelSearch}
-                      placeholder={t('admin.ollamaModelSearchPlaceholder')}
-                      onChange={(e) => setModelSearch(e.target.value)}
-                    />
-                    {modelSearch && (
-                      <button
-                        type="button"
-                        className="admin-ollama-clear-btn"
-                        onClick={() => setModelSearch('')}
-                        aria-label={t('admin.ollamaClearSearch')}
-                      >
-                        <X size={14} />
-                      </button>
-                    )}
-                  </div>
-                  <select
-                    className="admin-ollama-select admin-ollama-select-list"
-                    value={ollamaForm.modelChoice}
-                    onChange={(e) =>
-                      setOllamaForm((f) => ({ ...f, modelChoice: e.target.value }))
-                    }
-                  >
-                    <option value="">{t('admin.ollamaModelEnv')}</option>
-                    {filteredModels.map((m) => (
-                      <option key={m.name} value={m.name}>{m.name}</option>
-                    ))}
-                  </select>
-                  <div className="admin-ollama-model-actions">
-                    <button
-                      type="button"
-                      className="admin-btn-ghost"
-                      onClick={refreshOllamaModels}
-                      disabled={modelsRefreshing}
-                    >
-                      {modelsRefreshing ? <Loader2 className="animate-spin" size={16} /> : <RefreshCw size={16} />}
-                      {t('admin.ollamaRefreshModels')}
-                    </button>
-                    {ollamaForm.modelChoice && (
-                      <button
-                        type="button"
-                        className="admin-btn-ghost"
-                        onClick={() => setOllamaForm((f) => ({ ...f, modelChoice: '' }))}
-                      >
-                        <X size={16} />
-                        {t('admin.ollamaClearModel')}
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      className="admin-btn-ghost"
-                      onClick={testOllamaPrompt}
-                      disabled={ollamaTesting}
-                    >
-                      {ollamaTesting ? <Loader2 className="animate-spin" size={16} /> : <Bot size={16} />}
-                      {t('admin.ollamaTestPrompt')}
-                    </button>
-                  </div>
-                  <p className="admin-ollama-hint">
-                    {t('admin.ollamaModelHint', {
-                      model:
-                        ollamaCfg.defaultModel ||
-                        ollamaCfg.envDefaultModel ||
-                        '—',
-                    })}
-                  </p>
-                </div>
-              </div>
-              {ollamaCfg.loadDegraded && (
-                <p className="admin-ollama-warn" role="status">{t('admin.ollamaDegradedBanner')}</p>
-              )}
-              {ollamaCfg.modelsWarning && (
-                <div className="admin-ollama-warn-block" role="status">
-                  <p className="admin-ollama-warn-intro">{t('admin.ollamaModelsListWarningIntro')}</p>
-                  <p className="admin-ollama-warn-detail">{ollamaCfg.modelsWarning}</p>
-                </div>
-              )}
-              {ollamaFeedback === 'saved' && (
-                <p className="admin-ollama-success" role="status">{t('admin.ollamaSaved')}</p>
-              )}
-              {typeof ollamaFeedback === 'string' && ollamaFeedback.startsWith('models_refreshed:') && (
-                <p className="admin-ollama-success" role="status">
-                  {t('admin.ollamaModelsRefreshed', { count: Number(ollamaFeedback.split(':')[1] || 0) })}
-                </p>
-              )}
-              {ollamaFeedback === 'test_ok' && ollamaTestResult && (
-                <p className="admin-ollama-success" role="status">
-                  {t('admin.ollamaTestOk', {
-                    model: ollamaTestResult.model,
-                    ms: ollamaTestResult.latencyMs,
-                    reply: ollamaTestResult.reply,
-                  })}
-                </p>
-              )}
-              {ollamaFeedback === 'save_failed' && (
-                <p className="admin-ollama-warn" role="alert">{t('admin.ollamaError')}</p>
-              )}
-              {ollamaFeedback === 'models_refresh_failed' && (
-                <p className="admin-ollama-warn" role="alert">{t('admin.ollamaRefreshError')}</p>
-              )}
-              {typeof ollamaFeedback === 'string' &&
-                ollamaFeedback &&
-                !['saved', 'save_failed', 'models_refresh_failed', 'test_ok'].includes(ollamaFeedback) &&
-                !ollamaFeedback.startsWith('models_refreshed:') && (
-                <p className="admin-ollama-warn" role="alert">{ollamaFeedback}</p>
-              )}
-              <div className="admin-ollama-actions">
-                <button type="submit" className="admin-btn-primary" disabled={ollamaSaving}>
-                  {ollamaSaving ? <Loader2 className="animate-spin" size={18} /> : t('admin.ollamaSave')}
+          
+          <div className="admin-ollama-card">
+             <div className="admin-field-group">
+                <button 
+                  type="button" 
+                  className={`btn ${isRecording ? 'btn-danger' : 'btn-primary'}`} 
+                  onClick={isRecording ? handleStopRecording : handleStartRecording}
+                >
+                  {isRecording ? <Square size={16} /> : <Mic size={16} />}
+                  {isRecording ? " Arrêter" : " Enregistrer"}
                 </button>
-              </div>
-            </form>
-          ) : (
-            <p className="admin-ollama-warn">{t('admin.ollamaError')}</p>
-          )}
-        </section>
-        )}
-
-        {activeTab === TAB_USERS && (
-        <>
-        <div
-          id="admin-panel-users"
-          role="tabpanel"
-          aria-labelledby="admin-tab-users"
-          className="admin-users-panel"
-        >
-        <div className="admin-toolbar">
-          <div>
-            <h2>{t('admin.userListTitle')}</h2>
-            <p>{t('admin.subtitle')}</p>
-            <p className="admin-toolbar-meta">{t('admin.userCount', { count: users.length })}</p>
+             </div>
+             
+             {sttTesting && (
+               <div className="admin-field-group">
+                 <Loader2 className="animate-spin" size={24} /> <i>Traitement de l'audio en cours...</i>
+               </div>
+             )}
+             
+             {sttError && (
+               <div className="admin-field-group stt-error" style={{ color: 'red' }}>
+                 <strong>Erreur:</strong> {sttError}
+               </div>
+             )}
+             
+             {sttResult && (
+               <div className="admin-field-group" style={{ marginTop: '20px' }}>
+                 <p><strong>Résultat transcrit :</strong></p>
+                 <div style={{ padding: '10px', background: '#f5f5f5', borderRadius: '4px', border: '1px solid #ddd', color: '#111' }}>
+                    {sttResult}
+                 </div>
+               </div>
+             )}
           </div>
-          <button type="button" className="admin-btn-primary" onClick={() => setModalUser(null)}>
-            <Plus size={17} strokeWidth={2} />
-            {t('admin.addUser')}
-          </button>
-        </div>
-
-        <div className="admin-table-wrap">
-          {loading ? (
-            <div className="admin-loading">
-              <Loader2 size={28} className="animate-spin" style={{ color: 'var(--color-primary)' }} />
-              <span>{t('common.loading')}</span>
-            </div>
-          ) : (
-            <table className="admin-table">
-              <thead>
-                <tr>
-                  <th>{t('admin.colName')}</th>
-                  <th>{t('admin.colEmail')}</th>
-                  <th>{t('admin.colRole')}</th>
-                  <th>{t('admin.colStatus')}</th>
-                  <th>{t('admin.colCreated')}</th>
-                  <th aria-label={t('admin.colActions')} />
-                </tr>
-              </thead>
-              <tbody>
-                {users.map((u, i) => (
-                  <motion.tr
-                    key={u.id}
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    transition={{ delay: Math.min(i * 0.03, 0.3) }}
-                  >
-                    <td>
-                      <div className="admin-user-cell">
-                        <div className={`admin-avatar ${u.role === 'admin' ? '' : 'admin-avatar--user'}`}>
-                          {u.role === 'admin' ? <ShieldCheck size={16} /> : <User size={16} />}
-                        </div>
-                        <span className="admin-user-name">{u.name || t('admin.anonymous')}</span>
-                      </div>
-                    </td>
-                    <td style={{ color: 'var(--color-text-2)' }}>{u.email}</td>
-                    <td>
-                      <span className={`admin-badge ${u.role === 'admin' ? '' : 'admin-badge--muted'}`}>
-                        {u.role === 'admin' ? t('admin.roleAdmin') : t('admin.roleUser')}
-                      </span>
-                    </td>
-                    <td>
-                      <span className="admin-status">
-                        <span className={`admin-status-dot ${u.active ? 'admin-status-dot--on' : 'admin-status-dot--off'}`} />
-                        {u.active ? t('common.active') : t('common.inactive')}
-                      </span>
-                    </td>
-                    <td style={{ color: 'var(--color-text-3)', fontSize: '0.8125rem' }}>
-                      {u.created_at ? new Date(u.created_at).toLocaleDateString() : '—'}
-                    </td>
-                    <td>
-                      <div className="admin-table-actions">
-                        <button
-                          type="button"
-                          className="admin-table-icon-btn"
-                          onClick={() => setModalUser(u)}
-                          aria-label={t('common.edit')}
-                        >
-                          <Pencil size={15} />
-                        </button>
-                        {u.id !== user?.id && (
-                          <button
-                            type="button"
-                            className="admin-table-icon-btn admin-table-icon-btn--danger"
-                            onClick={() => setConfirmDelete(u)}
-                            aria-label={t('common.delete')}
-                          >
-                            <Trash2 size={15} />
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </motion.tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-        </div>
-        </>
+        </section>
         )}
 
         {activeTab === TAB_TTS && (

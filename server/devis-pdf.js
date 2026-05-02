@@ -23,12 +23,12 @@ const FONT_DIR = path.join(__dirname, "../../ressources/Polices");
 // ─── Font loading (cached at startup) ──────────────────────────────────────
 function buildFontFacesCss() {
   const fonts = [
-    { file: "Montserrat-Regular.ttf",   family: "Montserrat", weight: "400", style: "normal",  fmt: "truetype" },
-    { file: "Montserrat-Bold.ttf",      family: "Montserrat", weight: "700", style: "normal",  fmt: "truetype" },
-    { file: "Montserrat-Light.ttf",     family: "Montserrat", weight: "300", style: "normal",  fmt: "truetype" },
-    { file: "Montserrat-SemiBold.ttf",  family: "Montserrat", weight: "600", style: "normal",  fmt: "truetype" },
-    { file: "MinionPro-Regular.otf",    family: "Minion Pro", weight: "400", style: "normal",  fmt: "opentype" },
-    { file: "nordick.otf",              family: "Nordick",    weight: "400", style: "normal",  fmt: "opentype" },
+    { file: "Montserrat-Regular.ttf", family: "Montserrat", weight: "400", style: "normal", fmt: "truetype" },
+    { file: "Montserrat-Bold.ttf", family: "Montserrat", weight: "700", style: "normal", fmt: "truetype" },
+    { file: "Montserrat-Light.ttf", family: "Montserrat", weight: "300", style: "normal", fmt: "truetype" },
+    { file: "Montserrat-SemiBold.ttf", family: "Montserrat", weight: "600", style: "normal", fmt: "truetype" },
+    { file: "MinionPro-Regular.otf", family: "Minion Pro", weight: "400", style: "normal", fmt: "opentype" },
+    { file: "nordick.otf", family: "Nordick", weight: "400", style: "normal", fmt: "opentype" },
   ];
   return fonts.map(f => {
     try {
@@ -307,8 +307,8 @@ export function buildDevisNexusHtml(data) {
     <div class="header">
       <div class="logo-zone">
         ${EMBEDDED_LOGO_DATA_URI
-          ? `<img class="logo-img" alt="Zerux" src="${EMBEDDED_LOGO_DATA_URI}" />`
-          : `<div style="font-size:22pt;font-weight:800;color:${PDF_BRAND_HEX}">ZERUX</div>`}
+      ? `<img class="logo-img" alt="Zerux" src="${EMBEDDED_LOGO_DATA_URI}" />`
+      : `<div style="font-size:22pt;font-weight:800;color:${PDF_BRAND_HEX}">ZERUX</div>`}
       </div>
       <div class="main-title-box">
         <div class="main-title-main">${escapeHtml(docLabel)}</div>
