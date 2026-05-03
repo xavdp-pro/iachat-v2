@@ -972,10 +972,18 @@ function SettingsModal({ change, multGlobal, tva, onClose, onApply }) {
   )
 }
 
-// ─── Composant principal ──────────────────────────────────────────────────────
-export default function DevisGrid() {
+// ─── Composant principal réutilisable ─────────────────────────────────────────
+export function DevisGridWorkspace({
+  embedded = false,
+  initialRows = null,
+  onRowsChange = null,
+  onRowsCommit = null,
+  title = 'Devis Grid',
+  subtitle = null,
+}) {
   const navigate = useNavigate()
   const [rows, setRows] = useState(() => {
+    if (Array.isArray(initialRows)) return initialRows
     try {
       const saved = localStorage.getItem('devisGridRows')
       if (saved) return JSON.parse(saved) || []
@@ -1017,6 +1025,9 @@ export default function DevisGrid() {
     try { return localStorage.getItem('devisGridSidebarCollapsed') === '1' } catch { return false }
   })
   const [showAddModal, setShowAddModal] = useState(false)
+  useEffect(() => {
+    if (Array.isArray(initialRows)) setRows(initialRows)
+  }, [initialRows])
   // Ref vers les rows courants — permet à recomputeRow de lire sans passer par un updater
   const rowsRef = useRef(rows)
   useEffect(() => { rowsRef.current = rows }, [rows])
@@ -1026,6 +1037,10 @@ export default function DevisGrid() {
 
   // Persistance auto des lignes (localStorage) — debounce léger
   useEffect(() => {
+    if (embedded) {
+      onRowsChange?.(rows)
+      return undefined
+    }
     const t = setTimeout(() => {
       try {
         localStorage.setItem('devisGridRows', JSON.stringify(rows))
@@ -1033,7 +1048,7 @@ export default function DevisGrid() {
       } catch { /* quota dépassé : ignorer */ }
     }, 300)
     return () => clearTimeout(t)
-  }, [rows, fileName])
+  }, [embedded, fileName, onRowsChange, rows])
   const fileInputRef = useRef()
 
   const toggleRow = useCallback((i) => {
@@ -1046,14 +1061,18 @@ export default function DevisGrid() {
   }, [])
 
   const updateRow = useCallback((i, patch) => {
-    setRows(prev => prev.map((r, idx) => idx === i ? { ...r, ...patch } : r))
+    const nextRows = rowsRef.current.map((r, idx) => idx === i ? { ...r, ...patch } : r)
+    setRows(nextRows)
+    onRowsCommit?.(nextRows[i], i, patch)
     showToast('Enregistré', 'success')
-  }, [showToast])
+  }, [onRowsCommit, showToast])
 
   const addRow = useCallback((newRow) => {
-    setRows(prev => [...prev, newRow])
+    const nextRows = [...rowsRef.current, newRow]
+    setRows(nextRows)
+    onRowsCommit?.(newRow, nextRows.length - 1, { _created: true })
     showToast('Ligne ajoutée', 'success')
-  }, [showToast])
+  }, [onRowsCommit, showToast])
 
   const recomputeRow = useCallback((i, patch) => {
     // Lire les rows via ref (pas d'updater) pour éviter le double-appel Strict Mode
@@ -1090,6 +1109,7 @@ export default function DevisGrid() {
           qty, multiple, change_override,
           _recomputing: false,
         } : r))
+        onRowsCommit?.({ ...result, qty, multiple, change_override }, i, { _recomputed: true })
         showToast('Recalculé et enregistré', 'success')
       })
       .catch(err => {
@@ -1097,7 +1117,7 @@ export default function DevisGrid() {
         setRows(p2 => p2.map((r, idx) => idx === i ? { ...r, _recomputing: false, _recomputeError: String(err?.error || err?.message || err) } : r))
         showToast('Erreur recalcul', 'error')
       })
-  }, [showToast])
+  }, [onRowsCommit, showToast])
 
   const handleFile = async (file) => {
     if (!file) return
@@ -1113,6 +1133,7 @@ export default function DevisGrid() {
       // api interceptor retourne déjà res.data → res = { results: [...] }
       const data = res?.results ?? (Array.isArray(res) ? res : [])
       setRows(Array.isArray(data) ? data : [])
+      onRowsChange?.(Array.isArray(data) ? data : [])
       setFileName(file.name)
       setExpandedRows(new Set())
     } catch (e) {
@@ -1134,7 +1155,7 @@ export default function DevisGrid() {
 
   // ─── Layout ───────────────────────────────────────────────────────────────
   return (
-    <div style={{ display: 'flex', height: '100vh', background: 'var(--color-bg)', color: 'var(--color-text)', fontFamily: 'var(--font-body)', overflow: 'hidden' }}>
+    <div style={{ display: 'flex', height: embedded ? '100%' : '100vh', background: 'var(--color-bg)', color: 'var(--color-text)', fontFamily: 'var(--font-body)', overflow: 'hidden' }}>
 
       {/* ── Colonne gauche — import (rétractable) ── */}
       {sidebarCollapsed ? (
@@ -1162,9 +1183,9 @@ export default function DevisGrid() {
             style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-3)', padding: 2, display: 'flex' }}
             title="Retour legacy"
           >
-            <ArrowLeft size={14} />
+              <ArrowLeft size={14} />
           </button>
-          <span style={{ fontSize: 12, fontWeight: 700 }}>Devis Grid</span>
+          <span style={{ fontSize: 12, fontWeight: 700 }}>{title}</span>
           <span style={{ fontSize: 9, padding: '1px 5px', background: 'var(--color-primary)', color: '#fff', borderRadius: 4, fontWeight: 700 }}>BETA</span>
           <button
             onClick={() => setSidebarCollapsed(true)}
@@ -1250,7 +1271,7 @@ export default function DevisGrid() {
         <div style={{ padding: '8px 16px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <span style={{ fontSize: 13, fontWeight: 700 }}>
-              {rows.length > 0 ? `${rows.length} lignes analysées` : 'Importer un xlsx pour démarrer'}
+              {subtitle || (rows.length > 0 ? `${rows.length} lignes analysées` : 'Importer un xlsx pour démarrer')}
             </span>
             {rows.length > 0 && (
               <button
@@ -1405,4 +1426,8 @@ export default function DevisGrid() {
       )}
     </div>
   )
+}
+
+export default function DevisGrid() {
+  return <DevisGridWorkspace />
 }

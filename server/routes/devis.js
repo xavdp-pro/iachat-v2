@@ -529,14 +529,15 @@ router.post('/:id/lines', async (req, res) => {
     const [result] = await db.query(
       `INSERT INTO devis_lines
        (devis_id, position, designation, type_porte, gamme, vantail,
-        hauteur_mm, largeur_mm, prix_base_ht, options_json,
+        hauteur_mm, largeur_mm, prix_base_ht, ref_base, options_json,
         serrure_ref, serrure_prix, ferme_porte_ref, ferme_porte_prix,
         equipements_json, total_ligne_ht, alertes_json, docs_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         req.params.id, pos,
         d.designation || null, d.type_porte || null, d.gamme || null, d.vantail || null,
         d.hauteur_mm || null, d.largeur_mm || null, d.prix_base_ht || null,
+        d.ref_base || null,
         d.options_json ? JSON.stringify(d.options_json) : null,
         d.serrure_ref || null, d.serrure_prix || null,
         d.ferme_porte_ref || null, d.ferme_porte_prix || null,
@@ -566,15 +567,16 @@ router.post('/:id/lines/bulk', async (req, res) => {
       await db.query(
         `INSERT INTO devis_lines
          (devis_id, position, designation, type_porte, gamme, vantail,
-          hauteur_mm, largeur_mm, prix_base_ht, options_json,
+          hauteur_mm, largeur_mm, prix_base_ht, ref_base, options_json,
           serrure_ref, serrure_prix, ferme_porte_ref, ferme_porte_prix,
           equipements_json, total_ligne_ht, alertes_json, docs_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           req.params.id, i,
           d.designation || d.type || null, d.type || null, d.gamme || null, d.vantail || null,
           d.haut_mm || d.hauteur_mm || null, d.larg_mm || d.largeur_mm || null,
           d.prix_base_ht || null,
+          d.ref_base || null,
           d.options ? JSON.stringify(d.options) : null,
           d.serrure?.ref || null, null,
           d.ferme_porte?.ref || null, null,
@@ -600,7 +602,7 @@ router.post('/:id/lines/bulk', async (req, res) => {
 
 // PUT /api/devis/:id/lines/:lineId — update a line
 router.put('/:id/lines/:lineId', async (req, res) => {
-  const allowed = ['position', 'designation', 'type_porte', 'gamme', 'vantail', 'hauteur_mm', 'largeur_mm', 'prix_base_ht', 'options_json', 'serrure_ref', 'serrure_prix', 'ferme_porte_ref', 'ferme_porte_prix', 'equipements_json', 'total_ligne_ht', 'alertes_json', 'docs_json']
+  const allowed = ['position', 'designation', 'type_porte', 'gamme', 'vantail', 'hauteur_mm', 'largeur_mm', 'prix_base_ht', 'ref_base', 'options_json', 'serrure_ref', 'serrure_prix', 'ferme_porte_ref', 'ferme_porte_prix', 'equipements_json', 'total_ligne_ht', 'alertes_json', 'docs_json']
   const sets = []
   const vals = []
   for (const key of allowed) {

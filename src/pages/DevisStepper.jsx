@@ -2,7 +2,7 @@
  * DevisStepper.jsx — Stepper-based NEXUS quote workflow
  * 4 steps: Client → Analysis → Line Editor → PDF/HubSpot
  */
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Upload, FileSpreadsheet, Loader2, ChevronDown, ChevronUp,
@@ -15,6 +15,7 @@ import {
 } from 'lucide-react'
 import { MarkdownRenderer } from '../components/MarkdownRenderer.jsx'
 import api from '../api/index.js'
+import { DevisGridWorkspace } from './DevisGrid.jsx'
 
 // ── Palette by gamme ─────────────────────────────────────────────────────────
 const GAMME_COLORS = {
@@ -37,6 +38,60 @@ const SUGGESTIONS = [
 ]
 
 const prixFmt = (v) => v != null ? `${Number(v).toLocaleString('fr-FR')} €` : null
+
+function parseJsonArray(value) {
+  if (Array.isArray(value)) return value
+  if (!value) return []
+  try { return JSON.parse(value) || [] } catch { return [] }
+}
+
+function dbLineToGridRow(line) {
+  return {
+    _lineId: line.id,
+    _dbPosition: line.position,
+    type: line.type_porte || line.designation || '',
+    designation: line.designation || line.type_porte || '',
+    gamme: line.gamme || '',
+    vantail: line.vantail || '',
+    haut_mm: line.hauteur_mm ?? null,
+    larg_mm: line.largeur_mm ?? null,
+    prix_base_ht: line.prix_base_ht != null ? Number(line.prix_base_ht) : null,
+    ref_base: line.ref_base || null,
+    options: parseJsonArray(line.options_json),
+    serrure: line.serrure_ref ? { ref: line.serrure_ref } : null,
+    ferme_porte: line.ferme_porte_ref ? { ref: line.ferme_porte_ref } : null,
+    equip_extra: parseJsonArray(line.equipements_json),
+    alertes: parseJsonArray(line.alertes_json),
+    docs: parseJsonArray(line.docs_json),
+    _raw: line.raw_json ? parseJsonArray(line.raw_json) : undefined,
+    qty: line.qty != null ? Number(line.qty) : 1,
+    total_ligne_ht: line.total_ligne_ht != null ? Number(line.total_ligne_ht) : null,
+  }
+}
+
+function gridRowToLinePayload(row, position) {
+  const resolved = typeof resolveRow === 'function' ? resolveRow(row) : row
+  return {
+    position,
+    designation: row.designation || row.type || null,
+    type_porte: row.type || row.designation || null,
+    gamme: row.gamme || null,
+    vantail: row.vantail || null,
+    hauteur_mm: row.haut_mm ?? row.hauteur_mm ?? null,
+    largeur_mm: row.larg_mm ?? row.largeur_mm ?? null,
+    prix_base_ht: row.prix_base_ht ?? null,
+    ref_base: row.ref_base || null,
+    options_json: row.options || [],
+    serrure_ref: row.serrure?.ref || row._serrureLabel || null,
+    serrure_prix: row.serrure?.prix ?? null,
+    ferme_porte_ref: row.ferme_porte?.ref || row._fpLabel || null,
+    ferme_porte_prix: row.ferme_porte?.prix ?? null,
+    equipements_json: row.equip_extra || [],
+    total_ligne_ht: row.total_ligne_ht ?? row.prix_total_min_ht ?? resolved?._total ?? resolved?._pu ?? null,
+    alertes_json: row.alertes || [],
+    docs_json: row.docs || [],
+  }
+}
 
 const STEP_LABELS = [
   { num: 1, label: 'Client', icon: Building2 },
@@ -673,6 +728,52 @@ function StepEditor({
   const isResizing = useRef(false)
   const startY = useRef(null)
   const startH = useRef(null)
+
+  const gridRows = useMemo(() => lines.map(dbLineToGridRow), [lines])
+
+  const commitGridRow = useCallback(async (row, index, patch = {}) => {
+    if (!devisId) return
+    setSaving(row._lineId || `new-${index}`)
+    try {
+      const payload = gridRowToLinePayload(row, index)
+      if (row._lineId) {
+        await api.put(`/devis/${devisId}/lines/${row._lineId}`, payload)
+      } else {
+        await api.post(`/devis/${devisId}/lines`, payload)
+      }
+      if (patch._recomputed || patch._created || row._lineId) onRefresh()
+    } catch (err) {
+      console.error('Grid line commit error:', err)
+    } finally {
+      setSaving(null)
+    }
+  }, [devisId, onRefresh])
+
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <div style={{ padding: '8px 14px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0, background: 'var(--color-surface)' }}>
+        <FileText size={15} color="var(--color-primary)" />
+        <div style={{ flex: 1 }}>
+          <div style={{ fontWeight: 700, fontSize: 13 }}>Éditeur devis sheet-like</div>
+          <div style={{ fontSize: 10, color: 'var(--color-text-3)' }}>
+            {lines.length} ligne{lines.length !== 1 ? 's' : ''} · sauvegarde backend par ligne{saving ? ' · enregistrement…' : ''}
+          </div>
+        </div>
+        <button onClick={() => askAIEditor('Contrôle les lignes du devis et liste les incohérences bloquantes.')} style={ghostBtn()}>
+          <Bot size={13} /> Audit IA
+        </button>
+      </div>
+      <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+        <DevisGridWorkspace
+          embedded
+          initialRows={gridRows}
+          onRowsCommit={commitGridRow}
+          title="Sheet devis"
+          subtitle={saving ? 'Enregistrement en cours…' : `${lines.length} lignes synchronisées`}
+        />
+      </div>
+    </div>
+  )
 
   const onMouseDown = useCallback(e => {
     e.preventDefault()

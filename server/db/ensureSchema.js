@@ -170,6 +170,7 @@ export async function ensureDbSchema() {
         hauteur_mm        INT DEFAULT NULL,
         largeur_mm        INT DEFAULT NULL,
         prix_base_ht      DECIMAL(12,2) DEFAULT NULL,
+        ref_base          VARCHAR(50) DEFAULT NULL,
         options_json      JSON DEFAULT NULL,
         serrure_ref       VARCHAR(255) DEFAULT NULL,
         serrure_prix      DECIMAL(12,2) DEFAULT NULL,
@@ -185,6 +186,16 @@ export async function ensureDbSchema() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `)
     console.log('✅ DB: devis_lines table ready')
+
+    // ── devis_lines.ref_base (idempotent patch) ─────────────────────────
+    const [refBaseCols] = await db.query(
+      `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'devis_lines' AND COLUMN_NAME = 'ref_base'`
+    )
+    if (!refBaseCols.length) {
+      await db.query('ALTER TABLE devis_lines ADD COLUMN ref_base VARCHAR(50) DEFAULT NULL AFTER prix_base_ht')
+      console.log('✅ DB: devis_lines.ref_base column added')
+    }
 
   } catch (err) {
     console.error('ensureDbSchema:', err.message)
