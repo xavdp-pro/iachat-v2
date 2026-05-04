@@ -1089,7 +1089,7 @@ export function DevisGridWorkspace({
       const k = `_raw_${idx}`
       if (Object.prototype.hasOwnProperty.call(patch, k)) raw[idx] = patch[k]
     }
-    const { qty, multiple, change_override } = cur
+    const { qty, multiple, change_override, _lineId, _dbPosition } = cur
     // Maj optimiste immédiate
     setRows(prev => prev.map((r, idx) => idx === i ? {
       ...r,
@@ -1106,10 +1106,12 @@ export function DevisGridWorkspace({
         if (!result) return
         setRows(p2 => p2.map((r, idx) => idx === i ? {
           ...result,
+          _lineId,
+          _dbPosition,
           qty, multiple, change_override,
           _recomputing: false,
         } : r))
-        onRowsCommit?.({ ...result, qty, multiple, change_override }, i, { _recomputed: true })
+        onRowsCommit?.({ ...result, _lineId, _dbPosition, qty, multiple, change_override }, i, { _recomputed: true })
         showToast('Recalculé et enregistré', 'success')
       })
       .catch(err => {
