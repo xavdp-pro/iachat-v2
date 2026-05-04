@@ -24,8 +24,15 @@ const fmt = (v) => v == null ? '—' : typeof v === 'number' ? v.toLocaleString(
 
 function extractRef(str) {
   if (!str) return null
-  const m = String(str).match(/\b([34]\d{3})\b/)
+  const text = String(str)
+  const refMatch = text.match(/r[ée]f\.?\s*([34]\d{3})\b/i)
+  if (refMatch) return refMatch[1]
+  const m = text.match(/\b([34]\d{3})\b/)
   return m ? m[1] : null
+}
+
+function extractOptionRef(option) {
+  return extractRef(option?.note) || extractRef(option?.label) || null
 }
 
 function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
@@ -40,16 +47,16 @@ function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
   const total  = Math.round(pu * qty * mult * (1 + tva) * lineChange)
   // équipements structurés depuis les options + champs
   const serrure   = r.serrure?.ref  || null
-  const serrureRef = extractRef(r.serrure?.ref) || extractRef(r.serrure?.from)
-  const fpRef     = extractRef(r.ferme_porte?.ref)
-  const garnInt   = extractRef(r.garnitures?.int)
-  const garnExt   = extractRef(r.garnitures?.ext)
   // options spécifiques
   const optVitrage = (r.options || []).find(o => /remplissage|vitrage/i.test(o.label))
   const optFP      = (r.options || []).find(o => /ferme.porte/i.test(o.label))
   const optSerrure = (r.options || []).find(o => /serrure|msl|lss|kel|dény/i.test(o.label))
   const optGarnInt = (r.options || []).find(o => /garniture int/i.test(o.label))
   const optGarnExt = (r.options || []).find(o => /garniture ext/i.test(o.label))
+  const serrureRef = extractRef(r.serrure?.ref) || extractOptionRef(optSerrure) || extractRef(r.serrure?.from)
+  const fpRef     = extractRef(r.ferme_porte?.ref) || extractOptionRef(optFP)
+  const garnInt   = extractRef(r.garnitures?.int) || extractOptionRef(optGarnInt)
+  const garnExt   = extractRef(r.garnitures?.ext) || extractOptionRef(optGarnExt)
   const thermolaquage = r.thermolaquage != null
     ? r.thermolaquage
     : !!(r._raw?.[16] && String(r._raw[16]).toUpperCase().includes('RAL'))
@@ -282,8 +289,8 @@ function MainRow({ row, index, expanded, onToggle, change, tva, multGlobal, edit
       {/* Vitrage */}
       <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 70 }}>
         {editMode
-          ? <EditableText value={row._raw?.[16] ?? ''} onCommit={v => onRecompute?.({ [`_raw_16`]: v })} placeholder="autres…" />
-          : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{row._raw?.[16] || '—'}</span>}
+          ? <EditableText value={row._raw?.[16] ?? ''} onCommit={v => onRecompute?.({ [`_raw_16`]: v })} placeholder="" />
+          : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{row._raw?.[16] || ''}</span>}
       </Td>
       {/* FP */}
       <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 60 }}>
