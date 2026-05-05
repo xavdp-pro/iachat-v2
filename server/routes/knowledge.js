@@ -116,7 +116,7 @@ router.get('/', async (req, res) => {
       tables: tablesMeta,
       howItWorks: {
         injection: "Les markdowns sont injectés dans le prompt Gemma à chaque requête /api/devis/ask : méthodologie (GUIDE-DEVIS), catalogue de base (BASE), gamme détectée (CRx/FBx/EIx/...), équipements (EQUIP-*) et expériences approuvées.",
-        tables: "Les tableaux de prix servent à positionner une dimension (H × L) dans la bonne fourchette : on prend la plus petite valeur du tableau >= à la dimension demandée (arrondi au plafond).",
+        tables: "Les tableaux de prix servent à positionner une dimension (H × L) dans la bonne fourchette : bloc-portes au plancher (module <= cote), châssis CR/EI/FB au plafond (module >= cote), châssis Blast selon les intervalles du tarif.",
         control: "Chaque expérience validée par un admin est indexée dans Qdrant et remontée automatiquement si elle est pertinente pour la question posée (top 3 à 8 selon la requête).",
       },
     })

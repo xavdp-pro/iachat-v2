@@ -5,7 +5,7 @@
  * Phase MVP : lecture seule + expand/collapse sous-rows
  */
 import { useState, useCallback, useRef, useEffect, Fragment } from 'react'
-import { Upload, RefreshCw, ChevronRight, ChevronDown, AlertTriangle, MessageSquare, ArrowLeft, PanelLeftClose, PanelLeftOpen, Plus, X, Check, Loader2, Settings } from 'lucide-react'
+import { Upload, RefreshCw, ChevronRight, ChevronDown, AlertTriangle, MessageSquare, ArrowLeft, PanelLeftClose, PanelLeftOpen, Plus, X, Check, Loader2, Settings, Trash2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import api from '../api/index.js'
 import Select from 'react-select'
@@ -35,6 +35,16 @@ function extractOptionRef(option) {
   return extractRef(option?.note) || extractRef(option?.label) || null
 }
 
+function mainEquipLabel(value) {
+  if (!value) return ''
+  return String(value)
+    .replace(/^\s*[34]\d{3}\s*[—-]\s*/u, '')
+    .replace(/\s*\(?\b(r[ée]f\.?|ref\.?)\s*[34]\d{3}\b\)?/giu, '')
+    .replace(/\s*\([^)]*\)/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+}
+
 function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
   const base   = r.prix_base_ht  ?? 0
   const pv     = (r.options || []).reduce((s, o) => s + (o.prix || 0), 0)
@@ -54,7 +64,7 @@ function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
   const optGarnInt = (r.options || []).find(o => /garniture int/i.test(o.label))
   const optGarnExt = (r.options || []).find(o => /garniture ext/i.test(o.label))
   const serrureRef = extractRef(r.serrure?.ref) || extractOptionRef(optSerrure) || extractRef(r.serrure?.from)
-  const fpRef     = extractRef(r.ferme_porte?.ref) || extractOptionRef(optFP)
+  const fpRef     = extractOptionRef(optFP) || extractRef(r.ferme_porte?.ref)
   const garnInt   = extractRef(r.garnitures?.int) || extractOptionRef(optGarnInt)
   const garnExt   = extractRef(r.garnitures?.ext) || extractOptionRef(optGarnExt)
   const thermolaquage = r.thermolaquage != null
@@ -139,9 +149,16 @@ function GammeBadge({ gamme, fullWidth }) {
 }
 
 // ─── Composant ligne principale ──────────────────────────────────────────────
-function MainRow({ row, index, expanded, onToggle, change, tva, multGlobal, editMode, onUpdate, onRecompute }) {
+function MainRow({ row, index, expanded, onToggle, change, tva, multGlobal, editMode, onUpdate, onRecompute, onDelete }) {
   const r = resolveRow(row, change, tva, multGlobal)
   const qty = Number.isFinite(r.qty) ? r.qty : 1
+  const [showEmptyPerfs, setShowEmptyPerfs] = useState(false)
+  const perfKeys = ['rc', 'pb', 'cf', 'blast', 'belier', 'prison']
+  const rawIndexByPerf = { rc: 3, pb: 4, cf: 5, blast: 6, belier: 7, prison: 8 }
+  const visiblePerfKeys = editMode
+    ? perfKeys.filter(key => row._manualBlank || showEmptyPerfs || row._raw?.[rawIndexByPerf[key]] != null)
+    : perfKeys
+  const hiddenPerfCount = perfKeys.length - visiblePerfKeys.length
   return (
     <tr
       onClick={onToggle}
@@ -166,8 +183,7 @@ function MainRow({ row, index, expanded, onToggle, change, tva, multGlobal, edit
             <div style={{ background: 'color-mix(in srgb, #fbbf24 12%, transparent)', borderRadius: 3 }}>
               <EditableSelect
                 value={r.type}
-                loader={loadTypeOptions}
-                loadOnMount
+                options={TYPE_OPTIONS}
                 onCommit={(v) => onRecompute?.({ type: v })}
                 placeholder="Type…"
               />
@@ -184,12 +200,11 @@ function MainRow({ row, index, expanded, onToggle, change, tva, multGlobal, edit
       </Td>
       {/* Performances */}
       <Td style={{ minWidth: 110, fontSize: 10, color: 'var(--color-text-2)' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 3, alignItems: 'stretch' }}>
-          <GammeBadge gamme={r.gamme} fullWidth />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'stretch' }}>
           {editMode ? (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 2 }}>
-              {(['rc','pb','cf','blast','belier','prison']).map(key => {
-                const rawIdx = { rc: 3, pb: 4, cf: 5, blast: 6, belier: 7, prison: 8 }[key]
+              {visiblePerfKeys.map(key => {
+                const rawIdx = rawIndexByPerf[key]
                 const cur = row._raw?.[rawIdx] ?? null
                 const isSet = cur != null
                 return (
@@ -215,6 +230,20 @@ function MainRow({ row, index, expanded, onToggle, change, tva, multGlobal, edit
                   </div>
                 )
               })}
+              {hiddenPerfCount > 0 && (
+                <button
+                  type="button"
+                  onClick={e => { e.stopPropagation(); setShowEmptyPerfs(true) }}
+                  title={`Afficher ${hiddenPerfCount} performance${hiddenPerfCount > 1 ? 's' : ''} vide${hiddenPerfCount > 1 ? 's' : ''}`}
+                  style={{
+                    width: 22, height: 20, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    border: '1px solid var(--color-border)', borderRadius: 4, background: 'var(--color-surface)',
+                    color: 'var(--color-primary)', cursor: 'pointer', fontWeight: 800, fontSize: 13, lineHeight: 1,
+                  }}
+                >
+                  +
+                </button>
+              )}
             </div>
           ) : (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, fontSize: 9 }}>
@@ -271,20 +300,20 @@ function MainRow({ row, index, expanded, onToggle, change, tva, multGlobal, edit
       {/* Serrure */}
       <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 80 }}>
         {editMode
-          ? <EditableText value={row._raw?.[12] ?? r._serrureLabel ?? ''} onCommit={v => onRecompute?.({ [`_raw_12`]: v })} placeholder="serrure…" />
-          : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{row._raw?.[12] || r._serrureLabel || '—'}</span>}
+          ? <EditableText value={mainEquipLabel(row._raw?.[12] ?? r._serrureLabel ?? '')} onCommit={v => onRecompute?.({ [`_raw_12`]: v })} placeholder="serrure…" />
+          : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{mainEquipLabel(row._raw?.[12] || r._serrureLabel) || '—'}</span>}
       </Td>
       {/* Garn int */}
       <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 70 }}>
         {editMode
-          ? <EditableText value={row._raw?.[13] ?? r._garnIntLabel ?? ''} onCommit={v => onRecompute?.({ [`_raw_13`]: v })} placeholder="garn. int…" />
-          : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{row._raw?.[13] || r._garnIntLabel || '—'}</span>}
+          ? <EditableText value={mainEquipLabel(row._raw?.[13] ?? r._garnIntLabel ?? '')} onCommit={v => onRecompute?.({ [`_raw_13`]: v })} placeholder="garn. int…" />
+          : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{mainEquipLabel(row._raw?.[13] || r._garnIntLabel) || '—'}</span>}
       </Td>
       {/* Garn ext */}
       <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 70 }}>
         {editMode
-          ? <EditableText value={row._raw?.[14] ?? r._garnExtLabel ?? ''} onCommit={v => onRecompute?.({ [`_raw_14`]: v })} placeholder="garn. ext…" />
-          : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{row._raw?.[14] || r._garnExtLabel || '—'}</span>}
+          ? <EditableText value={mainEquipLabel(row._raw?.[14] ?? r._garnExtLabel ?? '')} onCommit={v => onRecompute?.({ [`_raw_14`]: v })} placeholder="garn. ext…" />
+          : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{mainEquipLabel(row._raw?.[14] || r._garnExtLabel) || '—'}</span>}
       </Td>
       {/* Vitrage */}
       <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 70 }}>
@@ -295,8 +324,8 @@ function MainRow({ row, index, expanded, onToggle, change, tva, multGlobal, edit
       {/* FP */}
       <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 60 }}>
         {editMode
-          ? <EditableText value={row._raw?.[15] ?? r._fpLabel ?? ''} onCommit={v => onRecompute?.({ [`_raw_15`]: v })} placeholder="FP…" />
-          : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{row._raw?.[15] || r._fpLabel || '—'}</span>}
+          ? <EditableText value={mainEquipLabel(row._raw?.[15] ?? r._fpLabel ?? '')} onCommit={v => onRecompute?.({ [`_raw_15`]: v })} placeholder="FP…" />
+          : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{mainEquipLabel(row._raw?.[15] || r._fpLabel) || '—'}</span>}
       </Td>
       {/* PU HT */}
       <Td palette="gray" style={{ textAlign: 'right', fontWeight: 600, whiteSpace: 'nowrap' }}>
@@ -309,6 +338,18 @@ function MainRow({ row, index, expanded, onToggle, change, tva, multGlobal, edit
       {/* Total TTC */}
       <Td palette="blue" style={{ textAlign: 'right', fontWeight: 800, whiteSpace: 'nowrap', fontSize: 12 }}>
         {r._pu > 0 ? r._total.toLocaleString('fr-FR') + ' €' : '—'}
+      </Td>
+      <Td style={{ width: 32, textAlign: 'center', padding: 0 }}>
+        {editMode && (
+          <button
+            type="button"
+            onClick={e => { e.stopPropagation(); onDelete?.() }}
+            title="Supprimer la ligne"
+            style={{ width: '100%', height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 'none', background: 'transparent', color: '#a33c3c', cursor: 'pointer' }}
+          >
+            <Trash2 size={13} />
+          </button>
+        )}
       </Td>
     </tr>
   )
@@ -334,7 +375,7 @@ function SubRowRefs({ row }) {
           {ref || '—'}
         </td>
       ))}
-      <td colSpan={3} style={{ borderBottom: '1px solid var(--color-border)', ...CELL.gray }}></td>
+      <td colSpan={4} style={{ borderBottom: '1px solid var(--color-border)', ...CELL.gray }}></td>
     </tr>
   )
 }
@@ -362,7 +403,7 @@ function SubRowPrices({ row }) {
       <td style={{ padding: '3px 8px', fontSize: 11, textAlign: 'right', ...CELL.gray, borderBottom: '1px solid var(--color-border)', color: 'var(--color-text-3)' }}>
         base: {r.prix_base_ht?.toLocaleString('fr-FR') ?? '—'} €
       </td>
-      <td colSpan={2} style={{ borderBottom: '1px solid var(--color-border)', ...CELL.blue }}></td>
+      <td colSpan={3} style={{ borderBottom: '1px solid var(--color-border)', ...CELL.blue }}></td>
     </tr>
   )
 }
@@ -382,18 +423,26 @@ const PERF_OPTIONS = {
   prison: [{ value: null, label: '—' }, { value: 'Prison', label: 'Prison' }],
 }
 
-// ─── Cache global d'options Select2 (chargées une fois depuis l'API) ─────────
-const _optionsCache = { types: null, types_promise: null }
-function loadTypeOptions() {
-  if (_optionsCache.types) return Promise.resolve(_optionsCache.types)
-  if (_optionsCache.types_promise) return _optionsCache.types_promise
-  _optionsCache.types_promise = api.get('/devis/types-options', { timeout: 15000 })
-    .then(r => {
-      _optionsCache.types = (r?.options || []).map(o => ({ value: o.value, label: o.label }))
-      return _optionsCache.types
-    })
-    .catch(() => { _optionsCache.types_promise = null; return [] })
-  return _optionsCache.types_promise
+const TYPE_OPTIONS = ['BP 1V', 'BP 2V', 'Chassis', 'Guichet'].map(value => ({ value, label: value }))
+
+function createBlankGridRow() {
+  return {
+    type: '',
+    designation: '',
+    larg_mm: null,
+    haut_mm: null,
+    qty: 1,
+    multiple: 1,
+    change_override: null,
+    prix_base_ht: null,
+    prix_total_min_ht: null,
+    options: [],
+    equip_extra: [],
+    alertes: [],
+    docs: [],
+    _manualBlank: true,
+    _raw: new Array(17).fill(null),
+  }
 }
 
 // ─── Styles react-select compacts pour cellules de tableau ───────────────────
@@ -983,14 +1032,16 @@ function SettingsModal({ change, multGlobal, tva, onClose, onApply }) {
 export function DevisGridWorkspace({
   embedded = false,
   initialRows = null,
+  startWithBlank = false,
   onRowsChange = null,
   onRowsCommit = null,
+  onRowsDelete = null,
   title = 'Devis Grid',
   subtitle = null,
 }) {
   const navigate = useNavigate()
   const [rows, setRows] = useState(() => {
-    if (Array.isArray(initialRows)) return initialRows
+    if (Array.isArray(initialRows)) return initialRows.length > 0 ? initialRows : (startWithBlank ? [createBlankGridRow()] : [])
     try {
       const saved = localStorage.getItem('devisGridRows')
       if (saved) return JSON.parse(saved) || []
@@ -1033,8 +1084,8 @@ export function DevisGridWorkspace({
   })
   const [showAddModal, setShowAddModal] = useState(false)
   useEffect(() => {
-    if (Array.isArray(initialRows)) setRows(initialRows)
-  }, [initialRows])
+    if (Array.isArray(initialRows)) setRows(initialRows.length > 0 ? initialRows : (startWithBlank ? [createBlankGridRow()] : []))
+  }, [initialRows, startWithBlank])
   // Ref vers les rows courants — permet à recomputeRow de lire sans passer par un updater
   const rowsRef = useRef(rows)
   useEffect(() => { rowsRef.current = rows }, [rows])
@@ -1081,6 +1132,26 @@ export function DevisGridWorkspace({
     showToast('Ligne ajoutée', 'success')
   }, [onRowsCommit, showToast])
 
+  const addBlankRow = useCallback(() => {
+    const nextRows = [...rowsRef.current, createBlankGridRow()]
+    setRows(nextRows)
+    setEditMode(true)
+    setExpandedRows(prev => new Set([...prev, nextRows.length - 1]))
+    showToast('Ligne blanche ajoutée', 'success')
+  }, [showToast])
+
+  const deleteRow = useCallback((i) => {
+    const row = rowsRef.current[i]
+    if (!row) return
+    const label = row.type || row.designation || `ligne ${i + 1}`
+    if (!window.confirm(`Supprimer définitivement la ligne ${i + 1} — ${label} ?`)) return
+    const nextRows = rowsRef.current.filter((_, idx) => idx !== i)
+    setRows(nextRows)
+    setExpandedRows(prev => new Set([...prev].filter(idx => idx !== i).map(idx => idx > i ? idx - 1 : idx)))
+    onRowsDelete?.(row, i)
+    showToast('Ligne supprimée', 'success')
+  }, [onRowsDelete, showToast])
+
   const recomputeRow = useCallback((i, patch) => {
     // Lire les rows via ref (pas d'updater) pour éviter le double-appel Strict Mode
     const cur = rowsRef.current[i]
@@ -1096,7 +1167,7 @@ export function DevisGridWorkspace({
       const k = `_raw_${idx}`
       if (Object.prototype.hasOwnProperty.call(patch, k)) raw[idx] = patch[k]
     }
-    const { qty, multiple, change_override, _lineId, _dbPosition } = cur
+    const { qty, multiple, change_override, _lineId, _dbPosition, _manualBlank } = cur
     // Maj optimiste immédiate
     setRows(prev => prev.map((r, idx) => idx === i ? {
       ...r,
@@ -1115,10 +1186,11 @@ export function DevisGridWorkspace({
           ...result,
           _lineId,
           _dbPosition,
+          _manualBlank,
           qty, multiple, change_override,
           _recomputing: false,
         } : r))
-        onRowsCommit?.({ ...result, _lineId, _dbPosition, qty, multiple, change_override }, i, { _recomputed: true })
+        onRowsCommit?.({ ...result, _lineId, _dbPosition, _manualBlank, qty, multiple, change_override }, i, { _recomputed: true })
         showToast('Recalculé et enregistré', 'success')
       })
       .catch(err => {
@@ -1282,6 +1354,13 @@ export function DevisGridWorkspace({
             <span style={{ fontSize: 13, fontWeight: 700 }}>
               {subtitle || (rows.length > 0 ? `${rows.length} lignes analysées` : 'Importer un xlsx pour démarrer')}
             </span>
+            <button
+              type="button"
+              onClick={addBlankRow}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, padding: '3px 8px', background: 'color-mix(in srgb, var(--color-primary) 10%, var(--color-surface))', border: '1px solid var(--color-primary)', borderRadius: 4, cursor: 'pointer', color: 'var(--color-primary)', fontWeight: 700 }}
+            >
+              <Plus size={12} /> Ligne
+            </button>
             {rows.length > 0 && (
               <button
                 onClick={() => setExpandedRows(prev => prev.size === rows.length ? new Set() : new Set(rows.map((_, i) => i)))}
@@ -1301,8 +1380,15 @@ export function DevisGridWorkspace({
         <div style={{ flex: 1, overflow: 'auto' }}>
           {rows.length === 0 && !loading && (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 12, color: 'var(--color-text-3)' }}>
-              <Upload size={40} />
-              <span style={{ fontSize: 13 }}>Glisser un fichier xlsx dans la colonne gauche</span>
+              <Plus size={40} />
+              <span style={{ fontSize: 13 }}>Ajouter une ligne blanche ou importer un xlsx</span>
+              <button
+                type="button"
+                onClick={addBlankRow}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 6, border: 'none', background: 'var(--color-primary)', color: '#fff', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}
+              >
+                <Plus size={14} /> Ligne blanche
+              </button>
             </div>
           )}
 
@@ -1324,12 +1410,13 @@ export function DevisGridWorkspace({
                   <Th style={{ ...CELL.gray, width: 90 }}>PU HT</Th>
                   <Th style={{ ...CELL.yellow, width: 36 }}>Q.</Th>
                   <Th style={{ ...CELL.blue, width: 100 }}>Total TTC</Th>
+                  <Th style={{ width: 32 }}></Th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((row, i) => (
                   <Fragment key={`row-${i}`}>
-                    <MainRow row={row} index={i} expanded={expandedRows.has(i)} onToggle={() => toggleRow(i)} change={change} tva={tva} multGlobal={multGlobal} editMode={editMode} onUpdate={(patch) => updateRow(i, patch)} onRecompute={(patch) => recomputeRow(i, patch)} />
+                    <MainRow row={row} index={i} expanded={expandedRows.has(i)} onToggle={() => toggleRow(i)} change={change} tva={tva} multGlobal={multGlobal} editMode={editMode} onUpdate={(patch) => updateRow(i, patch)} onRecompute={(patch) => recomputeRow(i, patch)} onDelete={() => deleteRow(i)} />
                     {expandedRows.has(i) && (
                       <Fragment>
                         <SubRowRefs row={row} />
@@ -1346,7 +1433,7 @@ export function DevisGridWorkspace({
                             <td style={{ padding: '2px 8px', fontSize: 11, textAlign: 'right', fontWeight: 600, ...CELL.gray, borderBottom: '1px solid var(--color-border)' }}>
                               {opt.prix > 0 ? opt.prix.toLocaleString('fr-FR') + ' €' : <span style={{ color: '#a06a2c' }}>mutualisé</span>}
                             </td>
-                            <td colSpan={2} style={{ borderBottom: '1px solid var(--color-border)', ...CELL.blue }}></td>
+                            <td colSpan={3} style={{ borderBottom: '1px solid var(--color-border)', ...CELL.blue }}></td>
                           </tr>
                         ))}
                         {/* Équipements extras (judas, plinthe, œilleton…) */}
@@ -1361,13 +1448,13 @@ export function DevisGridWorkspace({
                             <td style={{ padding: '2px 8px', fontSize: 11, textAlign: 'right', fontWeight: 600, ...CELL.gray, borderBottom: '1px solid var(--color-border)' }}>
                               {e.prix != null ? e.prix.toLocaleString('fr-FR') + ' €' : <span style={{ color: 'var(--color-text-3)' }}>sur devis</span>}
                             </td>
-                            <td colSpan={2} style={{ borderBottom: '1px solid var(--color-border)', ...CELL.blue }}></td>
+                            <td colSpan={3} style={{ borderBottom: '1px solid var(--color-border)', ...CELL.blue }}></td>
                           </tr>
                         ))}
                         {/* Alertes */}
                         {(row.alertes || []).filter(a => a.startsWith('❌') || a.startsWith('⚠️')).map((a, ai) => (
                           <tr key={`alerte-${i}-${ai}`} style={{ background: 'rgba(160,106,44,0.06)' }}>
-                            <td colSpan={14} style={{ padding: '2px 8px 2px 52px', fontSize: 10, color: a.startsWith('❌') ? '#a33c3c' : '#a06a2c', borderBottom: '1px solid var(--color-border)' }}>
+                            <td colSpan={15} style={{ padding: '2px 8px 2px 52px', fontSize: 10, color: a.startsWith('❌') ? '#a33c3c' : '#a06a2c', borderBottom: '1px solid var(--color-border)' }}>
                               {a}
                             </td>
                           </tr>
@@ -1378,6 +1465,17 @@ export function DevisGridWorkspace({
                 ))}
               </tbody>
               <tfoot>
+                <tr>
+                  <td colSpan={15} style={{ padding: '8px 12px', borderTop: '1px solid var(--color-border)', background: 'var(--color-surface)' }}>
+                    <button
+                      type="button"
+                      onClick={addBlankRow}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 6, border: '1px solid var(--color-primary)', background: 'color-mix(in srgb, var(--color-primary) 8%, var(--color-surface))', color: 'var(--color-primary)', fontSize: 11, fontWeight: 800, cursor: 'pointer' }}
+                    >
+                      <Plus size={13} /> Ligne blanche
+                    </button>
+                  </td>
+                </tr>
                 <tr style={{ background: 'var(--color-surface)' }}>
                   <td colSpan={11} style={{ padding: '8px 16px', fontWeight: 700, fontSize: 12, borderTop: '2px solid var(--color-border)' }}>
                     💶 Total général estimé
@@ -1389,6 +1487,7 @@ export function DevisGridWorkspace({
                   <td style={{ padding: '8px 8px', fontWeight: 800, fontSize: 14, textAlign: 'right', borderTop: '2px solid var(--color-border)', ...CELL.blue }}>
                     {totalTTC.toLocaleString('fr-FR')} €
                   </td>
+                  <td style={{ borderTop: '2px solid var(--color-border)', ...CELL.blue }}></td>
                 </tr>
               </tfoot>
             </table>

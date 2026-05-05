@@ -518,7 +518,7 @@ function StepAnalysis({
   results, analyzing, error, expandedRow, setExpandedRow,
   aiRow, selectRow, fileInputRef, analyzeFile,
   aiRowData, aiMessages, aiInput, setAiInput, aiLoading, askAI, aiEndRef, aiInputRef,
-  onValidate, chatRatio, setChatRatio,
+  onValidate, onStartBlank, chatRatio, setChatRatio,
 }) {
   const chatWidth = chatRatio === '1/3' ? 380 : chatRatio === '1/2' ? '50%' : 620
   const RatioIcon = chatRatio === '1/3' ? Columns3 : chatRatio === '1/2' ? Columns2 : Columns
@@ -551,6 +551,14 @@ function StepAnalysis({
             }}>
               <Upload size={14} style={{ marginRight: 6, verticalAlign: 'middle' }} />
               Choisir un fichier .xlsx
+            </button>
+            <button onClick={onStartBlank} style={{
+              marginTop: 8, padding: '9px 18px', borderRadius: '10px', border: '1px solid var(--color-primary)',
+              background: 'color-mix(in srgb, var(--color-primary) 8%, var(--color-surface))', color: 'var(--color-primary)',
+              fontWeight: 700, fontSize: '13px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
+            }}>
+              <Plus size={14} />
+              Commencer avec une ligne vide
             </button>
           </div>
         ) : (
@@ -749,6 +757,17 @@ function StepEditor({
     }
   }, [devisId, onRefresh])
 
+  const deleteGridRow = useCallback(async (row) => {
+    if (!devisId || !row?._lineId) return
+    try {
+      await api.delete(`/devis/${devisId}/lines/${row._lineId}`)
+      onRefresh()
+    } catch (err) {
+      console.error('Grid line delete error:', err)
+      onRefresh()
+    }
+  }, [devisId, onRefresh])
+
   return (
     <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <div style={{ padding: '8px 14px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0, background: 'var(--color-surface)' }}>
@@ -767,7 +786,9 @@ function StepEditor({
         <DevisGridWorkspace
           embedded
           initialRows={gridRows}
+          startWithBlank
           onRowsCommit={commitGridRow}
+          onRowsDelete={deleteGridRow}
           title="Sheet devis"
           subtitle={saving ? 'Enregistrement en cours…' : `${lines.length} lignes synchronisées`}
         />
@@ -1274,6 +1295,15 @@ export default function DevisStepper() {
     }
   }
 
+  const handleStartBlankEditor = () => {
+    setResults([])
+    setLines([])
+    setAiRow(null)
+    setExpandedRow(null)
+    setAiMessages([])
+    goStep(3)
+  }
+
   // Step 3: editor AI
   const askAIEditor = async (question = editorAiInput) => {
     const q = (question || editorAiInput).trim()
@@ -1380,6 +1410,7 @@ export default function DevisStepper() {
             aiLoading={aiLoading} askAI={askAI}
             aiEndRef={aiEndRef} aiInputRef={aiInputRef}
             onValidate={handleValidateAnalysis}
+            onStartBlank={handleStartBlankEditor}
             chatRatio={chatRatio} setChatRatio={setChatRatio}
           />
         )}
