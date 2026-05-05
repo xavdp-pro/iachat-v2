@@ -5,7 +5,7 @@
  * Phase MVP : lecture seule + expand/collapse sous-rows
  */
 import { useState, useCallback, useRef, useEffect, Fragment } from 'react'
-import { Upload, RefreshCw, ChevronRight, ChevronDown, AlertTriangle, MessageSquare, ArrowLeft, PanelLeftClose, PanelLeftOpen, Plus, X, Check, Loader2, Settings, Trash2 } from 'lucide-react'
+import { Upload, RefreshCw, ChevronRight, ChevronDown, AlertTriangle, MessageSquare, ArrowLeft, PanelLeftClose, PanelLeftOpen, Plus, Minus, X, Check, Loader2, Settings, Trash2, Calculator, Truck, Package } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import api from '../api/index.js'
 import Select from 'react-select'
@@ -22,6 +22,17 @@ const SUBROW_BG = 'rgba(0,0,0,0.07)'
 // ─── Helpers ───────────────────────────────────────────────────────────────
 const fmt = (v) => v == null ? '—' : typeof v === 'number' ? v.toLocaleString('fr-FR') + ' €' : v
 
+function rowLetterLabel(index) {
+  let n = index + 1
+  let label = ''
+  while (n > 0) {
+    n -= 1
+    label = String.fromCharCode(65 + (n % 26)) + label
+    n = Math.floor(n / 26)
+  }
+  return label
+}
+
 function extractRef(str) {
   if (!str) return null
   const text = String(str)
@@ -35,6 +46,47 @@ function extractOptionRef(option) {
   return extractRef(option?.note) || extractRef(option?.label) || null
 }
 
+const DEFAULT_GARNITURE_REFS = {
+  BASE: { int: '4024', ext: '4024' },
+  CR3: { int: '4026', ext: '4026' },
+  CR4: { int: '4181', ext: '4032' },
+  CR5: { int: '4181', ext: null },
+  CR6: { int: '4181', ext: null },
+  FB: { int: '4026', ext: '4026' },
+  EI: { int: '4024', ext: '4024' },
+  BLAST: { int: '4181', ext: '4032' },
+  EF2: { int: '4181', ext: '4032' },
+}
+
+function inferGarnitureFamily(row) {
+  const text = [row?.gamme, row?._raw?.[3], row?._raw?.[4], row?._raw?.[5], row?._raw?.[6], row?.ref_base]
+    .filter(Boolean)
+    .join(' ')
+    .toUpperCase()
+  if (/BLAST/.test(text)) return 'BLAST'
+  if (/EF2/.test(text)) return 'EF2'
+  if (/EI\s*60|EI\s*120/.test(text)) return 'EI'
+  if (/FB\s*[4567]|PARE.?BALLES/.test(text)) return 'FB'
+  if (/CR6/.test(text)) return 'CR6'
+  if (/CR5/.test(text)) return 'CR5'
+  if (/CR4/.test(text)) return 'CR4'
+  if (/CR3|\b3100\b/.test(text)) return 'CR3'
+  return 'BASE'
+}
+
+function fallbackGarnitureRef(row, side, label) {
+  if (!label || !/b[ée]quille|poign[ée]e|garniture|plaque|pali[èe]re/i.test(String(label))) return null
+  return DEFAULT_GARNITURE_REFS[inferGarnitureFamily(row)]?.[side] || null
+}
+
+function findExtraEquipment(row, pattern) {
+  return (row?.equip_extra || []).find(e => typeof e === 'object' && pattern.test(`${e.label || ''} ${e.note || ''} ${e.ref || ''}`)) || null
+}
+
+function nonCremoneExtraEquipments(row) {
+  return (row?.equip_extra || []).filter(e => typeof e === 'object' && !/cr[ée]mone|semi.?fixe|vam/i.test(`${e.label || ''} ${e.note || ''}`))
+}
+
 function mainEquipLabel(value) {
   if (!value) return ''
   return String(value)
@@ -45,11 +97,51 @@ function mainEquipLabel(value) {
     .trim()
 }
 
-function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
+function acousticValue(value) {
+  const match = String(value || '').match(/\b(30|35|40|45)\s*dB\b/i)
+  return match ? `${match[1]} dB` : null
+}
+
+function isAcousticValue(value) {
+  return acousticValue(value) != null || /acoustique/i.test(String(value || ''))
+}
+
+function isBlockingUnpricedRow(row) {
+  const hasBasePrice = row?.prix_base_ht != null && Number(row.prix_base_ht) > 0
+  if (hasBasePrice) return false
+  const text = [
+    row?.designation,
+    row?.type,
+    ...(Array.isArray(row?.alertes) ? row.alertes : []),
+    ...(Array.isArray(row?.options) ? row.options.map(o => `${o.label || ''} ${o.note || ''}`) : []),
+  ].filter(Boolean).join(' ')
+  return /hors catalogue|nous consulter|impossible|pas de prix de base|non chiffrable/i.test(text)
+}
+
+export function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
+  if (r?.line_section === 'calculations' || r?.line_section === 'transport') {
+    const qty = r.qty ?? r.quantite ?? 1
+    const unit = Number(r.prix_base_ht ?? r.total_ligne_ht ?? r.prix_total_min_ht ?? 0)
+    const pu = unit * change * multGlobal
+    return {
+      ...r,
+      _pu: pu,
+      _total: pu * qty * (1 + tva),
+      _refs: [r.ref_base || '—', '', '', '', ''],
+      _prices: [unit, null, null, null, null],
+      _sectionLabel: r.line_section === 'transport' ? 'Transport' : 'Calculs',
+      _serrureLabel: '',
+      _garnIntLabel: '',
+      _garnExtLabel: '',
+      _fpLabel: '',
+      qty,
+    }
+  }
   const base   = r.prix_base_ht  ?? 0
+  const unpriced = isBlockingUnpricedRow(r)
   const pv     = (r.options || []).reduce((s, o) => s + (o.prix || 0), 0)
   const pvExtra = (r.equip_extra || []).reduce((s, e) => s + (typeof e === 'object' ? (e.prix || 0) : 0), 0)
-  const pu     = base + pv + pvExtra
+  const pu     = unpriced ? 0 : base + pv + pvExtra
   const qty    = Number.isFinite(r.qty) ? r.qty : 1
   // Multiple par-ligne (multiple) prend le pas sur le multiplicateur global
   const mult   = Number.isFinite(r.multiple) ? r.multiple : (Number.isFinite(multGlobal) ? multGlobal : 1)
@@ -63,10 +155,16 @@ function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
   const optSerrure = (r.options || []).find(o => /serrure|msl|lss|kel|dény/i.test(o.label))
   const optGarnInt = (r.options || []).find(o => /garniture int/i.test(o.label))
   const optGarnExt = (r.options || []).find(o => /garniture ext/i.test(o.label))
+  const cremone = findExtraEquipment(r, /cr[ée]mone|semi.?fixe|vam/i)
+  const otherExtras = nonCremoneExtraEquipments(r)
+  const vitrageRef = optVitrage ? extractRef(optVitrage.note) || extractRef(optVitrage.label) : null
+  const rawVitrage = isAcousticValue(r._raw?.[16]) ? null : r._raw?.[16]
   const serrureRef = extractRef(r.serrure?.ref) || extractOptionRef(optSerrure) || extractRef(r.serrure?.from)
   const fpRef     = extractOptionRef(optFP) || extractRef(r.ferme_porte?.ref)
-  const garnInt   = extractRef(r.garnitures?.int) || extractOptionRef(optGarnInt)
-  const garnExt   = extractRef(r.garnitures?.ext) || extractOptionRef(optGarnExt)
+  const garnIntLabel = r.garnitures?.int || r._raw?.[13] || optGarnInt?.label
+  const garnExtLabel = r.garnitures?.ext || r._raw?.[14] || optGarnExt?.label
+  const garnInt   = extractRef(r.garnitures?.int) || extractRef(r.garniture_int_ref) || extractOptionRef(optGarnInt) || extractRef(r._raw?.[13]) || fallbackGarnitureRef(r, 'int', garnIntLabel)
+  const garnExt   = extractRef(r.garnitures?.ext) || extractRef(r.garniture_ext_ref) || extractOptionRef(optGarnExt) || extractRef(r._raw?.[14]) || fallbackGarnitureRef(r, 'ext', garnExtLabel)
   const thermolaquage = r.thermolaquage != null
     ? r.thermolaquage
     : !!(r._raw?.[16] && String(r._raw[16]).toUpperCase().includes('RAL'))
@@ -76,13 +174,26 @@ function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
     _pv: pv,
     _total: total,
     thermolaquage,
+    _unpriced: unpriced,
     _serrureRef: serrureRef,
     _fpRef: fpRef,
+    _vitrageRef: vitrageRef,
+    _vitrageLabel: optVitrage?.label || rawVitrage || null,
+    _vitrageNote: optVitrage?.note || null,
+    _vitragePrix: optVitrage?.prix ?? null,
+    _acousticValue: acousticValue(r._raw?.[9]) || acousticValue(r._raw?.[16]) || acousticValue(r.acoustique),
     _garnIntRef: garnInt,
     _garnExtRef: garnExt,
     _fpLabel: r.ferme_porte?.ref ? r.ferme_porte.ref.replace(/ \(par défaut\)/, '') : null,
-    _garnIntLabel: r.garnitures?.int,
-    _garnExtLabel: r.garnitures?.ext,
+    _cremoneRef: extractRef(cremone?.ref) || extractRef(cremone?.note) || extractRef(cremone?.label),
+    _cremoneLabel: cremone?.label || null,
+    _cremoneNote: cremone?.note || null,
+    _cremonePrix: cremone?.prix ?? null,
+    _otherExtras: otherExtras,
+    _otherExtrasRefs: otherExtras.map(e => e.ref || extractRef(e.note) || extractRef(e.label)).filter(Boolean),
+    _otherExtrasPrix: otherExtras.reduce((sum, e) => sum + (Number(e.prix) || 0), 0),
+    _garnIntLabel: garnIntLabel,
+    _garnExtLabel: garnExtLabel,
     _serrureLabel: serrure,
     _optVitrage: optVitrage,
     _optFP: optFP,
@@ -148,17 +259,44 @@ function GammeBadge({ gamme, fullWidth }) {
   )
 }
 
+const PERF_CONTROL_WIDTH = {
+  rc: 58,
+  pb: 58,
+  cf: 58,
+  blast: 64,
+  belier: 64,
+  prison: 64,
+  acoustic: 72,
+}
+
+const perfActionButtonStyle = {
+  width: 28,
+  height: 26,
+  flex: '0 0 28px',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  border: '1px solid var(--color-border)',
+  borderRadius: 6,
+  background: 'var(--color-surface)',
+  color: 'var(--color-primary)',
+  cursor: 'pointer',
+  lineHeight: 1,
+}
+
 // ─── Composant ligne principale ──────────────────────────────────────────────
-function MainRow({ row, index, expanded, onToggle, change, tva, multGlobal, editMode, onUpdate, onRecompute, onDelete }) {
+function MainRow({ row, index, displayIndex = index, expanded, onToggle, change, tva, multGlobal, editMode, onUpdate, onRecompute, onDelete }) {
   const r = resolveRow(row, change, tva, multGlobal)
   const qty = Number.isFinite(r.qty) ? r.qty : 1
+  const isAmountSection = sectionOf(row) !== 'products'
   const [showEmptyPerfs, setShowEmptyPerfs] = useState(false)
-  const perfKeys = ['rc', 'pb', 'cf', 'blast', 'belier', 'prison']
-  const rawIndexByPerf = { rc: 3, pb: 4, cf: 5, blast: 6, belier: 7, prison: 8 }
-  const visiblePerfKeys = editMode
+  const perfKeys = ['rc', 'pb', 'cf', 'blast', 'belier', 'prison', 'acoustic']
+  const rawIndexByPerf = { rc: 3, pb: 4, cf: 5, blast: 6, belier: 7, prison: 8, acoustic: 9 }
+  const visiblePerfKeys = isAmountSection ? [] : (editMode
     ? perfKeys.filter(key => row._manualBlank || showEmptyPerfs || row._raw?.[rawIndexByPerf[key]] != null)
-    : perfKeys
+    : perfKeys)
   const hiddenPerfCount = perfKeys.length - visiblePerfKeys.length
+  const canCollapseEmptyPerfs = editMode && !isAmountSection && showEmptyPerfs && !row._manualBlank && hiddenPerfCount === 0
   return (
     <tr
       onClick={onToggle}
@@ -172,7 +310,7 @@ function MainRow({ row, index, expanded, onToggle, change, tva, multGlobal, edit
       <Td style={{ color: 'var(--color-text-3)', fontWeight: 700, width: 36 }}>
         <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
           {expanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-          {index + 1}
+          {rowLetterLabel(displayIndex)}
           {r._recomputing && <RefreshCw size={9} style={{ animation: 'spin 1s linear infinite' }} />}
         </span>
       </Td>
@@ -181,15 +319,23 @@ function MainRow({ row, index, expanded, onToggle, change, tva, multGlobal, edit
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           {editMode ? (
             <div style={{ background: 'color-mix(in srgb, #fbbf24 12%, transparent)', borderRadius: 3 }}>
-              <EditableSelect
-                value={r.type}
-                options={TYPE_OPTIONS}
-                onCommit={(v) => onRecompute?.({ type: v })}
-                placeholder="Type…"
-              />
+              {isAmountSection ? (
+                <EditableText
+                  value={r.designation || r.type || ''}
+                  onCommit={(v) => onUpdate?.({ designation: v, type: v })}
+                  placeholder={sectionOf(row) === 'transport' ? 'Frais de port…' : 'Avis / note…'}
+                />
+              ) : (
+                <EditableSelect
+                  value={r.type}
+                  options={TYPE_OPTIONS}
+                  onCommit={(v) => onRecompute?.({ type: v })}
+                  placeholder="Type…"
+                />
+              )}
             </div>
           ) : (
-            <span style={{ fontSize: 11, padding: '2px 4px' }}>{r.type || '—'}</span>
+            <span style={{ fontSize: 11, padding: '2px 4px' }}>{r.designation || r.type || '—'}</span>
           )}
           {r.ref_base && (
             <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--color-text-3)', letterSpacing: '0.02em', paddingLeft: 4 }}>
@@ -199,28 +345,36 @@ function MainRow({ row, index, expanded, onToggle, change, tva, multGlobal, edit
         </div>
       </Td>
       {/* Performances */}
-      <Td style={{ minWidth: 110, fontSize: 10, color: 'var(--color-text-2)' }}>
+      <Td style={{ minWidth: 150, fontSize: 10, color: 'var(--color-text-2)' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'stretch' }}>
           {editMode ? (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 2 }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center', minHeight: 26 }}>
               {visiblePerfKeys.map(key => {
                 const rawIdx = rawIndexByPerf[key]
-                const cur = row._raw?.[rawIdx] ?? null
+                const cur = key === 'acoustic' ? (r._acousticValue || row._raw?.[rawIdx] || null) : (row._raw?.[rawIdx] ?? null)
                 const isSet = cur != null
+                const controlWidth = PERF_CONTROL_WIDTH[key] || 58
                 return (
-                  <div key={key} onClick={e => e.stopPropagation()} style={{ position: 'relative' }}>
+                  <div key={key} onClick={e => e.stopPropagation()} style={{ position: 'relative', flex: `0 0 ${controlWidth}px` }}>
                     <select
                       value={cur ?? ''}
                       onChange={e => {
                         const v = e.target.value || null
                         onRecompute?.({ [`_raw_${rawIdx}`]: v })
                       }}
-                      title={key.toUpperCase()}
+                      title={key === 'acoustic' ? 'Acoustique' : key.toUpperCase()}
                       style={{
-                        fontSize: 9, padding: '1px 2px', cursor: 'pointer',
+                        width: controlWidth,
+                        height: 26,
+                        fontSize: 10,
+                        fontWeight: 700,
+                        padding: '0 20px 0 7px',
+                        cursor: 'pointer',
                         background: isSet ? 'color-mix(in srgb, #fbbf24 18%, var(--color-surface))' : 'var(--color-surface)',
-                        color: 'var(--color-text)', border: '1px solid var(--color-border)', borderRadius: 3,
-                        maxWidth: 52,
+                        color: 'var(--color-text)',
+                        border: '1px solid var(--color-border)',
+                        borderRadius: 6,
+                        outline: 'none',
                       }}
                     >
                       {PERF_OPTIONS[key].map(o => (
@@ -230,26 +384,32 @@ function MainRow({ row, index, expanded, onToggle, change, tva, multGlobal, edit
                   </div>
                 )
               })}
-              {hiddenPerfCount > 0 && (
+              {!isAmountSection && hiddenPerfCount > 0 && (
                 <button
                   type="button"
                   onClick={e => { e.stopPropagation(); setShowEmptyPerfs(true) }}
                   title={`Afficher ${hiddenPerfCount} performance${hiddenPerfCount > 1 ? 's' : ''} vide${hiddenPerfCount > 1 ? 's' : ''}`}
-                  style={{
-                    width: 22, height: 20, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                    border: '1px solid var(--color-border)', borderRadius: 4, background: 'var(--color-surface)',
-                    color: 'var(--color-primary)', cursor: 'pointer', fontWeight: 800, fontSize: 13, lineHeight: 1,
-                  }}
+                  style={perfActionButtonStyle}
                 >
-                  +
+                  <Plus size={13} strokeWidth={2.5} />
+                </button>
+              )}
+              {canCollapseEmptyPerfs && (
+                <button
+                  type="button"
+                  onClick={e => { e.stopPropagation(); setShowEmptyPerfs(false) }}
+                  title="Masquer les performances vides"
+                  style={perfActionButtonStyle}
+                >
+                  <Minus size={13} strokeWidth={2.5} />
                 </button>
               )}
             </div>
           ) : (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, fontSize: 9 }}>
-              {(['rc','pb','cf','blast','belier','prison']).map(key => {
-                const rawIdx = { rc: 3, pb: 4, cf: 5, blast: 6, belier: 7, prison: 8 }[key]
-                const cur = row._raw?.[rawIdx]
+              {(['rc','pb','cf','blast','belier','prison','acoustic']).map(key => {
+                const rawIdx = { rc: 3, pb: 4, cf: 5, blast: 6, belier: 7, prison: 8, acoustic: 9 }[key]
+                const cur = key === 'acoustic' ? r._acousticValue : row._raw?.[rawIdx]
                 if (!cur) return null
                 return (
                   <span key={key} style={{ padding: '1px 4px', borderRadius: 3, background: 'color-mix(in srgb, #fbbf24 14%, transparent)', fontWeight: 600 }}>{cur}</span>
@@ -262,18 +422,18 @@ function MainRow({ row, index, expanded, onToggle, change, tva, multGlobal, edit
       {/* H */}
       <Td palette={editMode ? 'yellow' : 'normal'} style={{ textAlign: 'right', width: 55, padding: 0 }}>
         {editMode
-          ? <EditableNumber value={r.haut_mm} onCommit={v => onRecompute?.({ haut_mm: v })} step={10} min={100} max={9999} width="100%" textAlign="right" />
+          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableNumber value={r.haut_mm} onCommit={v => onRecompute?.({ haut_mm: v })} step={10} min={100} max={9999} width="100%" textAlign="right" />)
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{r.haut_mm ?? '—'}</span>}
       </Td>
       {/* L */}
       <Td palette={editMode ? 'yellow' : 'normal'} style={{ textAlign: 'right', width: 55, padding: 0 }}>
         {editMode
-          ? <EditableNumber value={r.larg_mm} onCommit={v => onRecompute?.({ larg_mm: v })} step={10} min={100} max={9999} width="100%" textAlign="right" />
+          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableNumber value={r.larg_mm} onCommit={v => onRecompute?.({ larg_mm: v })} step={10} min={100} max={9999} width="100%" textAlign="right" />)
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{r.larg_mm ?? '—'}</span>}
       </Td>
       {/* TL */}
       <Td style={{ width: 44, textAlign: 'center', padding: 0 }}>
-        {editMode ? (
+        {isAmountSection ? <span style={{ fontSize: 9, color: 'var(--color-text-3)' }}>—</span> : editMode ? (
           <button
             onClick={e => {
               e.stopPropagation()
@@ -300,36 +460,66 @@ function MainRow({ row, index, expanded, onToggle, change, tva, multGlobal, edit
       {/* Serrure */}
       <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 80 }}>
         {editMode
-          ? <EditableText value={mainEquipLabel(row._raw?.[12] ?? r._serrureLabel ?? '')} onCommit={v => onRecompute?.({ [`_raw_12`]: v })} placeholder="serrure…" />
+          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableText value={mainEquipLabel(row._raw?.[12] ?? r._serrureLabel ?? '')} onCommit={v => onRecompute?.({ [`_raw_12`]: v })} placeholder="serrure…" />)
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{mainEquipLabel(row._raw?.[12] || r._serrureLabel) || '—'}</span>}
       </Td>
       {/* Garn int */}
       <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 70 }}>
         {editMode
-          ? <EditableText value={mainEquipLabel(row._raw?.[13] ?? r._garnIntLabel ?? '')} onCommit={v => onRecompute?.({ [`_raw_13`]: v })} placeholder="garn. int…" />
+          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableText value={mainEquipLabel(row._raw?.[13] ?? r._garnIntLabel ?? '')} onCommit={v => onRecompute?.({ [`_raw_13`]: v })} placeholder="garn. int…" />)
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{mainEquipLabel(row._raw?.[13] || r._garnIntLabel) || '—'}</span>}
       </Td>
       {/* Garn ext */}
       <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 70 }}>
         {editMode
-          ? <EditableText value={mainEquipLabel(row._raw?.[14] ?? r._garnExtLabel ?? '')} onCommit={v => onRecompute?.({ [`_raw_14`]: v })} placeholder="garn. ext…" />
+          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableText value={mainEquipLabel(row._raw?.[14] ?? r._garnExtLabel ?? '')} onCommit={v => onRecompute?.({ [`_raw_14`]: v })} placeholder="garn. ext…" />)
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{mainEquipLabel(row._raw?.[14] || r._garnExtLabel) || '—'}</span>}
       </Td>
       {/* Vitrage */}
-      <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 70 }}>
+      <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 130 }}>
         {editMode
-          ? <EditableText value={row._raw?.[16] ?? ''} onCommit={v => onRecompute?.({ [`_raw_16`]: v })} placeholder="" />
-          : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{row._raw?.[16] || ''}</span>}
+          ? (isAmountSection ? <EditableText value={row.notes || row.alertes?.[0] || ''} onCommit={v => onUpdate?.({ notes: v, alertes: v ? [v] : [] })} placeholder="note…" /> : <EditableText value={row._raw?.[16] ?? ''} onCommit={v => onRecompute?.({ [`_raw_16`]: v })} placeholder="" />)
+          : (r._vitrageLabel ? (
+            <Popover content={r._vitrageNote || r._vitrageLabel}>
+              <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', fontWeight: 600 }}>
+                {mainEquipLabel(r._vitrageLabel)}{r._vitrageRef ? ` · réf.${r._vitrageRef}` : ''}{r._vitragePrix != null ? ` · ${Number(r._vitragePrix).toLocaleString('fr-FR')} €` : ''}
+              </span>
+            </Popover>
+          ) : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{isAcousticValue(row._raw?.[16]) ? '' : (row._raw?.[16] || '')}</span>)}
       </Td>
       {/* FP */}
       <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 60 }}>
         {editMode
-          ? <EditableText value={mainEquipLabel(row._raw?.[15] ?? r._fpLabel ?? '')} onCommit={v => onRecompute?.({ [`_raw_15`]: v })} placeholder="FP…" />
+          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableText value={mainEquipLabel(row._raw?.[15] ?? r._fpLabel ?? '')} onCommit={v => onRecompute?.({ [`_raw_15`]: v })} placeholder="FP…" />)
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{mainEquipLabel(row._raw?.[15] || r._fpLabel) || '—'}</span>}
+      </Td>
+      {/* Crémone */}
+      <Td palette="normal" style={{ minWidth: 110, fontSize: 11, color: 'var(--color-text-2)' }}>
+        {r._cremoneLabel ? (
+          <Popover content={r._cremoneNote || r._cremoneLabel}>
+            <span style={{ display: 'inline-block', padding: '2px 4px', fontWeight: 600 }}>{mainEquipLabel(r._cremoneLabel)}</span>
+          </Popover>
+        ) : '—'}
+      </Td>
+      {/* Autres équipements */}
+      <Td palette="normal" style={{ minWidth: 140, fontSize: 11, color: 'var(--color-text-2)' }}>
+        {r._otherExtras?.length ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {r._otherExtras.map((e, extraIndex) => (
+              <Popover key={`${e.ref || e.label || extraIndex}`} content={e.note || e.label}>
+                <span style={{ display: 'inline-block', padding: '1px 4px', fontWeight: 600 }}>
+                  {mainEquipLabel(e.label)}{e.ref ? ` · réf.${e.ref}` : ''}{e.prix != null ? ` · ${Number(e.prix).toLocaleString('fr-FR')} €` : ''}
+                </span>
+              </Popover>
+            ))}
+          </div>
+        ) : '—'}
       </Td>
       {/* PU HT */}
       <Td palette="gray" style={{ textAlign: 'right', fontWeight: 600, whiteSpace: 'nowrap' }}>
-        {r._pu > 0 ? r._pu.toLocaleString('fr-FR') + ' €' : '—'}
+        {editMode && isAmountSection
+          ? <EditableNumber value={r.prix_base_ht ?? 0} onCommit={v => onUpdate?.({ prix_base_ht: v, prix_total_min_ht: v, total_ligne_ht: v })} step={10} min={0} max={999999} width="100%" textAlign="right" />
+          : (r._pu > 0 ? r._pu.toLocaleString('fr-FR') + ' €' : '—')}
       </Td>
       {/* Q (toujours éditable) */}
       <Td palette="yellow" style={{ textAlign: 'center', width: 36, padding: 0 }}>
@@ -360,8 +550,8 @@ function SubRowRefs({ row }) {
   const r = resolveRow(row)
   const cells = [
     r._serrureRef, r._garnIntRef, r._garnExtRef,
-    r._optVitrage ? extractRef(r._optVitrage.note) : null,
-    r._fpRef,
+    r._vitrageRef,
+    r._fpRef, r._cremoneRef, r._otherExtrasRefs?.join(', ') || null,
   ]
   return (
     <tr style={{ background: SUBROW_BG }}>
@@ -385,8 +575,9 @@ function SubRowPrices({ row }) {
   const r = resolveRow(row)
   const prices = [
     r._optSerrure?.prix, r._optGarnInt?.prix, r._optGarnExt?.prix,
-    r._optVitrage?.prix, r._optFP?.prix,
+    r._vitragePrix, r._optFP?.prix, r._cremonePrix, r._otherExtrasPrix || null,
   ]
+  const visiblePrices = r._unpriced ? prices.map(() => undefined) : prices
   return (
     <tr style={{ background: SUBROW_BG }}>
       <td colSpan={3} style={{ padding: '3px 8px 3px 40px', fontSize: 10, fontWeight: 700, color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }}>
@@ -394,14 +585,14 @@ function SubRowPrices({ row }) {
       </td>
       <td colSpan={2} style={{ padding: '3px 8px', borderBottom: '1px solid var(--color-border)', ...CELL.gray }}></td>
       <td style={{ borderBottom: '1px solid var(--color-border)', ...CELL.gray }}></td>
-      {prices.map((p, i) => (
+      {visiblePrices.map((p, i) => (
         <td key={i} style={{ padding: '3px 8px', fontSize: 11, ...CELL.gray, borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}>
-          {p != null ? p.toLocaleString('fr-FR') + ' €' : <span style={{ color: 'var(--color-text-3)' }}>de série</span>}
+          {p === undefined ? '—' : (p != null ? p.toLocaleString('fr-FR') + ' €' : <span style={{ color: 'var(--color-text-3)' }}>de série</span>)}
         </td>
       ))}
       {/* PU base dans la colonne PU HT */}
       <td style={{ padding: '3px 8px', fontSize: 11, textAlign: 'right', ...CELL.gray, borderBottom: '1px solid var(--color-border)', color: 'var(--color-text-3)' }}>
-        base: {r.prix_base_ht?.toLocaleString('fr-FR') ?? '—'} €
+        base: {r._unpriced ? '—' : (r.prix_base_ht?.toLocaleString('fr-FR') ?? '—')} €
       </td>
       <td colSpan={3} style={{ borderBottom: '1px solid var(--color-border)', ...CELL.blue }}></td>
     </tr>
@@ -421,6 +612,7 @@ const PERF_OPTIONS = {
   blast:  [{ value: null, label: '—' }, { value: '2t/m²', label: 'Blast 2t' }, { value: '4t/m²', label: 'Blast 4t' }, { value: '5t/m²', label: 'Blast 5t' }],
   belier: [{ value: null, label: '—' }, { value: 'Bélier', label: 'Bélier' }],
   prison: [{ value: null, label: '—' }, { value: 'Prison', label: 'Prison' }],
+  acoustic: [{ value: null, label: '—' }, { value: '30 dB', label: '30 dB' }, { value: '35 dB', label: '35 dB' }, { value: '40 dB', label: '40 dB' }, { value: '45 dB', label: '45 dB' }],
 }
 
 const TYPE_OPTIONS = ['BP 1V', 'BP 2V', 'Chassis', 'Guichet'].map(value => ({ value, label: value }))
@@ -428,6 +620,7 @@ const TYPE_OPTIONS = ['BP 1V', 'BP 2V', 'Chassis', 'Guichet'].map(value => ({ va
 function createBlankGridRow() {
   return {
     type: '',
+    line_section: 'products',
     designation: '',
     larg_mm: null,
     haut_mm: null,
@@ -443,6 +636,74 @@ function createBlankGridRow() {
     _manualBlank: true,
     _raw: new Array(17).fill(null),
   }
+}
+
+const SECTION_META = {
+  products: { label: 'Produits', icon: Package, hint: 'Portes, châssis, guichets et équipements intégrés' },
+  calculations: { label: 'Calculs', icon: Calculator, hint: 'Avis de chantier et notes de calcul explosion' },
+  transport: { label: 'Transport', icon: Truck, hint: 'Frais de port et livraison' },
+}
+
+const SECTION_ORDER = ['products', 'calculations', 'transport']
+const CALCULATION_OPTION_RE = /note de calcul|avis de chantier|avis chantier|calcul explosion/i
+
+function sectionOf(row) {
+  return SECTION_META[row?.line_section] ? row.line_section : 'products'
+}
+
+function createAmountRow(section = 'calculations', label = '') {
+  const isTransport = section === 'transport'
+  return {
+    type: isTransport ? 'Frais de port' : 'Avis / note de calcul',
+    designation: label || (isTransport ? 'Frais de port' : 'Avis de chantier / note de calcul'),
+    line_section: isTransport ? 'transport' : 'calculations',
+    qty: 1,
+    multiple: 1,
+    change_override: null,
+    prix_base_ht: 0,
+    prix_total_min_ht: 0,
+    options: [],
+    equip_extra: [],
+    alertes: [],
+    docs: [],
+    _manualBlank: true,
+    _raw: new Array(17).fill(null),
+  }
+}
+
+function splitCalculationOptions(rows) {
+  const nextRows = []
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (sectionOf(row) !== 'products') {
+      nextRows.push(row)
+      continue
+    }
+    const options = Array.isArray(row.options) ? row.options : []
+    const calcOptions = options.filter(option => CALCULATION_OPTION_RE.test(option?.label || ''))
+    if (!calcOptions.length) {
+      nextRows.push({ ...row, line_section: 'products' })
+      continue
+    }
+    const productOptions = options.filter(option => !CALCULATION_OPTION_RE.test(option?.label || ''))
+    const calcTotal = calcOptions.reduce((sum, option) => sum + (Number(option?.prix) || 0), 0)
+    const productTotal = row.prix_total_min_ht != null ? Math.max(0, Number(row.prix_total_min_ht) - calcTotal) : row.prix_total_min_ht
+    nextRows.push({ ...row, line_section: 'products', options: productOptions, prix_total_min_ht: productTotal, total_ligne_ht: productTotal })
+    calcOptions.forEach(option => {
+      nextRows.push({
+        ...createAmountRow('calculations', option.label || 'Calcul'),
+        designation: option.label || 'Calcul',
+        prix_base_ht: Number(option.prix) || 0,
+        prix_total_min_ht: Number(option.prix) || 0,
+        total_ligne_ht: Number(option.prix) || 0,
+        ref_base: extractOptionRef(option),
+        options: [],
+        alertes: option.note ? [option.note] : [],
+        docs: row.docs || [],
+        _generatedFrom: row.designation || row.type || null,
+      })
+    })
+  }
+  return nextRows
 }
 
 // ─── Styles react-select compacts pour cellules de tableau ───────────────────
@@ -1041,7 +1302,7 @@ export function DevisGridWorkspace({
 }) {
   const navigate = useNavigate()
   const [rows, setRows] = useState(() => {
-    if (Array.isArray(initialRows)) return initialRows.length > 0 ? initialRows : (startWithBlank ? [createBlankGridRow()] : [])
+    if (Array.isArray(initialRows)) return initialRows.length > 0 ? splitCalculationOptions(initialRows) : (startWithBlank ? [createBlankGridRow()] : [])
     try {
       const saved = localStorage.getItem('devisGridRows')
       if (saved) return JSON.parse(saved) || []
@@ -1084,7 +1345,7 @@ export function DevisGridWorkspace({
   })
   const [showAddModal, setShowAddModal] = useState(false)
   useEffect(() => {
-    if (Array.isArray(initialRows)) setRows(initialRows.length > 0 ? initialRows : (startWithBlank ? [createBlankGridRow()] : []))
+    if (Array.isArray(initialRows)) setRows(initialRows.length > 0 ? splitCalculationOptions(initialRows) : (startWithBlank ? [createBlankGridRow()] : []))
   }, [initialRows, startWithBlank])
   // Ref vers les rows courants — permet à recomputeRow de lire sans passer par un updater
   const rowsRef = useRef(rows)
@@ -1140,6 +1401,15 @@ export function DevisGridWorkspace({
     showToast('Ligne blanche ajoutée', 'success')
   }, [showToast])
 
+  const addSectionRow = useCallback((section) => {
+    const nextRows = [...rowsRef.current, createAmountRow(section)]
+    setRows(nextRows)
+    setEditMode(true)
+    setExpandedRows(prev => new Set([...prev, nextRows.length - 1]))
+    onRowsCommit?.(nextRows[nextRows.length - 1], nextRows.length - 1, { _created: true })
+    showToast(section === 'transport' ? 'Ligne transport ajoutée' : 'Ligne calcul ajoutée', 'success')
+  }, [onRowsCommit, showToast])
+
   const deleteRow = useCallback((i) => {
     const row = rowsRef.current[i]
     if (!row) return
@@ -1156,6 +1426,10 @@ export function DevisGridWorkspace({
     // Lire les rows via ref (pas d'updater) pour éviter le double-appel Strict Mode
     const cur = rowsRef.current[i]
     if (!cur) return
+    if (sectionOf(cur) !== 'products') {
+      updateRow(i, patch)
+      return
+    }
     const raw = patch._raw_override
       ? [...patch._raw_override]
       : Array.isArray(cur._raw) ? [...cur._raw] : new Array(17).fill(null)
@@ -1198,7 +1472,7 @@ export function DevisGridWorkspace({
         setRows(p2 => p2.map((r, idx) => idx === i ? { ...r, _recomputing: false, _recomputeError: String(err?.error || err?.message || err) } : r))
         showToast('Erreur recalcul', 'error')
       })
-  }, [onRowsCommit, showToast])
+  }, [onRowsCommit, showToast, updateRow])
 
   const handleFile = async (file) => {
     if (!file) return
@@ -1213,8 +1487,9 @@ export function DevisGridWorkspace({
       })
       // api interceptor retourne déjà res.data → res = { results: [...] }
       const data = res?.results ?? (Array.isArray(res) ? res : [])
-      setRows(Array.isArray(data) ? data : [])
-      onRowsChange?.(Array.isArray(data) ? data : [])
+      const sectionedRows = splitCalculationOptions(Array.isArray(data) ? data : [])
+      setRows(sectionedRows)
+      onRowsChange?.(sectionedRows)
       setFileName(file.name)
       setExpandedRows(new Set())
     } catch (e) {
@@ -1231,8 +1506,13 @@ export function DevisGridWorkspace({
   }
 
   // totaux
-  const totalPU  = rows.reduce((s, r) => s + (resolveRow(r)._pu), 0)
+  const totalPU  = rows.reduce((s, r) => s + (resolveRow(r, change, tva, multGlobal)._pu), 0)
   const totalTTC = rows.reduce((s, r) => s + (resolveRow(r, change, tva, multGlobal)._total), 0)
+  let displayIndex = 0
+  const sectionEntries = SECTION_ORDER.flatMap(section => {
+    const sectionRows = rows.map((row, index) => ({ row, index })).filter(item => sectionOf(item.row) === section)
+    return sectionRows.length ? [{ type: 'section', section, count: sectionRows.length }, ...sectionRows.map(item => ({ type: 'row', ...item, displayIndex: displayIndex++ }))] : []
+  })
 
   // ─── Layout ───────────────────────────────────────────────────────────────
   return (
@@ -1313,6 +1593,30 @@ export function DevisGridWorkspace({
         >
           <Plus size={12} /> Ajouter une ligne
         </button>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, margin: '8px 12px 0' }}>
+          <button
+            type="button"
+            onClick={() => addSectionRow('calculations')}
+            title="Ajouter une ligne dans la section Calculs"
+            style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-surface)', color: 'var(--color-text)', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}
+          >
+            <Calculator size={12} /> Calcul
+          </button>
+          <button
+            type="button"
+            onClick={() => addSectionRow('transport')}
+            title="Ajouter une ligne dans la section Transport"
+            style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-surface)', color: 'var(--color-text)', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}
+          >
+            <Truck size={12} /> Transport
+          </button>
+        </div>
+        <a
+          href="/devis/transport"
+          style={{ margin: '8px 12px 0', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '6px 10px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-surface)', color: 'var(--color-text-2)', fontSize: 10, fontWeight: 700, textDecoration: 'none' }}
+        >
+          <Truck size={12} /> Tarifs transport
+        </a>
         {loading && (
           <div style={{ padding: 12, textAlign: 'center', fontSize: 11, color: 'var(--color-text-3)' }}>
             Analyse en cours…
@@ -1361,6 +1665,20 @@ export function DevisGridWorkspace({
             >
               <Plus size={12} /> Ligne
             </button>
+            <button
+              type="button"
+              onClick={() => addSectionRow('calculations')}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, padding: '3px 8px', background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 4, cursor: 'pointer', color: 'var(--color-text-2)', fontWeight: 700 }}
+            >
+              <Calculator size={12} /> Calcul
+            </button>
+            <button
+              type="button"
+              onClick={() => addSectionRow('transport')}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, padding: '3px 8px', background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 4, cursor: 'pointer', color: 'var(--color-text-2)', fontWeight: 700 }}
+            >
+              <Truck size={12} /> Transport
+            </button>
             {rows.length > 0 && (
               <button
                 onClick={() => setExpandedRows(prev => prev.size === rows.length ? new Set() : new Set(rows.map((_, i) => i)))}
@@ -1393,12 +1711,12 @@ export function DevisGridWorkspace({
           )}
 
           {rows.length > 0 && (
-            <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'auto', minWidth: 1100 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'auto', minWidth: 1410 }}>
               <thead>
                 <tr>
                   <Th style={{ width: 36 }}>#</Th>
                   <Th style={{ minWidth: 140 }}>Désignation</Th>
-                  <Th style={{ minWidth: 100 }}>Perfs</Th>
+                  <Th style={{ minWidth: 150 }}>Perfs</Th>
                   <Th style={{ width: 55 }}>H (HT)</Th>
                   <Th style={{ width: 55 }}>L (HT)</Th>
                   <Th style={{ width: 40 }}>TL</Th>
@@ -1407,6 +1725,8 @@ export function DevisGridWorkspace({
                   <Th>Garniture ext.</Th>
                   <Th>Vitrage</Th>
                   <Th>Ferme-porte</Th>
+                  <Th>Crémone</Th>
+                  <Th>Autres équipements</Th>
                   <Th style={{ ...CELL.gray, width: 90 }}>PU HT</Th>
                   <Th style={{ ...CELL.yellow, width: 36 }}>Q.</Th>
                   <Th style={{ ...CELL.blue, width: 100 }}>Total TTC</Th>
@@ -1414,20 +1734,39 @@ export function DevisGridWorkspace({
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row, i) => (
-                  <Fragment key={`row-${i}`}>
-                    <MainRow row={row} index={i} expanded={expandedRows.has(i)} onToggle={() => toggleRow(i)} change={change} tva={tva} multGlobal={multGlobal} editMode={editMode} onUpdate={(patch) => updateRow(i, patch)} onRecompute={(patch) => recomputeRow(i, patch)} onDelete={() => deleteRow(i)} />
+                {sectionEntries.map((entry, entryIndex) => {
+                  if (entry.type === 'section') {
+                    const meta = SECTION_META[entry.section]
+                    const Icon = meta.icon
+                    return (
+                      <tr key={`section-${entry.section}`}>
+                        <td colSpan={17} style={{ position: 'sticky', top: 31, zIndex: 1, padding: '7px 12px', background: 'color-mix(in srgb, var(--color-primary) 7%, var(--color-surface))', borderTop: '1px solid var(--color-border)', borderBottom: '1px solid var(--color-border)' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 11, fontWeight: 900, letterSpacing: '0.02em', textTransform: 'uppercase' }}>
+                              <Icon size={13} /> {meta.label} <span style={{ color: 'var(--color-text-3)', fontWeight: 700 }}>({entry.count})</span>
+                            </span>
+                            <span style={{ fontSize: 10, color: 'var(--color-text-3)', textTransform: 'none', fontWeight: 500 }}>{meta.hint}</span>
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  }
+                  const row = entry.row
+                  const i = entry.index
+                  return (
+                  <Fragment key={`row-${i}-${entryIndex}`}>
+                    <MainRow row={row} index={i} displayIndex={entry.displayIndex} expanded={expandedRows.has(i)} onToggle={() => toggleRow(i)} change={change} tva={tva} multGlobal={multGlobal} editMode={editMode} onUpdate={(patch) => updateRow(i, patch)} onRecompute={(patch) => recomputeRow(i, patch)} onDelete={() => deleteRow(i)} />
                     {expandedRows.has(i) && (
                       <Fragment>
                         <SubRowRefs row={row} />
                         <SubRowPrices row={row} />
                         {/* Options supplémentaires */}
-                        {(row.options || []).filter(o => !/ferme.porte|garniture|serrure|msl|lss|kel|dény/i.test(o.label)).map((opt, oi) => (
+                        {(row.options || []).filter(o => !/acoustique|\b(30|35|40|45)\s*dB\b|remplissage|vitrage|ferme.porte|garniture|serrure|msl|lss|kel|dény/i.test(o.label)).map((opt, oi) => (
                           <tr key={`opt-${i}-${oi}`} style={{ background: SUBROW_BG }}>
                             <td colSpan={3} style={{ padding: '2px 8px 2px 52px', fontSize: 10, color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }}>
                               ↳ {opt.label}
                             </td>
-                            <td colSpan={8} style={{ padding: '2px 8px', fontSize: 10, color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }}>
+                            <td colSpan={10} style={{ padding: '2px 8px', fontSize: 10, color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }}>
                               {opt.note}
                             </td>
                             <td style={{ padding: '2px 8px', fontSize: 11, textAlign: 'right', fontWeight: 600, ...CELL.gray, borderBottom: '1px solid var(--color-border)' }}>
@@ -1436,25 +1775,10 @@ export function DevisGridWorkspace({
                             <td colSpan={3} style={{ borderBottom: '1px solid var(--color-border)', ...CELL.blue }}></td>
                           </tr>
                         ))}
-                        {/* Équipements extras (judas, plinthe, œilleton…) */}
-                        {(row.equip_extra || []).filter(e => typeof e === 'object').map((e, ei) => (
-                          <tr key={`extra-${i}-${ei}`} style={{ background: 'rgba(80,120,200,0.05)' }}>
-                            <td colSpan={3} style={{ padding: '2px 8px 2px 52px', fontSize: 10, color: 'var(--color-text-2)', borderBottom: '1px solid var(--color-border)' }}>
-                              <Popover content={e.label}><span>➕ {e.label}</span></Popover>{e.ref ? <span style={{ marginLeft: 6, fontWeight: 700, color: 'var(--color-text-3)' }}>réf.{e.ref}</span> : null}
-                            </td>
-                            <td colSpan={8} style={{ padding: '2px 8px', fontSize: 10, color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }}>
-                              <Popover content={e.note}><span>{e.note}</span></Popover>
-                            </td>
-                            <td style={{ padding: '2px 8px', fontSize: 11, textAlign: 'right', fontWeight: 600, ...CELL.gray, borderBottom: '1px solid var(--color-border)' }}>
-                              {e.prix != null ? e.prix.toLocaleString('fr-FR') + ' €' : <span style={{ color: 'var(--color-text-3)' }}>sur devis</span>}
-                            </td>
-                            <td colSpan={3} style={{ borderBottom: '1px solid var(--color-border)', ...CELL.blue }}></td>
-                          </tr>
-                        ))}
                         {/* Alertes */}
                         {(row.alertes || []).filter(a => a.startsWith('❌') || a.startsWith('⚠️')).map((a, ai) => (
                           <tr key={`alerte-${i}-${ai}`} style={{ background: 'rgba(160,106,44,0.06)' }}>
-                            <td colSpan={15} style={{ padding: '2px 8px 2px 52px', fontSize: 10, color: a.startsWith('❌') ? '#a33c3c' : '#a06a2c', borderBottom: '1px solid var(--color-border)' }}>
+                            <td colSpan={17} style={{ padding: '2px 8px 2px 52px', fontSize: 10, color: a.startsWith('❌') ? '#a33c3c' : '#a06a2c', borderBottom: '1px solid var(--color-border)' }}>
                               {a}
                             </td>
                           </tr>
@@ -1462,11 +1786,12 @@ export function DevisGridWorkspace({
                       </Fragment>
                     )}
                   </Fragment>
-                ))}
+                  )
+                })}
               </tbody>
               <tfoot>
                 <tr>
-                  <td colSpan={15} style={{ padding: '8px 12px', borderTop: '1px solid var(--color-border)', background: 'var(--color-surface)' }}>
+                  <td colSpan={17} style={{ padding: '8px 12px', borderTop: '1px solid var(--color-border)', background: 'var(--color-surface)' }}>
                     <button
                       type="button"
                       onClick={addBlankRow}
@@ -1477,7 +1802,7 @@ export function DevisGridWorkspace({
                   </td>
                 </tr>
                 <tr style={{ background: 'var(--color-surface)' }}>
-                  <td colSpan={11} style={{ padding: '8px 16px', fontWeight: 700, fontSize: 12, borderTop: '2px solid var(--color-border)' }}>
+                  <td colSpan={13} style={{ padding: '8px 16px', fontWeight: 700, fontSize: 12, borderTop: '2px solid var(--color-border)' }}>
                     💶 Total général estimé
                   </td>
                   <td style={{ padding: '8px 8px', fontWeight: 700, fontSize: 12, textAlign: 'right', borderTop: '2px solid var(--color-border)', ...CELL.gray }}>

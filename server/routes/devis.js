@@ -36,6 +36,22 @@ const SCRIPT = join(XLSX_DIR, 'detect_nexus.py')
 const router = Router()
 router.use(authenticate)
 
+const VALID_LINE_SECTIONS = new Set(['products', 'calculations', 'transport'])
+const normalizeLineSection = (value) => VALID_LINE_SECTIONS.has(value) ? value : 'products'
+
+function isBlockingUnpricedLine(line = {}) {
+  const hasBasePrice = line.prix_base_ht != null && Number(line.prix_base_ht) > 0
+  if (hasBasePrice) return false
+  const text = [
+    line.designation,
+    line.type,
+    line.type_porte,
+    ...(Array.isArray(line.alertes) ? line.alertes : []),
+    ...(Array.isArray(line.options) ? line.options.map(option => `${option?.label || ''} ${option?.note || ''}`) : []),
+  ].filter(Boolean).join(' ')
+  return /hors catalogue|nous consulter|impossible|pas de prix de base|non chiffrable/i.test(text)
+}
+
 // ── Multer : stockage dans /tmp, fichiers .xlsx uniquement ──────────────────
 const storage = multer.diskStorage({
   destination: os.tmpdir(),
@@ -442,7 +458,7 @@ router.get('/:id', async (req, res) => {
     if (!rows.length) return res.status(404).json({ error: 'Devis introuvable' })
     const devis = rows[0]
     const [lines] = await db.query(
-      'SELECT * FROM devis_lines WHERE devis_id = ? ORDER BY position ASC, id ASC',
+      'SELECT * FROM devis_lines WHERE devis_id = ? ORDER BY FIELD(line_section, "products", "calculations", "transport"), position ASC, id ASC',
       [devis.id]
     )
     res.json({ ...devis, lines })
@@ -507,7 +523,7 @@ router.delete('/:id', async (req, res) => {
 router.get('/:id/lines', async (req, res) => {
   try {
     const [rows] = await db.query(
-      'SELECT * FROM devis_lines WHERE devis_id = ? ORDER BY position ASC, id ASC',
+      'SELECT * FROM devis_lines WHERE devis_id = ? ORDER BY FIELD(line_section, "products", "calculations", "transport"), position ASC, id ASC',
       [req.params.id]
     )
     res.json(rows)
@@ -528,13 +544,13 @@ router.post('/:id/lines', async (req, res) => {
     const pos = d.position ?? (maxPos[0].mp + 1)
     const [result] = await db.query(
       `INSERT INTO devis_lines
-       (devis_id, position, designation, type_porte, gamme, vantail,
+       (devis_id, position, line_section, designation, type_porte, gamme, vantail,
         hauteur_mm, largeur_mm, prix_base_ht, ref_base, options_json,
         serrure_ref, serrure_prix, ferme_porte_ref, ferme_porte_prix,
         equipements_json, total_ligne_ht, alertes_json, docs_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        req.params.id, pos,
+        req.params.id, pos, normalizeLineSection(d.line_section),
         d.designation || null, d.type_porte || null, d.gamme || null, d.vantail || null,
         d.hauteur_mm || null, d.largeur_mm || null, d.prix_base_ht || null,
         d.ref_base || null,
@@ -564,15 +580,17 @@ router.post('/:id/lines/bulk', async (req, res) => {
     for (let i = 0; i < lines.length; i++) {
       const d = lines[i]
       const totalLigne = (d.prix_base_ht || 0) + (d.options?.reduce((s, o) => s + (o.prix || 0), 0) || 0) + (d.serrure_prix || 0) + (d.ferme_porte_prix || 0)
+      const pricedTotal = d.total_ligne_ht ?? d.prix_total_min_ht ?? totalLigne
+      const storedTotal = isBlockingUnpricedLine(d) ? null : (pricedTotal || null)
       await db.query(
         `INSERT INTO devis_lines
-         (devis_id, position, designation, type_porte, gamme, vantail,
+          (devis_id, position, line_section, designation, type_porte, gamme, vantail,
           hauteur_mm, largeur_mm, prix_base_ht, ref_base, options_json,
           serrure_ref, serrure_prix, ferme_porte_ref, ferme_porte_prix,
           equipements_json, total_ligne_ht, alertes_json, docs_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          req.params.id, i,
+          req.params.id, i, normalizeLineSection(d.line_section),
           d.designation || d.type || null, d.type || null, d.gamme || null, d.vantail || null,
           d.haut_mm || d.hauteur_mm || null, d.larg_mm || d.largeur_mm || null,
           d.prix_base_ht || null,
@@ -581,7 +599,7 @@ router.post('/:id/lines/bulk', async (req, res) => {
           d.serrure?.ref || null, null,
           d.ferme_porte?.ref || null, null,
           d.equip_extra ? JSON.stringify(d.equip_extra) : null,
-          d.prix_total_min_ht || totalLigne || null,
+          storedTotal,
           d.alertes ? JSON.stringify(d.alertes) : null,
           d.docs ? JSON.stringify(d.docs) : null,
         ]
@@ -593,7 +611,7 @@ router.post('/:id/lines/bulk', async (req, res) => {
       [req.params.id]
     )
     await db.query('UPDATE devis SET total_ht = ?, status = ? WHERE id = ?', [sumRows[0].total, 'editing', req.params.id])
-    const [allLines] = await db.query('SELECT * FROM devis_lines WHERE devis_id = ? ORDER BY position ASC', [req.params.id])
+    const [allLines] = await db.query('SELECT * FROM devis_lines WHERE devis_id = ? ORDER BY FIELD(line_section, "products", "calculations", "transport"), position ASC, id ASC', [req.params.id])
     res.json(allLines)
   } catch (err) {
     console.error("CRASH:", err); res.status(500).json({ error: err.message })
@@ -602,13 +620,13 @@ router.post('/:id/lines/bulk', async (req, res) => {
 
 // PUT /api/devis/:id/lines/:lineId — update a line
 router.put('/:id/lines/:lineId', async (req, res) => {
-  const allowed = ['position', 'designation', 'type_porte', 'gamme', 'vantail', 'hauteur_mm', 'largeur_mm', 'prix_base_ht', 'ref_base', 'options_json', 'serrure_ref', 'serrure_prix', 'ferme_porte_ref', 'ferme_porte_prix', 'equipements_json', 'total_ligne_ht', 'alertes_json', 'docs_json']
+  const allowed = ['position', 'line_section', 'designation', 'type_porte', 'gamme', 'vantail', 'hauteur_mm', 'largeur_mm', 'prix_base_ht', 'ref_base', 'options_json', 'serrure_ref', 'serrure_prix', 'ferme_porte_ref', 'ferme_porte_prix', 'equipements_json', 'total_ligne_ht', 'alertes_json', 'docs_json']
   const sets = []
   const vals = []
   for (const key of allowed) {
     if (req.body[key] !== undefined) {
       sets.push(`${key} = ?`)
-      vals.push(key.endsWith('_json') ? JSON.stringify(req.body[key]) : req.body[key])
+      vals.push(key === 'line_section' ? normalizeLineSection(req.body[key]) : (key.endsWith('_json') ? JSON.stringify(req.body[key]) : req.body[key]))
     }
   }
   if (!sets.length) return res.status(400).json({ error: 'Aucun champ à mettre à jour' })
@@ -654,7 +672,7 @@ router.get('/:id/pdf', async (req, res) => {
     const devis = devisRows[0]
 
     const [lines] = await db.query(
-      'SELECT * FROM devis_lines WHERE devis_id = ? ORDER BY position ASC',
+      'SELECT * FROM devis_lines WHERE devis_id = ? ORDER BY FIELD(line_section, "products", "calculations", "transport"), position ASC, id ASC',
       [id]
     )
 

@@ -121,7 +121,15 @@ export function buildDevisNexusHtml(data) {
   const clientName = devis.client_name || "—";
 
   // Build table rows from devis_lines
-  const rowsHtml = lines.map((line, i) => {
+  const sectionLabels = { products: "Produits", calculations: "Calculs", transport: "Transport" };
+  let currentSection = null;
+  let displayIndex = 0;
+  const rowsHtml = lines.map((line) => {
+    const lineSection = sectionLabels[line.line_section] ? line.line_section : "products";
+    const sectionHtml = lineSection !== currentSection
+      ? `<tr><td colspan="6" class="section-row">${escapeHtml(sectionLabels[lineSection])}</td></tr>`
+      : "";
+    currentSection = lineSection;
     const gamme = line.gamme ? `[${escapeHtml(line.gamme)}]` : "";
     const dims = (line.hauteur_mm && line.largeur_mm)
       ? ` H${line.hauteur_mm}×L${line.largeur_mm} mm` : "";
@@ -144,9 +152,9 @@ export function buildDevisNexusHtml(data) {
 
     const total = Number(line.total_ligne_ht) || Number(line.prix_base_ht) || 0;
 
-    return `
+    const rowHtml = `
       <tr>
-        <td class="cell-rep">${escapeHtml(repLetter(i))}</td>
+        <td class="cell-rep">${escapeHtml(repLetter(displayIndex))}</td>
         <td class="cell-desc">
           <div class="line-title">${title}</div>
           ${descParts ? `<div class="line-desc">${descParts}</div>` : ""}
@@ -156,6 +164,8 @@ export function buildDevisNexusHtml(data) {
         <td class="cell-num">${total ? formatEuro(total) : "—"}</td>
         <td class="cell-num">${total ? formatEuro(total) : "—"}</td>
       </tr>`;
+    displayIndex += 1;
+    return sectionHtml + rowHtml;
   }).join("");
 
   const grandTotal = Number(devis.total_ht) || lines.reduce((s, l) => s + (Number(l.total_ligne_ht) || Number(l.prix_base_ht) || 0), 0);
@@ -263,6 +273,13 @@ export function buildDevisNexusHtml(data) {
     }
     table.data-table td:first-child { border-left: none; padding-left: 3mm; }
     table.data-table td:last-child { padding-right: 10mm; }
+
+    .section-row {
+      background: #f3f7f8; color: var(--zr-title); font-size: 8pt;
+      font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em;
+      padding: 5px 10mm 5px calc(3mm + 8px) !important;
+      border-left: none !important;
+    }
 
     .cell-rep { width: 40px; min-width: 40px; text-align: center; font-weight: 700; color: var(--zr-title); }
     .cell-desc { width: auto; }

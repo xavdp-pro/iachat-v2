@@ -15,6 +15,7 @@ const ProspectQuotes = lazy(() => import('./pages/ProspectQuotes.jsx'))
 const DevisStepper = lazy(() => import('./pages/DevisStepper.jsx'))
 const Knowledge = lazy(() => import('./pages/Knowledge.jsx'))
 const DevisGrid = lazy(() => import('./pages/DevisGrid.jsx'))
+const TransportTariffs = lazy(() => import('./pages/TransportTariffs.jsx'))
 
 // Route guard — redirect to login if not authenticated
 function PrivateRoute({ children, adminOnly = false }) {
@@ -82,6 +83,11 @@ export default function App() {
             <Route path="/devis/grid" element={
               <PrivateRoute>
                 <DevisGrid />
+              </PrivateRoute>
+            } />
+            <Route path="/devis/transport" element={
+              <PrivateRoute>
+                <TransportTariffs />
               </PrivateRoute>
             } />
             <Route path="/prospects" element={

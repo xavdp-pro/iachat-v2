@@ -16,6 +16,7 @@ import ttsRoutes from './routes/tts.js'
 import experiencesRoutes from './routes/experiences.js'
 import documentsRoutes from './routes/documents.js'
 import devisRoutes from './routes/devis.js'
+import transportTariffsRoutes from './routes/transportTariffs.js'
 import prospectsRoutes from './routes/prospects.js'
 import knowledgeRoutes from './routes/knowledge.js'
 import { ensureDbSchema } from './db/ensureSchema.js'
@@ -51,6 +52,7 @@ app.use('/api/messages', messagesRoutes)
 app.use('/api/experiences', experiencesRoutes)
 app.use('/api/documents', documentsRoutes)
 app.use('/api/devis', devisRoutes)
+app.use('/api/transport-tariffs', transportTariffsRoutes)
 app.use('/api/prospects', prospectsRoutes)
 app.use('/api/knowledge', knowledgeRoutes)
 app.use('/api/tts', ttsRoutes)

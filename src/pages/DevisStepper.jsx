@@ -15,7 +15,7 @@ import {
 } from 'lucide-react'
 import { MarkdownRenderer } from '../components/MarkdownRenderer.jsx'
 import api from '../api/index.js'
-import { DevisGridWorkspace } from './DevisGrid.jsx'
+import { DevisGridWorkspace, resolveRow } from './DevisGrid.jsx'
 
 // ── Palette by gamme ─────────────────────────────────────────────────────────
 const GAMME_COLORS = {
@@ -38,6 +38,7 @@ const SUGGESTIONS = [
 ]
 
 const prixFmt = (v) => v != null ? `${Number(v).toLocaleString('fr-FR')} €` : null
+const CALCULATION_OPTION_RE = /note de calcul|avis de chantier|avis chantier|calcul explosion/i
 
 function parseJsonArray(value) {
   if (Array.isArray(value)) return value
@@ -49,6 +50,7 @@ function dbLineToGridRow(line) {
   return {
     _lineId: line.id,
     _dbPosition: line.position,
+    line_section: line.line_section || 'products',
     type: line.type_porte || line.designation || '',
     designation: line.designation || line.type_porte || '',
     gamme: line.gamme || '',
@@ -71,8 +73,12 @@ function dbLineToGridRow(line) {
 
 function gridRowToLinePayload(row, position) {
   const resolved = typeof resolveRow === 'function' ? resolveRow(row) : row
+  const lineTotal = resolved?._unpriced
+    ? null
+    : (row.total_ligne_ht ?? row.prix_total_min_ht ?? resolved?._pu ?? null)
   return {
     position,
+    line_section: row.line_section || 'products',
     designation: row.designation || row.type || null,
     type_porte: row.type || row.designation || null,
     gamme: row.gamme || null,
@@ -87,10 +93,46 @@ function gridRowToLinePayload(row, position) {
     ferme_porte_ref: row.ferme_porte?.ref || row._fpLabel || null,
     ferme_porte_prix: row.ferme_porte?.prix ?? null,
     equipements_json: row.equip_extra || [],
-    total_ligne_ht: row.total_ligne_ht ?? row.prix_total_min_ht ?? resolved?._total ?? resolved?._pu ?? null,
+    total_ligne_ht: lineTotal,
     alertes_json: row.alertes || [],
     docs_json: row.docs || [],
   }
+}
+
+function splitCalculationOptions(rows) {
+  const nextRows = []
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (row.line_section && row.line_section !== 'products') {
+      nextRows.push(row)
+      continue
+    }
+    const options = Array.isArray(row.options) ? row.options : []
+    const calcOptions = options.filter(option => CALCULATION_OPTION_RE.test(option?.label || ''))
+    if (!calcOptions.length) {
+      nextRows.push({ ...row, line_section: 'products' })
+      continue
+    }
+    const calcTotal = calcOptions.reduce((sum, option) => sum + (Number(option?.prix) || 0), 0)
+    const productOptions = options.filter(option => !CALCULATION_OPTION_RE.test(option?.label || ''))
+    const productTotal = row.prix_total_min_ht != null ? Math.max(0, Number(row.prix_total_min_ht) - calcTotal) : row.prix_total_min_ht
+    nextRows.push({ ...row, line_section: 'products', options: productOptions, prix_total_min_ht: productTotal, total_ligne_ht: productTotal })
+    calcOptions.forEach(option => {
+      const amount = Number(option.prix) || 0
+      nextRows.push({
+        line_section: 'calculations',
+        type: option.label || 'Calcul',
+        designation: option.label || 'Calcul',
+        prix_base_ht: amount,
+        prix_total_min_ht: amount,
+        total_ligne_ht: amount,
+        options: [],
+        equip_extra: [],
+        alertes: option.note ? [option.note] : [],
+        docs: row.docs || [],
+      })
+    })
+  }
+  return nextRows
 }
 
 const STEP_LABELS = [
@@ -1287,7 +1329,7 @@ export default function DevisStepper() {
   const handleValidateAnalysis = async () => {
     if (!currentDevisId || !results.length) return
     try {
-      const savedLines = await api.post(`/devis/${currentDevisId}/lines/bulk`, { lines: results })
+      const savedLines = await api.post(`/devis/${currentDevisId}/lines/bulk`, { lines: splitCalculationOptions(results) })
       setLines(savedLines)
       goStep(3)
     } catch (err) {
