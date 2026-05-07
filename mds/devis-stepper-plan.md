@@ -95,7 +95,13 @@
   - Options (liste avec prix)
   - Serrure (ref + prix)
   - Ferme-porte (ref + prix)
-  - Equipements supplementaires
+  - Colonnes dédiées par équipement : serrure, garnitures, vitrage, ferme-porte, crémone, autres équipements
+  - Les équipements structurés doivent afficher référence et prix dans leur colonne dédiée et ne doivent jamais être rendus en sous-lignes "Options supplémentaires"
+  - Acoustique 30/35/40/45 dB affichée dans les performances, jamais dans la colonne vitrage
+  - Anti-explosion : le select Blast doit refléter la perf même si la valeur source n'est pas au format exact (normalisation vers 2t/m², 4t/m², 5t/m²)
+  - Colonnes finales produit dans cet ordre : PU HT, Remise, Q., Total HT
+  - Les options ou alertes produit de calcul (`Avis de chantier`, `Note de calcul explosion`) sont mutualisées en une ligne par type (pas de doublons, pas de ligne à 0 €)
+  - Dimensions hors tarif : alerte dédiée et prix de base vide, sauf expérience approuvée `Validations individuelles R&D` prioritaire sur le tarif
   - Total ligne HT
 - [ ] Bouton **+** pour ajouter une nouvelle ligne vide
 - [ ] Bouton **supprimer** (icone poubelle) par ligne

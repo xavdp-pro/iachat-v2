@@ -26,9 +26,6 @@ const DOC_ORDER = [
   'EI60.md', 'EI120.md',
   'EQUIP-COMMUN.md', 'EQUIP-EI.md', 'EQUIP-FB.md',
   'BLAST.md', 'ANTI-BELIER.md', 'PRISON.md', 'EF2.md', 'SEISME-AEV.md',
-  'SERRURES-GARNITURES.md',
-  'CHASSIS.md',
-  'GUICHET.md',
 ]
 
 const DOC_META = {
@@ -49,7 +46,6 @@ const DOC_META = {
   'PRISON.md': { label: 'Porte Prison', category: 'spec' },
   'EF2.md': { label: 'Porte EF2', category: 'spec' },
   'SEISME-AEV.md': { label: 'Anti-séisme / AEV', category: 'spec' },
-  'SERRURES-GARNITURES.md': { label: 'Serrures & garnitures par défaut', category: 'equip' },
 }
 
 // ── GET /api/knowledge — inventaire global ──────────────────────────────────
@@ -116,7 +112,7 @@ router.get('/', async (req, res) => {
       tables: tablesMeta,
       howItWorks: {
         injection: "Les markdowns sont injectés dans le prompt Gemma à chaque requête /api/devis/ask : méthodologie (GUIDE-DEVIS), catalogue de base (BASE), gamme détectée (CRx/FBx/EIx/...), équipements (EQUIP-*) et expériences approuvées.",
-        tables: "Les tableaux de prix servent à positionner une dimension (H × L) dans la bonne fourchette : bloc-portes au plancher (module <= cote), châssis CR/EI/FB au plafond (module >= cote), châssis Blast selon les intervalles du tarif.",
+        tables: "Les tableaux de prix servent à positionner une dimension (H × L) dans la bonne fourchette : on prend la plus petite valeur du tableau >= à la dimension demandée (arrondi au plafond).",
         control: "Chaque expérience validée par un admin est indexée dans Qdrant et remontée automatiquement si elle est pertinente pour la question posée (top 3 à 8 selon la requête).",
       },
     })

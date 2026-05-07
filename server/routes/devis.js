@@ -38,6 +38,26 @@ router.use(authenticate)
 
 const VALID_LINE_SECTIONS = new Set(['products', 'calculations', 'transport'])
 const normalizeLineSection = (value) => VALID_LINE_SECTIONS.has(value) ? value : 'products'
+const RD_VALIDATION_CATEGORY = 'Validations individuelles R&D'
+
+async function loadRdValidations() {
+  const [rows] = await db.query(
+    `SELECT id, title, content, category
+       FROM experiences
+      WHERE status = 'approved' AND category = ?
+      ORDER BY id ASC`,
+    [RD_VALIDATION_CATEGORY]
+  )
+  return rows
+}
+
+async function detectEnv() {
+  const validations = await loadRdValidations().catch(() => [])
+  return {
+    ...process.env,
+    NEXUS_RD_VALIDATIONS: JSON.stringify(validations),
+  }
+}
 
 function isBlockingUnpricedLine(line = {}) {
   const hasBasePrice = line.prix_base_ht != null && Number(line.prix_base_ht) > 0
@@ -94,6 +114,7 @@ router.post('/analyze', (req, res, next) => {
     await execFileAsync('python3', [SCRIPT, inPath, outPath], {
       cwd: XLSX_DIR,
       timeout: 60_000,
+      env: await detectEnv(),
     })
     const raw = await readFile(outPath, 'utf-8')
     const results = JSON.parse(raw)
@@ -150,7 +171,7 @@ router.post('/recompute-row', async (req, res) => {
   if (!Array.isArray(rowArr)) return res.status(400).json({ error: 'row (array) requis' })
   try {
     const { spawn } = await import('node:child_process')
-    const child = spawn('python3', [SCRIPT, '--recompute'], { cwd: XLSX_DIR })
+    const child = spawn('python3', [SCRIPT, '--recompute'], { cwd: XLSX_DIR, env: await detectEnv() })
     let stdout = '', stderr = ''
     child.stdout.on('data', d => { stdout += d.toString() })
     child.stderr.on('data', d => { stderr += d.toString() })
@@ -330,7 +351,7 @@ router.post('/ask', async (req, res) => {
   let mandatoryRulesBlock = ''
   try {
     const [rulesRows] = await db.query(
-      `SELECT id, title, content, category FROM experiences WHERE status = 'approved' AND category IN ('Règle métier', 'Chiffrage') ORDER BY id ASC`
+      `SELECT id, title, content, category FROM experiences WHERE status = 'approved' AND category IN ('Règle métier', 'Chiffrage', 'Validations individuelles R&D') ORDER BY id ASC`
     )
     if (rulesRows.length) {
       mandatoryRulesBlock =
@@ -345,7 +366,7 @@ router.post('/ask', async (req, res) => {
   const expTopK = expKeywords.test(question) ? 8 : 5
   const expHitsRaw = await searchExperiences({ text: question, topK: expTopK }).catch(() => [])
   // Exclure les règles métier déjà injectées ci-dessus (éviter doublons)
-  const expHits = expHitsRaw.filter(h => !['Règle métier', 'Chiffrage'].includes(h.category))
+  const expHits = expHitsRaw.filter(h => !['Règle métier', 'Chiffrage', 'Validations individuelles R&D'].includes(h.category))
   const expBlock = expHits.length
     ? `\n\n[EXPÉRIENCES TERRAIN — PRIORITÉ ABSOLUE SUR LA DOCUMENTATION :]\nSi une expérience terrain contredit ou précise le tarif standard, la règle terrain prime. Mentionne explicitement que tu appliques une règle métier ("D'après nos expériences commerciales...").\n` +
     expHits.map((h, i) => `${i + 1}. [${h.category || 'Général'}] ${h.title} — ${h.excerpt || ''}`).join('\n')

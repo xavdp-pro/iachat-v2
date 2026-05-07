@@ -18,7 +18,7 @@ export async function loadApprovedRules() {
     `SELECT id, title, content, category
        FROM experiences
       WHERE status = 'approved'
-        AND category IN ('Règle métier', 'Chiffrage')
+        AND category IN ('Règle métier', 'Chiffrage', 'Validations individuelles R&D')
       ORDER BY id ASC`
   )
   return rows

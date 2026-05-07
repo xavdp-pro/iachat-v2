@@ -11,12 +11,13 @@ import { useAuthStore } from '../store/useAuthStore.js'
 import api from '../api/index.js'
 
 const CATEGORIES = [
-  'Chiffrage', 'Attention client', 'Règle métier', 'Piège à éviter',
+  'Chiffrage', 'Validations individuelles R&D', 'Attention client', 'Règle métier', 'Piège à éviter',
   'Matériaux', 'Main d\'œuvre', 'Déplacement', 'Autre',
 ]
 
 const CATEGORY_COLORS = {
   'Chiffrage': { bg: 'rgba(59,130,246,0.12)', text: '#3b82f6' },
+  'Validations individuelles R&D': { bg: 'rgba(20,184,166,0.14)', text: '#0f766e' },
   'Attention client': { bg: 'rgba(245,158,11,0.12)', text: '#f59e0b' },
   'Règle métier': { bg: 'rgba(139,92,246,0.12)', text: '#8b5cf6' },
   'Piège à éviter': { bg: 'rgba(239,68,68,0.12)', text: '#ef4444' },

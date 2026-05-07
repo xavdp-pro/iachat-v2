@@ -42,8 +42,21 @@ function extractRef(str) {
   return m ? m[1] : null
 }
 
+function equipmentText(value, depth = 0) {
+  if (value == null || depth > 2) return ''
+  if (typeof value === 'string' || typeof value === 'number') return String(value)
+  if (Array.isArray(value)) return value.map(item => equipmentText(item, depth + 1)).join(' ')
+  if (typeof value === 'object') {
+    return Object.entries(value)
+      .filter(([key]) => !/^_/u.test(key))
+      .map(([, item]) => equipmentText(item, depth + 1))
+      .join(' ')
+  }
+  return ''
+}
+
 function extractOptionRef(option) {
-  return extractRef(option?.note) || extractRef(option?.label) || null
+  return extractRef(option?.ref) || extractRef(option?.note) || extractRef(option?.label) || extractRef(equipmentText(option)) || null
 }
 
 const DEFAULT_GARNITURE_REFS = {
@@ -56,6 +69,18 @@ const DEFAULT_GARNITURE_REFS = {
   EI: { int: '4024', ext: '4024' },
   BLAST: { int: '4181', ext: '4032' },
   EF2: { int: '4181', ext: '4032' },
+}
+
+const EQUIPMENT_REF_PRICES = {
+  4024: 120.36,
+  4026: 117.84,
+  4032: 192.15,
+  4181: null,
+}
+
+function equipmentPriceByRef(ref) {
+  const key = String(ref || '').match(/\b([34]\d{3})\b/)?.[1]
+  return key && Object.prototype.hasOwnProperty.call(EQUIPMENT_REF_PRICES, key) ? EQUIPMENT_REF_PRICES[key] : undefined
 }
 
 function inferGarnitureFamily(row) {
@@ -79,12 +104,39 @@ function fallbackGarnitureRef(row, side, label) {
   return DEFAULT_GARNITURE_REFS[inferGarnitureFamily(row)]?.[side] || null
 }
 
+function optionAsEquipment(option) {
+  if (!option || typeof option !== 'object') return null
+  return {
+    label: option.label || option.designation || option.name || option.type || equipmentText(option).trim(),
+    note: option.note || option.description || '',
+    ref: extractOptionRef(option),
+    prix: option.prix ?? option.price ?? option.pu_ht ?? option.prix_ht ?? option.amount,
+    _fromOption: true,
+  }
+}
+
 function findExtraEquipment(row, pattern) {
-  return (row?.equip_extra || []).find(e => typeof e === 'object' && pattern.test(`${e.label || ''} ${e.note || ''} ${e.ref || ''}`)) || null
+  const extra = (row?.equip_extra || []).find(e => typeof e === 'object' && pattern.test(equipmentText(e)))
+  if (extra) return extra
+  const option = (row?.options || []).find(o => pattern.test(equipmentText(o)))
+  return optionAsEquipment(option)
 }
 
 function nonCremoneExtraEquipments(row) {
-  return (row?.equip_extra || []).filter(e => typeof e === 'object' && !/cr[ée]mone|semi.?fixe|vam/i.test(`${e.label || ''} ${e.note || ''}`))
+  const cremoneRe = /cr[ée]mone|semi.?fixe|vam/i
+  const optionEquipmentRe = /judas|oeilleton|œilleton|plinthe|seuil|ventouse|contact|g[âa]che|b[ée]quille|poign[ée]e|garniture|serrure|ferme.?porte|anti.?panique|barre|paumelle|pivot|but[ée]e/i
+  const extras = (row?.equip_extra || []).filter(e => typeof e === 'object' && !cremoneRe.test(equipmentText(e)))
+  const optionExtras = (row?.options || [])
+    .filter(o => optionEquipmentRe.test(equipmentText(o)) && !cremoneRe.test(equipmentText(o)))
+    .filter(o => !/acoustique|\b(30|35|40|45)\s*dB\b|remplissage|vitrage|ferme.?porte|garniture|serrure|msl|lss|kel|d[ée]ny/i.test(equipmentText(o)))
+    .map(optionAsEquipment)
+    .filter(Boolean)
+  return [...extras, ...optionExtras]
+}
+
+function isColumnEquipmentOption(option) {
+  const text = equipmentText(option)
+  return /cr[ée]mone|semi.?fixe|vam|judas|oeilleton|œilleton|plinthe|seuil|ventouse|contact|g[âa]che|anti.?panique|barre|paumelle|pivot|but[ée]e/i.test(text)
 }
 
 function mainEquipLabel(value) {
@@ -102,8 +154,25 @@ function acousticValue(value) {
   return match ? `${match[1]} dB` : null
 }
 
+function blastValue(value) {
+  const text = String(value || '').replace(/,/g, '.').replace(/\s+/g, ' ')
+  const match = text.match(/(?:blast\s*)?([245])\s*t(?:\s*\/\s*m(?:²|2))?/i)
+  return match ? `${match[1]}t/m²` : null
+}
+
 function isAcousticValue(value) {
   return acousticValue(value) != null || /acoustique/i.test(String(value || ''))
+}
+
+function stripAcousticInfo(value) {
+  return String(value || '')
+    .replace(/\bacoustique\s*(30|35|40|45)?\s*dB\b/giu, '')
+    .replace(/\b(30|35|40|45)\s*dB\b/giu, '')
+    .replace(/\bacoustique\b/giu, '')
+    .replace(/\s*[·,;|/+-]\s*$/u, '')
+    .replace(/^\s*[·,;|/+-]\s*/u, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
 }
 
 function isBlockingUnpricedRow(row) {
@@ -122,11 +191,15 @@ export function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
   if (r?.line_section === 'calculations' || r?.line_section === 'transport') {
     const qty = r.qty ?? r.quantite ?? 1
     const unit = Number(r.prix_base_ht ?? r.total_ligne_ht ?? r.prix_total_min_ht ?? 0)
-    const pu = unit * change * multGlobal
+    const mult = Number.isFinite(r.multiple) ? r.multiple : (Number.isFinite(multGlobal) ? multGlobal : 1)
+    const lineChange = Number.isFinite(r.change_override) ? r.change_override : change
+    const pu = unit * lineChange
+    const totalHt = pu * qty * mult
     return {
       ...r,
       _pu: pu,
-      _total: pu * qty * (1 + tva),
+      _totalHt: totalHt,
+      _total: totalHt * (1 + tva),
       _refs: [r.ref_base || '—', '', '', '', ''],
       _prices: [unit, null, null, null, null],
       _sectionLabel: r.line_section === 'transport' ? 'Transport' : 'Calculs',
@@ -146,11 +219,13 @@ export function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
   // Multiple par-ligne (multiple) prend le pas sur le multiplicateur global
   const mult   = Number.isFinite(r.multiple) ? r.multiple : (Number.isFinite(multGlobal) ? multGlobal : 1)
   const lineChange = Number.isFinite(r.change_override) ? r.change_override : change
-  const total  = Math.round(pu * qty * mult * (1 + tva) * lineChange)
+  const totalHt = Math.round(pu * qty * mult * lineChange)
+  const total  = Math.round(totalHt * (1 + tva))
   // équipements structurés depuis les options + champs
   const serrure   = r.serrure?.ref  || null
   // options spécifiques
-  const optVitrage = (r.options || []).find(o => /remplissage|vitrage/i.test(o.label))
+  const optionsText = (r.options || []).map(o => equipmentText(o)).join(' ')
+  const optVitrage = (r.options || []).find(o => /remplissage|vitrage/i.test(equipmentText(o)) && stripAcousticInfo(equipmentText(o)))
   const optFP      = (r.options || []).find(o => /ferme.porte/i.test(o.label))
   const optSerrure = (r.options || []).find(o => /serrure|msl|lss|kel|dény/i.test(o.label))
   const optGarnInt = (r.options || []).find(o => /garniture int/i.test(o.label))
@@ -158,32 +233,41 @@ export function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
   const cremone = findExtraEquipment(r, /cr[ée]mone|semi.?fixe|vam/i)
   const otherExtras = nonCremoneExtraEquipments(r)
   const vitrageRef = optVitrage ? extractRef(optVitrage.note) || extractRef(optVitrage.label) : null
-  const rawVitrage = isAcousticValue(r._raw?.[16]) ? null : r._raw?.[16]
+  const rawVitrage = stripAcousticInfo(r._raw?.[16]) || null
+  const vitrageLabel = stripAcousticInfo(optVitrage?.label || optVitrage?.designation || optVitrage?.name) || rawVitrage
+  const vitrageNote = stripAcousticInfo(optVitrage?.note || optVitrage?.description)
   const serrureRef = extractRef(r.serrure?.ref) || extractOptionRef(optSerrure) || extractRef(r.serrure?.from)
   const fpRef     = extractOptionRef(optFP) || extractRef(r.ferme_porte?.ref)
   const garnIntLabel = r.garnitures?.int || r._raw?.[13] || optGarnInt?.label
   const garnExtLabel = r.garnitures?.ext || r._raw?.[14] || optGarnExt?.label
   const garnInt   = extractRef(r.garnitures?.int) || extractRef(r.garniture_int_ref) || extractOptionRef(optGarnInt) || extractRef(r._raw?.[13]) || fallbackGarnitureRef(r, 'int', garnIntLabel)
   const garnExt   = extractRef(r.garnitures?.ext) || extractRef(r.garniture_ext_ref) || extractOptionRef(optGarnExt) || extractRef(r._raw?.[14]) || fallbackGarnitureRef(r, 'ext', garnExtLabel)
+  const garnIntPrix = optGarnInt?.prix ?? equipmentPriceByRef(garnInt)
+  const garnExtPrix = optGarnExt?.prix ?? equipmentPriceByRef(garnExt)
   const thermolaquage = r.thermolaquage != null
     ? r.thermolaquage
     : !!(r._raw?.[16] && String(r._raw[16]).toUpperCase().includes('RAL'))
+  const blastPerf = blastValue(r._raw?.[6]) || blastValue(r.blast) || blastValue(optionsText) || blastValue(r.designation) || blastValue(r.alertes?.join(' '))
   return {
     ...r,
     _pu: pu,
     _pv: pv,
+    _totalHt: totalHt,
     _total: total,
     thermolaquage,
+    _blastValue: blastPerf,
     _unpriced: unpriced,
     _serrureRef: serrureRef,
     _fpRef: fpRef,
     _vitrageRef: vitrageRef,
-    _vitrageLabel: optVitrage?.label || rawVitrage || null,
-    _vitrageNote: optVitrage?.note || null,
+    _vitrageLabel: vitrageLabel || null,
+    _vitrageNote: vitrageNote || null,
     _vitragePrix: optVitrage?.prix ?? null,
-    _acousticValue: acousticValue(r._raw?.[9]) || acousticValue(r._raw?.[16]) || acousticValue(r.acoustique),
+    _acousticValue: acousticValue(r._raw?.[9]) || acousticValue(r._raw?.[16]) || acousticValue(r.acoustique) || acousticValue(optionsText),
     _garnIntRef: garnInt,
     _garnExtRef: garnExt,
+    _garnIntPrix: garnIntPrix,
+    _garnExtPrix: garnExtPrix,
     _fpLabel: r.ferme_porte?.ref ? r.ferme_porte.ref.replace(/ \(par défaut\)/, '') : null,
     _cremoneRef: extractRef(cremone?.ref) || extractRef(cremone?.note) || extractRef(cremone?.label),
     _cremoneLabel: cremone?.label || null,
@@ -219,9 +303,9 @@ function Th({ children, style = {} }) {
 }
 
 // ─── Composant cellule data ──────────────────────────────────────────────────
-function Td({ children, palette = 'normal', style = {} }) {
+function Td({ children, palette = 'normal', style = {}, ...props }) {
   return (
-    <td style={{
+    <td {...props} style={{
       padding: '5px 8px', fontSize: 11, verticalAlign: 'middle',
       borderBottom: '1px solid var(--color-border)',
       ...CELL[palette],
@@ -284,6 +368,65 @@ const perfActionButtonStyle = {
   lineHeight: 1,
 }
 
+const amountHeaderCellStyle = {
+  padding: '5px 8px',
+  fontSize: 9,
+  fontWeight: 800,
+  textTransform: 'uppercase',
+  letterSpacing: '0.05em',
+  color: 'var(--color-text-3)',
+  background: 'color-mix(in srgb, var(--color-primary) 4%, var(--color-surface))',
+  borderBottom: '1px solid var(--color-border)',
+  whiteSpace: 'nowrap',
+}
+
+function amountEuro(value) {
+  if (value == null || value === '') return '—'
+  const amount = Number(value)
+  return Number.isFinite(amount) ? `${amount.toLocaleString('fr-FR')} €` : '—'
+}
+
+function transportAddressText(row, fallbackAddress = '') {
+  return row?.delivery_address || row?.transport_address || row?.notes || row?.alertes?.[0] || fallbackAddress || ''
+}
+
+function parseTransportAddress(address = '') {
+  const text = String(address || '').trim()
+  const lower = text.toLowerCase()
+  const postal = text.match(/\b\d{4,5}\b/)?.[0] || ''
+  const cantonMatch = text.toUpperCase().match(/\b(GE|VD|VS|FR|NE|JU|BE|SO|BS|BL|AG|ZH|LU|ZG|NW|OW|UR|SZ|TI|GR|SH|TG|SG|GL|AR|AI)\b/)
+  const countryMap = [
+    ['suisse', 'CH'], ['switzerland', 'CH'], ['schweiz', 'CH'],
+    ['belgique', 'Belgique'], ['belgium', 'Belgique'],
+    ['luxembourg', 'Luxembourg'], ['espagne', 'Espagne'], ['spain', 'Espagne'],
+    ['portugal', 'Portugal'], ['italie', 'Italie'], ['italy', 'Italie'],
+    ['angleterre', 'Angleterre'], ['royaume-uni', 'Angleterre'], ['uk', 'Angleterre'],
+    ['pays-bas', 'Pays-Bas'], ['netherlands', 'Pays-Bas'],
+    ['danemark', 'Denmark'], ['denmark', 'Denmark'],
+    ['allemagne', 'Allemagne'], ['germany', 'Allemagne'],
+    ['autriche', 'Autriche'], ['austria', 'Autriche'],
+  ]
+  const countryEntry = countryMap.find(([needle]) => lower.includes(needle))
+  const country = countryEntry?.[1] || (cantonMatch ? 'CH' : '')
+  return {
+    raw_address: text,
+    postal_code: postal,
+    canton: cantonMatch?.[1] || '',
+    country,
+    destination: country && country !== 'CH' ? country : '',
+  }
+}
+
+function productLeafCount(rows = []) {
+  return Math.max(1, rows.reduce((sum, row) => {
+    if (sectionOf(row) !== 'products') return sum
+    const qty = Number(row.qty ?? row.quantite ?? 1)
+    const vantailText = String(row.vantail || row.type || row.designation || '')
+    const leafFactor = /2\s*V|BP\s*2V/i.test(vantailText) ? 2 : 1
+    return sum + (Number.isFinite(qty) && qty > 0 ? qty : 1) * leafFactor
+  }, 0))
+}
+
 // ─── Composant ligne principale ──────────────────────────────────────────────
 function MainRow({ row, index, displayIndex = index, expanded, onToggle, change, tva, multGlobal, editMode, onUpdate, onRecompute, onDelete }) {
   const r = resolveRow(row, change, tva, multGlobal)
@@ -293,7 +436,7 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
   const perfKeys = ['rc', 'pb', 'cf', 'blast', 'belier', 'prison', 'acoustic']
   const rawIndexByPerf = { rc: 3, pb: 4, cf: 5, blast: 6, belier: 7, prison: 8, acoustic: 9 }
   const visiblePerfKeys = isAmountSection ? [] : (editMode
-    ? perfKeys.filter(key => row._manualBlank || showEmptyPerfs || row._raw?.[rawIndexByPerf[key]] != null)
+    ? perfKeys.filter(key => row._manualBlank || showEmptyPerfs || row._raw?.[rawIndexByPerf[key]] != null || (key === 'acoustic' && r._acousticValue) || (key === 'blast' && r._blastValue))
     : perfKeys)
   const hiddenPerfCount = perfKeys.length - visiblePerfKeys.length
   const canCollapseEmptyPerfs = editMode && !isAmountSection && showEmptyPerfs && !row._manualBlank && hiddenPerfCount === 0
@@ -351,7 +494,9 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center', minHeight: 26 }}>
               {visiblePerfKeys.map(key => {
                 const rawIdx = rawIndexByPerf[key]
-                const cur = key === 'acoustic' ? (r._acousticValue || row._raw?.[rawIdx] || null) : (row._raw?.[rawIdx] ?? null)
+                const cur = key === 'acoustic'
+                  ? (r._acousticValue || row._raw?.[rawIdx] || null)
+                  : (key === 'blast' ? (r._blastValue || blastValue(row._raw?.[rawIdx]) || null) : (row._raw?.[rawIdx] ?? null))
                 const isSet = cur != null
                 const controlWidth = PERF_CONTROL_WIDTH[key] || 58
                 return (
@@ -409,7 +554,7 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, fontSize: 9 }}>
               {(['rc','pb','cf','blast','belier','prison','acoustic']).map(key => {
                 const rawIdx = { rc: 3, pb: 4, cf: 5, blast: 6, belier: 7, prison: 8, acoustic: 9 }[key]
-                const cur = key === 'acoustic' ? r._acousticValue : row._raw?.[rawIdx]
+                const cur = key === 'acoustic' ? r._acousticValue : (key === 'blast' ? (r._blastValue || blastValue(row._raw?.[rawIdx])) : row._raw?.[rawIdx])
                 if (!cur) return null
                 return (
                   <span key={key} style={{ padding: '1px 4px', borderRadius: 3, background: 'color-mix(in srgb, #fbbf24 14%, transparent)', fontWeight: 600 }}>{cur}</span>
@@ -478,7 +623,7 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
       {/* Vitrage */}
       <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 130 }}>
         {editMode
-          ? (isAmountSection ? <EditableText value={row.notes || row.alertes?.[0] || ''} onCommit={v => onUpdate?.({ notes: v, alertes: v ? [v] : [] })} placeholder="note…" /> : <EditableText value={row._raw?.[16] ?? ''} onCommit={v => onRecompute?.({ [`_raw_16`]: v })} placeholder="" />)
+          ? (isAmountSection ? <EditableText value={row.notes || row.alertes?.[0] || ''} onCommit={v => onUpdate?.({ notes: v, alertes: v ? [v] : [] })} placeholder="note…" /> : <EditableText value={stripAcousticInfo(row._raw?.[16])} onCommit={v => onRecompute?.({ [`_raw_16`]: v })} placeholder="" />)
           : (r._vitrageLabel ? (
             <Popover content={r._vitrageNote || r._vitrageLabel}>
               <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', fontWeight: 600 }}>
@@ -497,7 +642,9 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
       <Td palette="normal" style={{ minWidth: 110, fontSize: 11, color: 'var(--color-text-2)' }}>
         {r._cremoneLabel ? (
           <Popover content={r._cremoneNote || r._cremoneLabel}>
-            <span style={{ display: 'inline-block', padding: '2px 4px', fontWeight: 600 }}>{mainEquipLabel(r._cremoneLabel)}</span>
+            <span style={{ display: 'inline-block', padding: '2px 4px', fontWeight: 600 }}>
+              {mainEquipLabel(r._cremoneLabel)}{r._cremoneRef ? ` · réf.${r._cremoneRef}` : ''}{r._cremonePrix != null ? ` · ${Number(r._cremonePrix).toLocaleString('fr-FR')} €` : ''}
+            </span>
           </Popover>
         ) : '—'}
       </Td>
@@ -521,19 +668,138 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
           ? <EditableNumber value={r.prix_base_ht ?? 0} onCommit={v => onUpdate?.({ prix_base_ht: v, prix_total_min_ht: v, total_ligne_ht: v })} step={10} min={0} max={999999} width="100%" textAlign="right" />
           : (r._pu > 0 ? r._pu.toLocaleString('fr-FR') + ' €' : '—')}
       </Td>
+      {/* Remise */}
+      <Td palette="yellow" style={{ textAlign: 'center', width: 60, padding: 0 }}>
+        <EditableNumber
+          value={Number.isFinite(row.multiple) ? row.multiple : multGlobal}
+          onCommit={v => onUpdate?.({ multiple: v })}
+          step={0.01}
+          min={0}
+          max={10}
+          width="100%"
+          textAlign="center"
+        />
+      </Td>
       {/* Q (toujours éditable) */}
       <Td palette="yellow" style={{ textAlign: 'center', width: 36, padding: 0 }}>
         <EditableNumber value={qty} onCommit={v => onUpdate?.({ qty: v })} step={1} min={1} max={9999} width="100%" />
       </Td>
-      {/* Total TTC */}
+      {/* Total HT */}
       <Td palette="blue" style={{ textAlign: 'right', fontWeight: 800, whiteSpace: 'nowrap', fontSize: 12 }}>
-        {r._pu > 0 ? r._total.toLocaleString('fr-FR') + ' €' : '—'}
+        {r._pu > 0 ? r._totalHt.toLocaleString('fr-FR') + ' €' : '—'}
       </Td>
       <Td style={{ width: 32, textAlign: 'center', padding: 0 }}>
         {editMode && (
           <button
             type="button"
             onClick={e => { e.stopPropagation(); onDelete?.() }}
+            title="Supprimer la ligne"
+            style={{ width: '100%', height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 'none', background: 'transparent', color: '#a33c3c', cursor: 'pointer' }}
+          >
+            <Trash2 size={13} />
+          </button>
+        )}
+      </Td>
+    </tr>
+  )
+}
+
+function AmountSectionColumns({ section }) {
+  const isTransport = section === 'transport'
+  return (
+    <tr>
+      <td style={{ ...amountHeaderCellStyle, width: 36 }}>#</td>
+      <td colSpan={4} style={amountHeaderCellStyle}>{isTransport ? 'Poste transport' : 'Libellé calcul'}</td>
+      <td colSpan={4} style={amountHeaderCellStyle}>{isTransport ? 'Destination / note' : 'Détail / condition'}</td>
+      <td colSpan={2} style={amountHeaderCellStyle}>{isTransport ? 'Règle' : 'Référence'}</td>
+      <td colSpan={2} style={amountHeaderCellStyle}>{isTransport ? 'Tranches' : 'Source'}</td>
+      <td style={{ ...amountHeaderCellStyle, ...CELL.gray, textAlign: 'right' }}>PU HT</td>
+      <td style={{ ...amountHeaderCellStyle, ...CELL.yellow, textAlign: 'center' }}>Remise</td>
+      <td style={{ ...amountHeaderCellStyle, ...CELL.yellow, textAlign: 'center' }}>Q.</td>
+      <td style={{ ...amountHeaderCellStyle, ...CELL.blue, textAlign: 'right' }}>Total HT</td>
+      <td style={{ ...amountHeaderCellStyle, width: 32 }}></td>
+    </tr>
+  )
+}
+
+function AmountRow({ row, index, displayIndex = index, change, tva, multGlobal, editMode, defaultTransportAddress = '', onUpdate, onTransportAddressCommit, onDelete }) {
+  const r = resolveRow(row, change, tva, multGlobal)
+  const section = sectionOf(row)
+  const isTransport = section === 'transport'
+  const qty = Number.isFinite(r.qty) ? r.qty : 1
+  const detail = isTransport ? transportAddressText(row, defaultTransportAddress) : (row.notes || row.alertes?.[0] || '')
+  const rule = isTransport ? (row.transport_zone || row.ref_base || 'Tarif transport') : (row.ref_base || '—')
+  const source = isTransport
+    ? (row.tranche_count ? `${row.tranche_count} tranche${row.tranche_count > 1 ? 's' : ''}` : 'recalcul auto')
+    : (row._generatedFrom || '—')
+
+  return (
+    <tr style={{ background: 'color-mix(in srgb, var(--color-primary) 2%, transparent)' }}>
+      <Td style={{ color: 'var(--color-text-3)', fontWeight: 700, width: 36 }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+          <ChevronRight size={11} style={{ opacity: 0.25 }} />
+          {rowLetterLabel(displayIndex)}
+        </span>
+      </Td>
+      <Td colSpan={4} style={{ minWidth: 220, fontWeight: 700, padding: 0 }}>
+        {editMode ? (
+          <EditableText
+            value={r.designation || r.type || ''}
+            onCommit={(value) => onUpdate?.({ designation: value, type: value })}
+            placeholder={isTransport ? 'Frais de port…' : 'Avis / note de calcul…'}
+          />
+        ) : (
+          <span style={{ display: 'inline-block', padding: '2px 8px' }}>{r.designation || r.type || '—'}</span>
+        )}
+      </Td>
+      <Td colSpan={4} style={{ minWidth: 260, padding: 0, color: 'var(--color-text-2)' }}>
+        {editMode ? (
+          <EditableText
+            value={detail}
+            onCommit={(value) => isTransport
+              ? onTransportAddressCommit?.(value)
+              : onUpdate?.({ notes: value, alertes: value ? [value] : [] })}
+            placeholder={isTransport ? 'Adresse de livraison…' : 'Condition, remarque, note…'}
+          />
+        ) : (
+          <span style={{ display: 'inline-block', padding: '2px 8px' }}>{detail || '—'}</span>
+        )}
+      </Td>
+      <Td colSpan={2} style={{ minWidth: 130, padding: 0, color: 'var(--color-text-2)' }}>
+        {editMode && !isTransport ? (
+          <EditableText
+            value={row.ref_base || ''}
+            onCommit={(value) => onUpdate?.({ ref_base: value })}
+            placeholder="réf.…"
+          />
+        ) : (
+          <span style={{ display: 'inline-block', padding: '2px 8px', fontWeight: 600 }}>{rule}</span>
+        )}
+      </Td>
+      <Td colSpan={2} style={{ minWidth: 120, color: 'var(--color-text-3)' }}>
+        {source}
+      </Td>
+      <Td palette="gray" style={{ textAlign: 'right', fontWeight: 700, whiteSpace: 'nowrap', padding: 0 }}>
+        {editMode ? (
+          <EditableNumber value={r.prix_base_ht ?? 0} onCommit={value => onUpdate?.({ prix_base_ht: value, prix_total_min_ht: value, total_ligne_ht: value })} step={10} min={0} max={999999} width="100%" textAlign="right" />
+        ) : (
+          <span style={{ display: 'inline-block', padding: '2px 8px' }}>{amountEuro(r._pu)}</span>
+        )}
+      </Td>
+      <Td palette="yellow" style={{ textAlign: 'center', width: 60, padding: 0 }}>
+        <EditableNumber value={Number.isFinite(row.multiple) ? row.multiple : multGlobal} onCommit={value => onUpdate?.({ multiple: value })} step={0.01} min={0} max={10} width="100%" textAlign="center" />
+      </Td>
+      <Td palette="yellow" style={{ textAlign: 'center', width: 36, padding: 0 }}>
+        <EditableNumber value={qty} onCommit={value => onUpdate?.({ qty: value })} step={1} min={1} max={9999} width="100%" />
+      </Td>
+      <Td palette="blue" style={{ textAlign: 'right', fontWeight: 800, whiteSpace: 'nowrap', fontSize: 12 }}>
+        {amountEuro(r._totalHt)}
+      </Td>
+      <Td style={{ width: 32, textAlign: 'center', padding: 0 }}>
+        {editMode && (
+          <button
+            type="button"
+            onClick={event => { event.stopPropagation(); onDelete?.() }}
             title="Supprimer la ligne"
             style={{ width: '100%', height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 'none', background: 'transparent', color: '#a33c3c', cursor: 'pointer' }}
           >
@@ -565,7 +831,7 @@ function SubRowRefs({ row }) {
           {ref || '—'}
         </td>
       ))}
-      <td colSpan={4} style={{ borderBottom: '1px solid var(--color-border)', ...CELL.gray }}></td>
+      <td colSpan={5} style={{ borderBottom: '1px solid var(--color-border)', ...CELL.gray }}></td>
     </tr>
   )
 }
@@ -574,7 +840,7 @@ function SubRowRefs({ row }) {
 function SubRowPrices({ row }) {
   const r = resolveRow(row)
   const prices = [
-    r._optSerrure?.prix, r._optGarnInt?.prix, r._optGarnExt?.prix,
+    r._optSerrure?.prix, r._garnIntPrix, r._garnExtPrix,
     r._vitragePrix, r._optFP?.prix, r._cremonePrix, r._otherExtrasPrix || null,
   ]
   const visiblePrices = r._unpriced ? prices.map(() => undefined) : prices
@@ -594,7 +860,7 @@ function SubRowPrices({ row }) {
       <td style={{ padding: '3px 8px', fontSize: 11, textAlign: 'right', ...CELL.gray, borderBottom: '1px solid var(--color-border)', color: 'var(--color-text-3)' }}>
         base: {r._unpriced ? '—' : (r.prix_base_ht?.toLocaleString('fr-FR') ?? '—')} €
       </td>
-      <td colSpan={3} style={{ borderBottom: '1px solid var(--color-border)', ...CELL.blue }}></td>
+      <td colSpan={4} style={{ borderBottom: '1px solid var(--color-border)', ...CELL.blue }}></td>
     </tr>
   )
 }
@@ -608,7 +874,7 @@ function truncate(s, n) {
 const PERF_OPTIONS = {
   rc:     [{ value: null, label: '—' }, { value: 'CR3', label: 'CR3' }, { value: 'CR4', label: 'CR4' }, { value: 'CR5', label: 'CR5' }, { value: 'CR6', label: 'CR6' }],
   pb:     [{ value: null, label: '—' }, { value: 'FB4', label: 'FB4' }, { value: 'FB5', label: 'FB5' }, { value: 'FB6', label: 'FB6' }, { value: 'FB7', label: 'FB7' }],
-  cf:     [{ value: null, label: '—' }, { value: 'EI30', label: 'EI30' }, { value: 'EI60', label: 'EI60' }, { value: 'EI120', label: 'EI120' }],
+  cf:     [{ value: null, label: '—' }, { value: 'EI30', label: 'EI² 30' }, { value: 'EI60', label: 'EI² 60' }, { value: 'EI90', label: 'EI² 90' }, { value: 'EI120', label: 'EI² 120' }],
   blast:  [{ value: null, label: '—' }, { value: '2t/m²', label: 'Blast 2t' }, { value: '4t/m²', label: 'Blast 4t' }, { value: '5t/m²', label: 'Blast 5t' }],
   belier: [{ value: null, label: '—' }, { value: 'Bélier', label: 'Bélier' }],
   prison: [{ value: null, label: '—' }, { value: 'Prison', label: 'Prison' }],
@@ -646,13 +912,33 @@ const SECTION_META = {
 
 const SECTION_ORDER = ['products', 'calculations', 'transport']
 const CALCULATION_OPTION_RE = /note de calcul|avis de chantier|avis chantier|calcul explosion/i
+const FIRE_PERFORMANCE_RE = /\bEI\s*(30|60|90|120)\b/i
+const HEIGHT_AVIS_CHANTIER_RE = /hauteur\s+\d+\s*mm\s+d[ée]passe\s+le\s+max\s+catalogue.*avis\s+de\s+chantier/i
 
 function sectionOf(row) {
   return SECTION_META[row?.line_section] ? row.line_section : 'products'
 }
 
-function createAmountRow(section = 'calculations', label = '') {
+function rowHasFirePerformance(row) {
+  return FIRE_PERFORMANCE_RE.test([
+    row?.cf,
+    row?.coupe_feu,
+    row?.feu,
+    row?._raw?.[5],
+    row?.designation,
+    ...(row?.options || []).map(option => equipmentText(option)),
+  ].filter(Boolean).join(' '))
+}
+
+function sanitizeCalculationAlerts(row) {
+  if (!row || sectionOf(row) !== 'products' || rowHasFirePerformance(row)) return row
+  const alertes = (row.alertes || []).filter(alert => !HEIGHT_AVIS_CHANTIER_RE.test(String(alert || '')))
+  return alertes.length === (row.alertes || []).length ? row : { ...row, alertes }
+}
+
+function createAmountRow(section = 'calculations', label = '', defaults = {}) {
   const isTransport = section === 'transport'
+  const address = isTransport ? (defaults.defaultTransportAddress || '') : ''
   return {
     type: isTransport ? 'Frais de port' : 'Avis / note de calcul',
     designation: label || (isTransport ? 'Frais de port' : 'Avis de chantier / note de calcul'),
@@ -664,7 +950,9 @@ function createAmountRow(section = 'calculations', label = '') {
     prix_total_min_ht: 0,
     options: [],
     equip_extra: [],
-    alertes: [],
+    alertes: address ? [address] : [],
+    notes: address || '',
+    delivery_address: address || '',
     docs: [],
     _manualBlank: true,
     _raw: new Array(17).fill(null),
@@ -672,6 +960,25 @@ function createAmountRow(section = 'calculations', label = '') {
 }
 
 function splitCalculationOptions(rows) {
+  const buckets = new Map()
+  const registerCalcOption = (option) => {
+    const label = String(option?.label || '').trim()
+    const amount = Number(option?.prix) || 0
+    const rawKey = label.toLowerCase()
+    const key = /avis de chantier|avis chantier/i.test(label)
+      ? 'avis_chantier'
+      : (/note de calcul|calcul explosion/i.test(label) ? 'note_calcul_explosion' : rawKey || 'calcul')
+    const title = key === 'avis_chantier'
+      ? 'Avis de chantier'
+      : (key === 'note_calcul_explosion' ? 'Note de calcul explosion (non remisable)' : (label || 'Calcul'))
+    const prev = buckets.get(key) || { key, label: title, amount: 0, notes: new Set(), count: 0 }
+    if (amount > prev.amount) prev.amount = amount
+    if (option?.note) prev.notes.add(String(option.note))
+    prev.count += 1
+    buckets.set(key, prev)
+    return amount
+  }
+
   const nextRows = []
   for (const row of Array.isArray(rows) ? rows : []) {
     if (sectionOf(row) !== 'products') {
@@ -685,25 +992,109 @@ function splitCalculationOptions(rows) {
       continue
     }
     const productOptions = options.filter(option => !CALCULATION_OPTION_RE.test(option?.label || ''))
-    const calcTotal = calcOptions.reduce((sum, option) => sum + (Number(option?.prix) || 0), 0)
+    const calcTotal = calcOptions.reduce((sum, option) => sum + registerCalcOption(option), 0)
     const productTotal = row.prix_total_min_ht != null ? Math.max(0, Number(row.prix_total_min_ht) - calcTotal) : row.prix_total_min_ht
     nextRows.push({ ...row, line_section: 'products', options: productOptions, prix_total_min_ht: productTotal, total_ligne_ht: productTotal })
-    calcOptions.forEach(option => {
-      nextRows.push({
-        ...createAmountRow('calculations', option.label || 'Calcul'),
-        designation: option.label || 'Calcul',
-        prix_base_ht: Number(option.prix) || 0,
-        prix_total_min_ht: Number(option.prix) || 0,
-        total_ligne_ht: Number(option.prix) || 0,
-        ref_base: extractOptionRef(option),
-        options: [],
-        alertes: option.note ? [option.note] : [],
-        docs: row.docs || [],
-        _generatedFrom: row.designation || row.type || null,
-      })
+  }
+  for (const bucket of buckets.values()) {
+    if (!(Number(bucket.amount) > 0)) continue
+    const notes = [...bucket.notes]
+    nextRows.push({
+      ...createAmountRow('calculations', bucket.label),
+      designation: bucket.label,
+      prix_base_ht: Number(bucket.amount) || 0,
+      prix_total_min_ht: Number(bucket.amount) || 0,
+      total_ligne_ht: Number(bucket.amount) || 0,
+      options: [],
+      alertes: notes,
+      notes: notes.join(' — ') || '',
+      _generatedFrom: notes.length > 1 ? `${notes.length} lignes produits` : '1 ligne produit',
     })
   }
   return nextRows
+}
+
+function normalizeCalculationRows(rows) {
+  const nextRows = []
+  const calcBuckets = new Map()
+
+  const addBucket = (key, label, amount, note) => {
+    const price = Number(amount) || 0
+    if (!(price > 0)) return
+    const bucket = calcBuckets.get(key) || { key, label, amount: 0, notes: new Set(), count: 0 }
+    if (price > bucket.amount) bucket.amount = price
+    if (note) {
+      String(note)
+        .split(/\s+—\s+(?=(?:Hauteur|Dimensions|Hors zone bleue Blast))/u)
+        .map(part => part.replace(/^[⚠️✅❌\s]+/u, '').trim())
+        .filter(part => part && !/mutualis[ée]/i.test(part))
+        .forEach(part => bucket.notes.add(part))
+    }
+    bucket.count += 1
+    calcBuckets.set(key, bucket)
+  }
+
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const section = sectionOf(row)
+    const text = `${row.designation || ''} ${row.type || ''} ${(row.alertes || []).join(' ')}`
+    if (section === 'products') {
+      const cleanRow = sanitizeCalculationAlerts(row)
+      nextRows.push(cleanRow)
+      for (const alert of cleanRow.alertes || []) {
+        if (/avis de chantier|avis chantier/i.test(alert)) addBucket('avis_chantier', 'Avis de chantier', 3700, alert)
+        if (/note de calcul|calcul explosion|hors zone bleue/i.test(alert) && !/non requise|NON requise/i.test(alert)) {
+          addBucket('note_calcul_explosion', 'Note de calcul explosion (non remisable)', 9300, alert)
+        }
+      }
+      continue
+    }
+    if (section !== 'calculations') {
+      nextRows.push(row)
+      continue
+    }
+    const amount = Number(row.prix_base_ht ?? row.total_ligne_ht ?? row.prix_total_min_ht ?? 0)
+    if (/avis de chantier|avis chantier/i.test(text)) {
+      if (HEIGHT_AVIS_CHANTIER_RE.test(text) && !FIRE_PERFORMANCE_RE.test(text)) continue
+      addBucket('avis_chantier', 'Avis de chantier', amount || 3700, row.notes || row.alertes?.join(' — '))
+      continue
+    }
+    if (/note de calcul|calcul explosion/i.test(text)) {
+      addBucket('note_calcul_explosion', 'Note de calcul explosion (non remisable)', amount || 9300, row.notes || row.alertes?.join(' — '))
+      continue
+    }
+    if (amount > 0) nextRows.push(row)
+  }
+
+  for (const bucket of calcBuckets.values()) {
+    const notes = [...bucket.notes].filter(Boolean)
+    nextRows.push({
+      ...createAmountRow('calculations', bucket.label),
+      designation: bucket.label,
+      prix_base_ht: bucket.amount,
+      prix_total_min_ht: bucket.amount,
+      total_ligne_ht: bucket.amount,
+      options: [],
+      alertes: notes,
+      notes: notes.join(' — '),
+      _generatedFrom: notes.length > 1 ? `${notes.length} lignes produits` : '1 ligne produit',
+    })
+  }
+  return nextRows
+}
+
+function applyDefaultTransportAddress(rows, defaultTransportAddress = '') {
+  const address = String(defaultTransportAddress || '').trim()
+  if (!address) return rows
+  return (Array.isArray(rows) ? rows : []).map(row => {
+    if (sectionOf(row) !== 'transport' || transportAddressText(row)) return row
+    return {
+      ...row,
+      delivery_address: address,
+      transport_address: address,
+      notes: address,
+      alertes: [address],
+    }
+  })
 }
 
 // ─── Styles react-select compacts pour cellules de tableau ───────────────────
@@ -1258,13 +1649,13 @@ function SettingsModal({ change, multGlobal, tva, onClose, onApply }) {
             <span style={{ fontSize: 10, color: 'var(--color-text-3)' }}>Multiplie tous les prix. 1.00 = pas de conversion.</span>
           </label>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-2)' }}>Coefficient multiplicateur (marge globale)</span>
+            <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-2)' }}>Remise globale (coefficient)</span>
             <input
               type="text" inputMode="decimal" value={m} onChange={e => setM(e.target.value)}
               placeholder="1.00"
               style={{ fontSize: 13, padding: '6px 10px', background: 'var(--color-bg)', border: '1px solid var(--color-border)', borderRadius: 6, color: 'var(--color-text)' }}
             />
-            <span style={{ fontSize: 10, color: 'var(--color-text-3)' }}>Ex : 1.15 = +15% de marge. 0.9 = remise 10%.</span>
+            <span style={{ fontSize: 10, color: 'var(--color-text-3)' }}>Ex : 1.15 = +15% de marge. 0.90 = remise 10%. Chaque ligne peut être ajustée dans la colonne Remise.</span>
           </label>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-2)' }}>TVA</span>
@@ -1293,6 +1684,7 @@ function SettingsModal({ change, multGlobal, tva, onClose, onApply }) {
 export function DevisGridWorkspace({
   embedded = false,
   initialRows = null,
+  defaultTransportAddress = '',
   startWithBlank = false,
   onRowsChange = null,
   onRowsCommit = null,
@@ -1302,10 +1694,10 @@ export function DevisGridWorkspace({
 }) {
   const navigate = useNavigate()
   const [rows, setRows] = useState(() => {
-    if (Array.isArray(initialRows)) return initialRows.length > 0 ? splitCalculationOptions(initialRows) : (startWithBlank ? [createBlankGridRow()] : [])
+    if (Array.isArray(initialRows)) return initialRows.length > 0 ? applyDefaultTransportAddress(normalizeCalculationRows(splitCalculationOptions(initialRows)), defaultTransportAddress) : (startWithBlank ? [createBlankGridRow()] : [])
     try {
       const saved = localStorage.getItem('devisGridRows')
-      if (saved) return JSON.parse(saved) || []
+      if (saved) return normalizeCalculationRows(JSON.parse(saved) || [])
     } catch { /* noop */ }
     return []
   })
@@ -1345,8 +1737,8 @@ export function DevisGridWorkspace({
   })
   const [showAddModal, setShowAddModal] = useState(false)
   useEffect(() => {
-    if (Array.isArray(initialRows)) setRows(initialRows.length > 0 ? splitCalculationOptions(initialRows) : (startWithBlank ? [createBlankGridRow()] : []))
-  }, [initialRows, startWithBlank])
+    if (Array.isArray(initialRows)) setRows(initialRows.length > 0 ? applyDefaultTransportAddress(normalizeCalculationRows(splitCalculationOptions(initialRows)), defaultTransportAddress) : (startWithBlank ? [createBlankGridRow()] : []))
+  }, [defaultTransportAddress, initialRows, startWithBlank])
   // Ref vers les rows courants — permet à recomputeRow de lire sans passer par un updater
   const rowsRef = useRef(rows)
   useEffect(() => { rowsRef.current = rows }, [rows])
@@ -1402,12 +1794,62 @@ export function DevisGridWorkspace({
   }, [showToast])
 
   const addSectionRow = useCallback((section) => {
-    const nextRows = [...rowsRef.current, createAmountRow(section)]
+    const nextRows = [...rowsRef.current, createAmountRow(section, '', { defaultTransportAddress })]
     setRows(nextRows)
     setEditMode(true)
     setExpandedRows(prev => new Set([...prev, nextRows.length - 1]))
     onRowsCommit?.(nextRows[nextRows.length - 1], nextRows.length - 1, { _created: true })
     showToast(section === 'transport' ? 'Ligne transport ajoutée' : 'Ligne calcul ajoutée', 'success')
+  }, [defaultTransportAddress, onRowsCommit, showToast])
+
+  const commitTransportAddress = useCallback(async (i, address) => {
+    const current = rowsRef.current[i]
+    if (!current) return
+    const cleanAddress = String(address || '').trim()
+    const basePatch = {
+      delivery_address: cleanAddress,
+      transport_address: cleanAddress,
+      notes: cleanAddress,
+      alertes: cleanAddress ? [cleanAddress] : [],
+    }
+    const parsed = parseTransportAddress(cleanAddress)
+    const leafCount = productLeafCount(rowsRef.current)
+    let patch = basePatch
+    if (!cleanAddress || (!parsed.canton && !parsed.country && !parsed.postal_code)) {
+      const nextRows = rowsRef.current.map((row, idx) => idx === i ? { ...row, ...patch } : row)
+      setRows(nextRows)
+      onRowsCommit?.(nextRows[i], i, patch)
+      showToast(cleanAddress ? 'Adresse enregistrée, zone à vérifier' : 'Adresse transport vidée', cleanAddress ? 'error' : 'success')
+      return
+    }
+    try {
+      const match = await api.post('/transport-tariffs/match', {
+        ...parsed,
+        leaf_count: leafCount,
+      })
+      if (match?.tariff) {
+        const unitPrice = Number(match.tariff.unit_price_ht ?? match.tariff.price_ht ?? 0)
+        const totalPrice = Number(match.tariff.total_price_ht ?? unitPrice)
+        patch = {
+          ...basePatch,
+          prix_base_ht: totalPrice,
+          prix_total_min_ht: totalPrice,
+          total_ligne_ht: totalPrice,
+          ref_base: match.tariff.zone || match.tariff.label || null,
+          transport_zone: match.tariff.zone || match.tariff.label || null,
+          tranche_count: match.tariff.tranche_count || match.tranche_count || null,
+          leaf_count: leafCount,
+        }
+        showToast('Transport recalculé', 'success')
+      } else {
+        showToast('Adresse enregistrée, aucun tarif trouvé', 'error')
+      }
+    } catch {
+      showToast('Adresse enregistrée, recalcul transport impossible', 'error')
+    }
+    const nextRows = rowsRef.current.map((row, idx) => idx === i ? { ...row, ...patch } : row)
+    setRows(nextRows)
+    onRowsCommit?.(nextRows[i], i, patch)
   }, [onRowsCommit, showToast])
 
   const deleteRow = useCallback((i) => {
@@ -1487,7 +1929,7 @@ export function DevisGridWorkspace({
       })
       // api interceptor retourne déjà res.data → res = { results: [...] }
       const data = res?.results ?? (Array.isArray(res) ? res : [])
-      const sectionedRows = splitCalculationOptions(Array.isArray(data) ? data : [])
+      const sectionedRows = applyDefaultTransportAddress(normalizeCalculationRows(splitCalculationOptions(Array.isArray(data) ? data : [])), defaultTransportAddress)
       setRows(sectionedRows)
       onRowsChange?.(sectionedRows)
       setFileName(file.name)
@@ -1507,7 +1949,7 @@ export function DevisGridWorkspace({
 
   // totaux
   const totalPU  = rows.reduce((s, r) => s + (resolveRow(r, change, tva, multGlobal)._pu), 0)
-  const totalTTC = rows.reduce((s, r) => s + (resolveRow(r, change, tva, multGlobal)._total), 0)
+  const totalHT = rows.reduce((s, r) => s + (resolveRow(r, change, tva, multGlobal)._totalHt || 0), 0)
   let displayIndex = 0
   const sectionEntries = SECTION_ORDER.flatMap(section => {
     const sectionRows = rows.map((row, index) => ({ row, index })).filter(item => sectionOf(item.row) === section)
@@ -1711,7 +2153,7 @@ export function DevisGridWorkspace({
           )}
 
           {rows.length > 0 && (
-            <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'auto', minWidth: 1410 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'auto', minWidth: 1480 }}>
               <thead>
                 <tr>
                   <Th style={{ width: 36 }}>#</Th>
@@ -1728,8 +2170,9 @@ export function DevisGridWorkspace({
                   <Th>Crémone</Th>
                   <Th>Autres équipements</Th>
                   <Th style={{ ...CELL.gray, width: 90 }}>PU HT</Th>
+                  <Th style={{ ...CELL.yellow, width: 60 }}>Remise</Th>
                   <Th style={{ ...CELL.yellow, width: 36 }}>Q.</Th>
-                  <Th style={{ ...CELL.blue, width: 100 }}>Total TTC</Th>
+                  <Th style={{ ...CELL.blue, width: 110 }}>Total HT</Th>
                   <Th style={{ width: 32 }}></Th>
                 </tr>
               </thead>
@@ -1739,20 +2182,41 @@ export function DevisGridWorkspace({
                     const meta = SECTION_META[entry.section]
                     const Icon = meta.icon
                     return (
-                      <tr key={`section-${entry.section}`}>
-                        <td colSpan={17} style={{ position: 'sticky', top: 31, zIndex: 1, padding: '7px 12px', background: 'color-mix(in srgb, var(--color-primary) 7%, var(--color-surface))', borderTop: '1px solid var(--color-border)', borderBottom: '1px solid var(--color-border)' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-                            <span style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 11, fontWeight: 900, letterSpacing: '0.02em', textTransform: 'uppercase' }}>
-                              <Icon size={13} /> {meta.label} <span style={{ color: 'var(--color-text-3)', fontWeight: 700 }}>({entry.count})</span>
-                            </span>
-                            <span style={{ fontSize: 10, color: 'var(--color-text-3)', textTransform: 'none', fontWeight: 500 }}>{meta.hint}</span>
-                          </div>
-                        </td>
-                      </tr>
+                      <Fragment key={`section-${entry.section}`}>
+                        <tr>
+                          <td colSpan={18} style={{ position: 'sticky', top: 31, zIndex: 1, padding: '7px 12px', background: 'color-mix(in srgb, var(--color-primary) 7%, var(--color-surface))', borderTop: '1px solid var(--color-border)', borderBottom: '1px solid var(--color-border)' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                              <span style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 11, fontWeight: 900, letterSpacing: '0.02em', textTransform: 'uppercase' }}>
+                                <Icon size={13} /> {meta.label} <span style={{ color: 'var(--color-text-3)', fontWeight: 700 }}>({entry.count})</span>
+                              </span>
+                              <span style={{ fontSize: 10, color: 'var(--color-text-3)', textTransform: 'none', fontWeight: 500 }}>{meta.hint}</span>
+                            </div>
+                          </td>
+                        </tr>
+                        {entry.section !== 'products' && <AmountSectionColumns section={entry.section} />}
+                      </Fragment>
                     )
                   }
                   const row = entry.row
                   const i = entry.index
+                  if (sectionOf(row) !== 'products') {
+                    return (
+                      <AmountRow
+                        key={`amount-${i}-${entryIndex}`}
+                        row={row}
+                        index={i}
+                        displayIndex={entry.displayIndex}
+                        change={change}
+                        tva={tva}
+                        multGlobal={multGlobal}
+                        editMode={editMode}
+                        defaultTransportAddress={defaultTransportAddress}
+                        onUpdate={(patch) => updateRow(i, patch)}
+                        onTransportAddressCommit={(address) => commitTransportAddress(i, address)}
+                        onDelete={() => deleteRow(i)}
+                      />
+                    )
+                  }
                   return (
                   <Fragment key={`row-${i}-${entryIndex}`}>
                     <MainRow row={row} index={i} displayIndex={entry.displayIndex} expanded={expandedRows.has(i)} onToggle={() => toggleRow(i)} change={change} tva={tva} multGlobal={multGlobal} editMode={editMode} onUpdate={(patch) => updateRow(i, patch)} onRecompute={(patch) => recomputeRow(i, patch)} onDelete={() => deleteRow(i)} />
@@ -1761,7 +2225,7 @@ export function DevisGridWorkspace({
                         <SubRowRefs row={row} />
                         <SubRowPrices row={row} />
                         {/* Options supplémentaires */}
-                        {(row.options || []).filter(o => !/acoustique|\b(30|35|40|45)\s*dB\b|remplissage|vitrage|ferme.porte|garniture|serrure|msl|lss|kel|dény/i.test(o.label)).map((opt, oi) => (
+                        {(row.options || []).filter(o => !isColumnEquipmentOption(o) && !/acoustique|\b(30|35|40|45)\s*dB\b|remplissage|vitrage|ferme.?porte|garniture|serrure|msl|lss|kel|d[ée]ny/i.test(equipmentText(o))).map((opt, oi) => (
                           <tr key={`opt-${i}-${oi}`} style={{ background: SUBROW_BG }}>
                             <td colSpan={3} style={{ padding: '2px 8px 2px 52px', fontSize: 10, color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }}>
                               ↳ {opt.label}
@@ -1772,13 +2236,13 @@ export function DevisGridWorkspace({
                             <td style={{ padding: '2px 8px', fontSize: 11, textAlign: 'right', fontWeight: 600, ...CELL.gray, borderBottom: '1px solid var(--color-border)' }}>
                               {opt.prix > 0 ? opt.prix.toLocaleString('fr-FR') + ' €' : <span style={{ color: '#a06a2c' }}>mutualisé</span>}
                             </td>
-                            <td colSpan={3} style={{ borderBottom: '1px solid var(--color-border)', ...CELL.blue }}></td>
+                            <td colSpan={4} style={{ borderBottom: '1px solid var(--color-border)', ...CELL.blue }}></td>
                           </tr>
                         ))}
                         {/* Alertes */}
                         {(row.alertes || []).filter(a => a.startsWith('❌') || a.startsWith('⚠️')).map((a, ai) => (
                           <tr key={`alerte-${i}-${ai}`} style={{ background: 'rgba(160,106,44,0.06)' }}>
-                            <td colSpan={17} style={{ padding: '2px 8px 2px 52px', fontSize: 10, color: a.startsWith('❌') ? '#a33c3c' : '#a06a2c', borderBottom: '1px solid var(--color-border)' }}>
+                            <td colSpan={18} style={{ padding: '2px 8px 2px 52px', fontSize: 10, color: a.startsWith('❌') ? '#a33c3c' : '#a06a2c', borderBottom: '1px solid var(--color-border)' }}>
                               {a}
                             </td>
                           </tr>
@@ -1791,7 +2255,7 @@ export function DevisGridWorkspace({
               </tbody>
               <tfoot>
                 <tr>
-                  <td colSpan={17} style={{ padding: '8px 12px', borderTop: '1px solid var(--color-border)', background: 'var(--color-surface)' }}>
+                  <td colSpan={18} style={{ padding: '8px 12px', borderTop: '1px solid var(--color-border)', background: 'var(--color-surface)' }}>
                     <button
                       type="button"
                       onClick={addBlankRow}
@@ -1805,14 +2269,15 @@ export function DevisGridWorkspace({
                   <td colSpan={13} style={{ padding: '8px 16px', fontWeight: 700, fontSize: 12, borderTop: '2px solid var(--color-border)' }}>
                     💶 Total général estimé
                   </td>
-                  <td style={{ padding: '8px 8px', fontWeight: 700, fontSize: 12, textAlign: 'right', borderTop: '2px solid var(--color-border)', ...CELL.gray }}>
+                  <td style={{ padding: '8px 8px', fontWeight: 700, fontSize: 12, textAlign: 'right', borderTop: '2px solid var(--color-border)', background: CELL.gray.background }}>
                     {totalPU.toLocaleString('fr-FR')} €
                   </td>
                   <td style={{ borderTop: '2px solid var(--color-border)' }}></td>
-                  <td style={{ padding: '8px 8px', fontWeight: 800, fontSize: 14, textAlign: 'right', borderTop: '2px solid var(--color-border)', ...CELL.blue }}>
-                    {totalTTC.toLocaleString('fr-FR')} €
+                  <td style={{ borderTop: '2px solid var(--color-border)' }}></td>
+                  <td style={{ padding: '8px 8px', fontWeight: 800, fontSize: 14, textAlign: 'right', borderTop: '2px solid var(--color-border)', background: CELL.blue.background }}>
+                    {totalHT.toLocaleString('fr-FR')} €
                   </td>
-                  <td style={{ borderTop: '2px solid var(--color-border)', ...CELL.blue }}></td>
+                  <td style={{ borderTop: '2px solid var(--color-border)', background: CELL.blue.background }}></td>
                 </tr>
               </tfoot>
             </table>

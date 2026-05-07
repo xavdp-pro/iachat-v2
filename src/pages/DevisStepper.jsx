@@ -39,6 +39,37 @@ const SUGGESTIONS = [
 
 const prixFmt = (v) => v != null ? `${Number(v).toLocaleString('fr-FR')} €` : null
 const CALCULATION_OPTION_RE = /note de calcul|avis de chantier|avis chantier|calcul explosion/i
+const FIRE_PERFORMANCE_RE = /\bEI\s*(30|60|90|120)\b/i
+const HEIGHT_AVIS_CHANTIER_RE = /hauteur\s+\d+\s*mm\s+d[ée]passe\s+le\s+max\s+catalogue.*avis\s+de\s+chantier/i
+
+function rowHasFirePerformance(row) {
+  return FIRE_PERFORMANCE_RE.test([
+    row?.cf,
+    row?.coupe_feu,
+    row?.feu,
+    row?._raw?.[5],
+    row?.designation,
+    ...(row?.options || []).map(option => JSON.stringify(option)),
+  ].filter(Boolean).join(' '))
+}
+
+function sanitizeCalculationAlerts(row) {
+  const section = row?.line_section || 'products'
+  if (!row || section !== 'products' || rowHasFirePerformance(row)) return row
+  const alertes = (row.alertes || []).filter(alert => !HEIGHT_AVIS_CHANTIER_RE.test(String(alert || '')))
+  return alertes.length === (row.alertes || []).length ? row : { ...row, alertes }
+}
+
+function companyDeliveryAddress(company) {
+  const properties = company?.properties || company || {}
+  return [
+    properties.address,
+    properties.address2,
+    [properties.zip, properties.city].filter(Boolean).join(' '),
+    properties.state,
+    properties.country,
+  ].filter(Boolean).join(', ')
+}
 
 function parseJsonArray(value) {
   if (Array.isArray(value)) return value
@@ -100,6 +131,25 @@ function gridRowToLinePayload(row, position) {
 }
 
 function splitCalculationOptions(rows) {
+  const buckets = new Map()
+  const registerCalcOption = (option) => {
+    const label = String(option?.label || '').trim()
+    const amount = Number(option?.prix) || 0
+    const rawKey = label.toLowerCase()
+    const key = /avis de chantier|avis chantier/i.test(label)
+      ? 'avis_chantier'
+      : (/note de calcul|calcul explosion/i.test(label) ? 'note_calcul_explosion' : rawKey || 'calcul')
+    const title = key === 'avis_chantier'
+      ? 'Avis de chantier'
+      : (key === 'note_calcul_explosion' ? 'Note de calcul explosion (non remisable)' : (label || 'Calcul'))
+    const prev = buckets.get(key) || { key, label: title, amount: 0, notes: new Set(), count: 0 }
+    if (amount > prev.amount) prev.amount = amount
+    if (option?.note) prev.notes.add(String(option.note))
+    prev.count += 1
+    buckets.set(key, prev)
+    return amount
+  }
+
   const nextRows = []
   for (const row of Array.isArray(rows) ? rows : []) {
     if (row.line_section && row.line_section !== 'products') {
@@ -112,24 +162,91 @@ function splitCalculationOptions(rows) {
       nextRows.push({ ...row, line_section: 'products' })
       continue
     }
-    const calcTotal = calcOptions.reduce((sum, option) => sum + (Number(option?.prix) || 0), 0)
+    const calcTotal = calcOptions.reduce((sum, option) => sum + registerCalcOption(option), 0)
     const productOptions = options.filter(option => !CALCULATION_OPTION_RE.test(option?.label || ''))
     const productTotal = row.prix_total_min_ht != null ? Math.max(0, Number(row.prix_total_min_ht) - calcTotal) : row.prix_total_min_ht
     nextRows.push({ ...row, line_section: 'products', options: productOptions, prix_total_min_ht: productTotal, total_ligne_ht: productTotal })
-    calcOptions.forEach(option => {
-      const amount = Number(option.prix) || 0
-      nextRows.push({
-        line_section: 'calculations',
-        type: option.label || 'Calcul',
-        designation: option.label || 'Calcul',
-        prix_base_ht: amount,
-        prix_total_min_ht: amount,
-        total_ligne_ht: amount,
-        options: [],
-        equip_extra: [],
-        alertes: option.note ? [option.note] : [],
-        docs: row.docs || [],
-      })
+  }
+  for (const bucket of buckets.values()) {
+    if (!(Number(bucket.amount) > 0)) continue
+    const notes = [...bucket.notes]
+    nextRows.push({
+      line_section: 'calculations',
+      type: bucket.label,
+      designation: bucket.label,
+      prix_base_ht: Number(bucket.amount) || 0,
+      prix_total_min_ht: Number(bucket.amount) || 0,
+      total_ligne_ht: Number(bucket.amount) || 0,
+      options: [],
+      equip_extra: [],
+      alertes: notes,
+      notes: notes.join(' — ') || '',
+      _generatedFrom: notes.length > 1 ? `${notes.length} lignes produits` : '1 ligne produit',
+    })
+  }
+  return normalizeCalculationRows(nextRows)
+}
+
+function normalizeCalculationRows(rows) {
+  const nextRows = []
+  const calcBuckets = new Map()
+  const addBucket = (key, label, amount, note) => {
+    const price = Number(amount) || 0
+    if (!(price > 0)) return
+    const bucket = calcBuckets.get(key) || { key, label, amount: 0, notes: new Set(), count: 0 }
+    if (price > bucket.amount) bucket.amount = price
+    if (note) {
+      String(note)
+        .split(/\s+—\s+(?=(?:Hauteur|Dimensions|Hors zone bleue Blast))/u)
+        .map(part => part.replace(/^[⚠️✅❌\s]+/u, '').trim())
+        .filter(part => part && !/mutualis[ée]/i.test(part))
+        .forEach(part => bucket.notes.add(part))
+    }
+    bucket.count += 1
+    calcBuckets.set(key, bucket)
+  }
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const section = row.line_section || 'products'
+    const text = `${row.designation || ''} ${row.type || ''} ${(row.alertes || []).join(' ')}`
+    if (section === 'products') {
+      const cleanRow = sanitizeCalculationAlerts(row)
+      nextRows.push(cleanRow)
+      for (const alert of cleanRow.alertes || []) {
+        if (/avis de chantier|avis chantier/i.test(alert)) addBucket('avis_chantier', 'Avis de chantier', 3700, alert)
+        if (/note de calcul|calcul explosion|hors zone bleue/i.test(alert) && !/non requise|NON requise/i.test(alert)) addBucket('note_calcul_explosion', 'Note de calcul explosion (non remisable)', 9300, alert)
+      }
+      continue
+    }
+    if (section !== 'calculations') {
+      nextRows.push(row)
+      continue
+    }
+    const amount = Number(row.prix_base_ht ?? row.total_ligne_ht ?? row.prix_total_min_ht ?? 0)
+    if (/avis de chantier|avis chantier/i.test(text)) {
+      if (HEIGHT_AVIS_CHANTIER_RE.test(text) && !FIRE_PERFORMANCE_RE.test(text)) continue
+      addBucket('avis_chantier', 'Avis de chantier', amount || 3700, row.notes || row.alertes?.join(' — '))
+      continue
+    }
+    if (/note de calcul|calcul explosion/i.test(text)) {
+      addBucket('note_calcul_explosion', 'Note de calcul explosion (non remisable)', amount || 9300, row.notes || row.alertes?.join(' — '))
+      continue
+    }
+    if (amount > 0) nextRows.push(row)
+  }
+  for (const bucket of calcBuckets.values()) {
+    const notes = [...bucket.notes].filter(Boolean)
+    nextRows.push({
+      line_section: 'calculations',
+      type: bucket.label,
+      designation: bucket.label,
+      prix_base_ht: bucket.amount,
+      prix_total_min_ht: bucket.amount,
+      total_ligne_ht: bucket.amount,
+      options: [],
+      equip_extra: [],
+      alertes: notes,
+      notes: notes.join(' — '),
+      _generatedFrom: notes.length > 1 ? `${notes.length} lignes produits` : '1 ligne produit',
     })
   }
   return nextRows
@@ -256,6 +373,8 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
     onSelect({
       id: c.id || c.hs_object_id,
       name: c.properties?.name || c.name || `#${c.id}`,
+      properties: c.properties || {},
+      deliveryAddress: companyDeliveryAddress(c),
     })
     setQuery('')
     setCompanies([])
@@ -771,6 +890,7 @@ function StepAnalysis({
 // ══════════════════════════════════════════════════════════════════════════════
 function StepEditor({
   devisId, lines, setLines, onRefresh,
+  defaultTransportAddress = '',
   aiMessages, aiInput, setAiInput, aiLoading, askAIEditor, aiEndRef, aiInputRef,
 }) {
   const [saving, setSaving] = useState(null)
@@ -828,6 +948,7 @@ function StepEditor({
         <DevisGridWorkspace
           embedded
           initialRows={gridRows}
+          defaultTransportAddress={defaultTransportAddress}
           startWithBlank
           onRowsCommit={commitGridRow}
           onRowsDelete={deleteGridRow}
@@ -1460,6 +1581,7 @@ export default function DevisStepper() {
           <StepEditor
             devisId={currentDevisId} lines={lines} setLines={setLines}
             onRefresh={refreshLines}
+            defaultTransportAddress={companyDeliveryAddress(selectedCompany)}
             aiMessages={editorAiMessages} aiInput={editorAiInput} setAiInput={setEditorAiInput}
             aiLoading={editorAiLoading} askAIEditor={askAIEditor}
             aiEndRef={editorAiEndRef} aiInputRef={editorAiInputRef}

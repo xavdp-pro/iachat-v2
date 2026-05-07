@@ -6,7 +6,7 @@
  * expériences commerciaux validées qui servent de points de contrôle).
  */
 import { useState, useEffect, useMemo } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import {
   BookOpen, FileText, Table2, Wrench, Shield, Settings, ArrowLeft,
   Search, ChevronRight, Info, CheckCircle2, Users, Database, AlertTriangle,
@@ -34,33 +34,14 @@ const SECTION_LABELS = {
 
 export default function Knowledge() {
   const nav = useNavigate()
-  const [searchParams, setSearchParams] = useSearchParams()
   const [inventory, setInventory] = useState(null)
   const [tables, setTables] = useState(null)
-
-  // État dérivé des query params (source de vérité = URL)
-  const activeSection = searchParams.get('s') || 'overview'
-  const activeDoc     = searchParams.get('doc') || null
-  const activeTable   = searchParams.get('table') || null
-
-  // Helpers pour naviguer sans perdre les autres params
-  function goSection(id) {
-    setSearchParams({ s: id })
-  }
-  function goDoc(name) {
-    setSearchParams({ s: 'doc', doc: name })
-  }
-  function setActiveTable(id) {
-    setSearchParams(prev => {
-      const next = new URLSearchParams(prev)
-      next.set('table', id)
-      return next
-    })
-  }
-
+  const [activeSection, setActiveSection] = useState('overview')
+  const [activeDoc, setActiveDoc] = useState(null)
   const [docContent, setDocContent] = useState('')
   const [loadingDoc, setLoadingDoc] = useState(false)
   const [search, setSearch] = useState('')
+  const [activeTable, setActiveTable] = useState(null)
 
   // ── Chargement initial ──────────────────────────────────────────────
   useEffect(() => {
@@ -72,13 +53,10 @@ export default function Knowledge() {
         ])
         setInventory(inv)
         setTables(tbl)
-        // Initialiser activeTable seulement si pas déjà dans l'URL
-        if (!searchParams.get('table')) {
-          if (Array.isArray(tbl) && tbl.length > 0) {
-            setActiveTable(tbl[0].id)
-          } else if (tbl?.tables_prix) {
-            setActiveTable(Object.keys(tbl.tables_prix)[0])
-          }
+        if (Array.isArray(tbl) && tbl.length > 0) {
+          setActiveTable(tbl[0].id)
+        } else if (tbl?.tables_prix) {
+          setActiveTable(Object.keys(tbl.tables_prix)[0])
         }
       } catch (err) {
         console.error(err)
@@ -155,7 +133,7 @@ export default function Knowledge() {
             const Icon = s.icon
             return (
               <button key={s.id}
-                onClick={() => goSection(s.id)}
+                onClick={() => { setActiveSection(s.id); setActiveDoc(null); }}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
                   padding: '8px 12px', borderRadius: 8, border: 'none', background: activeSection === s.id && !activeDoc
@@ -199,7 +177,7 @@ export default function Knowledge() {
                 </div>
                 {docs.map(d => (
                   <button key={d.name}
-                    onClick={() => goDoc(d.name)}
+                    onClick={() => { setActiveDoc(d.name); setActiveSection('doc'); }}
                     style={{
                       display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
                       padding: '5px 12px 5px 22px', borderRadius: 6, border: 'none',
@@ -223,7 +201,7 @@ export default function Knowledge() {
           {/* Tableaux de prix */}
           {(Array.isArray(tables) ? tables.length > 0 : tables?.tables_prix) && (
             <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--color-border)' }}>
-              <button onClick={() => goSection('tables')}
+              <button onClick={() => { setActiveSection('tables'); setActiveDoc(null); }}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
                   padding: '8px 12px', borderRadius: 8, border: 'none',
@@ -234,7 +212,7 @@ export default function Knowledge() {
                 <Table2 size={14} /> Tableaux de prix ({Array.isArray(tables) ? tables.length : Object.keys(tables.tables_prix).length})
               </button>
 
-              <button onClick={() => goSection('options')}
+              <button onClick={() => { setActiveSection('options'); setActiveDoc(null); }}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
                   padding: '8px 12px', borderRadius: 8, border: 'none',
@@ -243,17 +221,6 @@ export default function Knowledge() {
                   fontSize: 13, fontWeight: activeSection === 'options' ? 600 : 500, cursor: 'pointer',
                 }}>
                 <Wrench size={14} /> Options & équipements
-              </button>
-
-              <button onClick={() => goSection('certifications')}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
-                  padding: '8px 12px', borderRadius: 8, border: 'none',
-                  background: activeSection === 'certifications' ? 'color-mix(in srgb, var(--color-primary) 10%, transparent)' : 'transparent',
-                  color: activeSection === 'certifications' ? 'var(--color-primary)' : 'var(--color-text)',
-                  fontSize: 13, fontWeight: activeSection === 'certifications' ? 600 : 500, cursor: 'pointer',
-                }}>
-                🔬 Certifications CNPP
               </button>
             </div>
           )}
@@ -281,8 +248,6 @@ export default function Knowledge() {
           <TablesView tables={tables} active={activeTable} setActive={setActiveTable} />
         ) : activeSection === 'options' ? (
           <OptionsView tables={tables} />
-        ) : activeSection === 'certifications' ? (
-          <CertificationsView tables={tables} />
         ) : null}
       </main>
     </div>
@@ -462,217 +427,117 @@ function DocView({ name, label, content, loading }) {
 }
 
 function TablesView({ tables, active, setActive }) {
+  // Support nouveau format (array) et ancien format (objet tables_prix)
   const isNewFormat = Array.isArray(tables)
   if (!isNewFormat && !tables?.tables_prix) return <div>Tableaux indisponibles.</div>
 
-  const tabs = isNewFormat ? tables : Object.entries(tables.tables_prix).map(([id, t]) => ({
-    id,
-    gamme: t.gamme,
-    vantail: t.vantail,
-    grid: Array.isArray(t.grid)
-      ? t.grid.reduce((acc, row) => { acc[String(row.hauteur)] = row.prix; return acc }, {})
-      : (t.grid || {})
-  }))
+  const tabs   = isNewFormat ? tables : Object.entries(tables.tables_prix).map(([id, t]) => ({ id, gamme: t.gamme, vantaux: t.vantail === '2V' ? 2 : 1, grid: {} }))
   const active_tab = tabs.find(t => t.id === active) ?? tabs[0]
 
+  // Construire hauteurs/largeurs triées depuis grid {H: {L: {ref, prix}}}
   let hauteurs = [], largeurs = []
   if (active_tab) {
     const g = active_tab.grid
-    hauteurs = Object.keys(g).map(Number).sort((a, b) => b - a)
+    hauteurs = Object.keys(g).map(Number).sort((a, b) => b - a) // décroissant
     const lSet = new Set()
     Object.values(g).forEach(row => Object.keys(row).forEach(l => lSet.add(Number(l))))
     largeurs = [...lSet].sort((a, b) => a - b)
   }
 
-  // Vérifier si ce tableau a des cellules certifiées
-  const hasCertified = active_tab
-    ? Object.values(active_tab.grid).some(row => Object.values(row).some(c => c.certified))
-    : false
-
-  const BG_HEADER   = '#1e3a5f'
-  const BG_CERT     = '#a8d8f0'     // bleu clair certifié (comme Excel)
-  const BG_CERT_REF = '#7ec8e8'     // légèrement plus foncé pour la réf
-  const BG_NONCERT  = '#f5f8ff'     // blanc-bleuté non certifié
-  const BG_ROW_H    = '#1e3a5f'     // entête hauteur
+  // Couleurs style Excel bleu
+  const BG_HEADER = '#1e3a5f'
+  const BG_ROW_ODD  = '#2d5a8e'
+  const BG_ROW_EVEN = '#1e4a7a'
+  const BG_CELL_ODD  = '#e8f0fb'
+  const BG_CELL_EVEN = '#d0e2f7'
   const TEXT_HEADER = '#ffffff'
-  const TEXT_CERT   = '#0a3060'
-  const TEXT_NC     = '#607090'
-  const TEXT_REF_CERT = '#08437a'
-  const TEXT_REF_NC   = '#8fabc8'
+  const TEXT_REF    = '#1e3a5f'
+  const TEXT_PRIX   = '#0d2140'
 
   return (
     <div style={{ maxWidth: 1200 }}>
       <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 6 }}>Tableaux de prix NEXUS</h1>
-
-      {/* Explication lecture + légende certifications */}
-      <div style={{ display: 'flex', gap: 16, marginBottom: 16, flexWrap: 'wrap' }}>
-        <div style={{
-          flex: 2, minWidth: 280,
-          padding: '12px 16px', borderRadius: 10,
-          background: 'var(--color-surface)', border: '1px solid var(--color-border)',
-          fontSize: 13, lineHeight: 1.7, color: 'var(--color-text-2)',
-        }}>
-          <strong style={{ color: 'var(--color-text)' }}>Comment l'IA lit ces tableaux :</strong> pour une dimension demandée, elle prend
-          la <strong>plus grande hauteur ≤ hauteur demandée</strong> (arrondi au plancher),
-          puis la plus grande largeur ≤ largeur demandée. Le prix est à l'intersection.
-        </div>
-        <div style={{
-          flex: 1, minWidth: 220,
-          padding: '12px 16px', borderRadius: 10,
-          background: 'color-mix(in srgb, #3b82f6 6%, var(--color-surface))',
-          border: '1px solid color-mix(in srgb, #3b82f6 25%, var(--color-border))',
-          fontSize: 12, lineHeight: 1.8,
-        }}>
-          <div style={{ fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em', color: '#3b82f6', marginBottom: 8 }}>
-            Code couleur
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-            <span style={{ display: 'inline-block', width: 18, height: 18, borderRadius: 4, background: BG_CERT, border: '1px solid #5aaad8', flexShrink: 0 }} />
-            <span><strong>Certifiée</strong> — testée en laboratoire CNPP</span>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ display: 'inline-block', width: 18, height: 18, borderRadius: 4, background: BG_NONCERT, border: '1px solid #c8d8f0', flexShrink: 0 }} />
-            <span><strong>Catalogue</strong> — dimension non soumise aux essais</span>
-          </div>
-          <div style={{ marginTop: 8, fontSize: 11, color: 'var(--color-text-3)' }}>
-            Source : <a href="https://zerux.com/les-portes/porte-anti-effraction/" target="_blank" rel="noopener noreferrer" style={{ color: '#3b82f6' }}>zerux.com</a>
-          </div>
-        </div>
-      </div>
+      <p style={{ color: 'var(--color-text-2)', fontSize: 13, marginBottom: 16, lineHeight: 1.7 }}>
+        <strong>Comment l'IA lit ces tableaux :</strong> pour une dimension demandée, elle prend
+        la <strong>plus petite hauteur du tableau ≥ à la hauteur demandée</strong> (arrondi au plafond),
+        puis la plus petite largeur ≥ à la largeur demandée. Le prix est à l'intersection.
+      </p>
 
       {/* Sélecteur de gamme */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 16 }}>
-        {tabs.map(t => {
-          const tHasCert = Object.values(t.grid).some(row => Object.values(row).some(c => c.certified))
-          return (
-            <button key={t.id} onClick={() => setActive(t.id)} style={{
-              padding: '5px 12px', borderRadius: 16,
-              border: `1px solid ${active === t.id ? BG_HEADER : 'var(--color-border)'}`,
-              background: active === t.id ? BG_HEADER : 'var(--color-surface)',
-              color: active === t.id ? '#fff' : 'var(--color-text)',
-              fontSize: 12, fontWeight: 600, cursor: 'pointer',
-              display: 'flex', alignItems: 'center', gap: 5,
-            }}>
-              {tHasCert && <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#3b9dd8', flexShrink: 0 }} />}
-              {t.gamme} · {t.vantail}
-            </button>
-          )
-        })}
+        {tabs.map(t => (
+          <button key={t.id} onClick={() => setActive(t.id)} style={{
+            padding: '5px 12px', borderRadius: 16, border: '1px solid #1e3a5f',
+            background: active === t.id ? '#1e3a5f' : 'transparent',
+            color: active === t.id ? '#fff' : '#1e3a5f',
+            fontSize: 12, fontWeight: 600, cursor: 'pointer',
+          }}>
+            {t.gamme} · {t.vantaux === 2 ? '2V' : '1V'}
+          </button>
+        ))}
       </div>
 
       {active_tab && (
-        <>
-          {!hasCertified && (
-            <div style={{
-              padding: '10px 14px', marginBottom: 12, borderRadius: 8,
-              background: 'color-mix(in srgb, #f59e0b 8%, var(--color-surface))',
-              border: '1px solid color-mix(in srgb, #f59e0b 30%, var(--color-border))',
-              fontSize: 12, color: 'var(--color-text-2)',
-            }}>
-              ⚠️ Cette gamme/configuration n'a pas de dimensions certifiées en laboratoire dans notre extraction.
-              Toutes les dimensions sont au catalogue — contacter Zerux pour confirmation.
-            </div>
-          )}
+        <div style={{ borderRadius: 10, overflow: 'auto', boxShadow: '0 2px 12px rgba(30,58,95,0.15)' }}>
+          {/* Titre du tableau */}
+          <div style={{ background: BG_HEADER, color: TEXT_HEADER, padding: '10px 16px', fontSize: 13, fontWeight: 700, letterSpacing: 0.5 }}>
+            TARIF BLOCS-PORTES NEXUS — {active_tab.gamme} · {active_tab.vantaux === 2 ? '2 VANTAUX' : '1 VANTAIL'} ·&nbsp;
+            <span style={{ fontWeight: 400, opacity: 0.85 }}>{hauteurs.length} hauteurs × {largeurs.length} largeurs · prix HT TG en €</span>
+          </div>
 
-          <div style={{ borderRadius: 10, overflow: 'auto', boxShadow: '0 2px 12px rgba(30,58,95,0.12)' }}>
-            {/* Titre */}
-            <div style={{
-              background: BG_HEADER, color: TEXT_HEADER,
-              padding: '10px 16px', fontSize: 13, fontWeight: 700, letterSpacing: 0.5,
-              display: 'flex', alignItems: 'center', gap: 12,
-            }}>
-              <span>NEXUS {active_tab.gamme} · {active_tab.vantaux === 2 ? '2 VANTAUX' : '1 VANTAIL'}</span>
-              <span style={{ fontWeight: 400, opacity: 0.75, fontSize: 12 }}>
-                {hauteurs.length} hauteurs × {largeurs.length} largeurs · prix HT TG en €
-              </span>
-              {hasCertified && (
-                <span style={{
-                  marginLeft: 'auto', background: 'rgba(58,160,220,0.25)',
-                  border: '1px solid rgba(100,190,240,0.4)',
-                  borderRadius: 12, padding: '2px 10px', fontSize: 11, fontWeight: 600,
-                }}>
-                  🔬 Certifications CNPP incluses
-                </span>
-              )}
-            </div>
-
-            <table style={{ borderCollapse: 'collapse', fontSize: 12, width: '100%', minWidth: 'max-content' }}>
-              <thead>
-                <tr>
-                  <th style={{
-                    background: BG_HEADER, color: TEXT_HEADER,
-                    padding: '8px 14px', textAlign: 'center', fontWeight: 700,
-                    whiteSpace: 'nowrap', position: 'sticky', left: 0, zIndex: 2,
-                    borderRight: '2px solid rgba(255,255,255,0.2)',
+          <table style={{ borderCollapse: 'collapse', fontSize: 12, width: '100%', minWidth: 'max-content' }}>
+            <thead>
+              <tr>
+                <th style={{ background: BG_HEADER, color: TEXT_HEADER, padding: '8px 14px', textAlign: 'center', fontWeight: 700, whiteSpace: 'nowrap', position: 'sticky', left: 0, zIndex: 2 }}>
+                  H ↓ / L →
+                </th>
+                {largeurs.map((l, li) => (
+                  <th key={l} style={{
+                    background: li % 2 === 0 ? '#234d82' : '#1e4474',
+                    color: TEXT_HEADER, padding: '8px 14px', textAlign: 'center',
+                    fontWeight: 700, whiteSpace: 'nowrap', minWidth: 110,
                   }}>
-                    H ↓ / L →
+                    {l} mm
                   </th>
-                  {largeurs.map((l, i) => (
-                    <th key={l} style={{
-                      background: '#234d82',
-                      color: TEXT_HEADER, padding: '8px 14px', textAlign: 'center',
-                      fontWeight: 700, whiteSpace: 'nowrap', minWidth: 115,
-                      borderLeft: '1px solid rgba(255,255,255,0.1)',
-                    }}>
-                      {i === largeurs.length - 1 ? `≥ ${l}` : `${l} à ${largeurs[i + 1] - 1}`} mm
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {hauteurs.map((h, hi) => (
-                  <tr key={h} style={{ borderBottom: '1px solid #d0ddf0' }}>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {hauteurs.map((h, hi) => {
+                const rowBg = hi % 2 === 0 ? BG_ROW_ODD : BG_ROW_EVEN
+                return (
+                  <tr key={h}>
                     <th style={{
-                      background: BG_ROW_H, color: TEXT_HEADER,
+                      background: rowBg, color: TEXT_HEADER,
                       padding: '6px 14px', textAlign: 'center', fontWeight: 700,
                       whiteSpace: 'nowrap', position: 'sticky', left: 0, zIndex: 1,
-                      borderRight: '2px solid rgba(255,255,255,0.15)',
                     }}>
-                      {hi === 0 ? `≥ ${h}` : `${h} à ${hauteurs[hi - 1] - 1}`} mm
+                      {h} mm
                     </th>
-                    {largeurs.map(l => {
+                    {largeurs.map((l, li) => {
                       const cell = active_tab.grid[String(h)]?.[String(l)]
-                      const isCert = cell?.certified === true
-                      const bg = isCert ? BG_CERT : BG_NONCERT
+                      const cellBg = li % 2 === 0 ? BG_CELL_ODD : BG_CELL_EVEN
                       return (
-                        <td key={l} style={{
-                          background: bg,
-                          padding: '5px 8px', textAlign: 'center', verticalAlign: 'middle',
-                          borderLeft: `1px solid ${isCert ? '#8ecce8' : '#d8e5f5'}`,
-                          position: 'relative',
-                        }}>
+                        <td key={l} style={{ background: cellBg, padding: '4px 8px', textAlign: 'center', verticalAlign: 'middle', borderLeft: '1px solid #b8d0ee' }}>
                           {cell ? (
-                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
-                              <span style={{
-                                fontSize: 9, fontWeight: 700,
-                                color: isCert ? TEXT_REF_CERT : TEXT_REF_NC,
-                                letterSpacing: 0.3, fontFamily: 'monospace',
-                              }}>
-                                {cell.ref}
-                              </span>
-                              <span style={{
-                                fontSize: 13, fontWeight: 700,
-                                color: isCert ? TEXT_CERT : TEXT_NC,
-                                fontVariantNumeric: 'tabular-nums',
-                              }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+                              <span style={{ fontSize: 10, fontWeight: 700, color: TEXT_REF, letterSpacing: 0.3, fontFamily: 'monospace' }}>{cell.ref}</span>
+                              <span style={{ fontSize: 13, fontWeight: 700, color: TEXT_PRIX, fontVariantNumeric: 'tabular-nums' }}>
                                 {cell.prix.toLocaleString('fr-FR')} €
                               </span>
-                              {isCert && (
-                                <span style={{ fontSize: 9, color: '#1a6fa0', fontWeight: 600 }}>✓ certifiée</span>
-                              )}
                             </div>
                           ) : (
-                            <span style={{ color: '#b0c4de', fontSize: 11 }}>—</span>
+                            <span style={{ color: '#9fb8d8', fontSize: 11 }}>—</span>
                           )}
                         </td>
                       )
                     })}
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   )
@@ -753,144 +618,6 @@ function OptionsView({ tables }) {
 // ═══════════════════════════════════════════════════════════════════════
 // PETITS COMPOSANTS
 // ═══════════════════════════════════════════════════════════════════════
-
-function CertificationsView({ tables }) {
-  const GAMMES = [
-    { id: 'CR3',   label: 'RC3',        norm: 'EN 1627 / EN 1630', lab: 'CNPP', note: "Résistance à l'effraction niveau 3 — usage haute sécurité", color: '#2563eb' },
-    { id: 'CR4',   label: 'RC4',        norm: 'EN 1627 / EN 1630', lab: 'CNPP', note: "Résistance à l'effraction niveau 4 — banques, bijouteries", color: '#1d4ed8' },
-    { id: 'CR5',   label: 'RC5',        norm: 'EN 1627 / EN 1630', lab: 'CNPP', note: "Résistance à l'effraction niveau 5 — protection maximale", color: '#1e40af' },
-    { id: 'CR6',   label: 'RC6',        norm: 'EN 1627 / EN 1630', lab: 'CNPP', note: "Résistance à l'effraction niveau 6 — infrastructures critiques", color: '#1e3a8a' },
-    { id: 'EI60',  label: 'EI²60',      norm: 'EN 1634-1 / EN 1363-1', lab: 'CNPP', note: "Coupe-feu 60 min, intégrité + isolation", color: '#b45309' },
-    { id: 'EI120', label: 'EI²120',     norm: 'EN 1634-1 / EN 1363-1', lab: 'CNPP', note: "Coupe-feu 120 min — protections renforcées", color: '#92400e' },
-    { id: 'FB6',   label: 'FB6',        norm: 'EN 1522 / EN 1523',  lab: 'CNPP', note: "Pare-balles niveau FB6 — armes de guerre", color: '#065f46' },
-    { id: 'FB7',   label: 'FB7',        norm: 'EN 1522 / EN 1523',  lab: 'CNPP', note: "Pare-balles niveau FB7 — fusils d'assaut", color: '#064e3b' },
-    { id: 'BLAST', label: 'Blast 2t/4t',norm: 'ISO 16933',           lab: 'CNPP', note: "Résistance aux explosions — sites sensibles", color: '#7c2d12' },
-  ]
-
-  // Stats certification par gamme depuis les tables
-  const certStats = {}
-  if (Array.isArray(tables)) {
-    tables.forEach(t => {
-      const gKey = t.gamme
-      if (!certStats[gKey]) certStats[gKey] = { total: 0, certified: 0 }
-      Object.values(t.grid || {}).forEach(row => {
-        Object.values(row).forEach(cell => {
-          certStats[gKey].total++
-          if (cell.certified) certStats[gKey].certified++
-        })
-      })
-    })
-  }
-
-  return (
-    <div style={{ maxWidth: 1000 }}>
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, marginBottom: 28, flexWrap: 'wrap' }}>
-        <div style={{ flex: 1, minWidth: 280 }}>
-          <h1 style={{ fontSize: 24, fontWeight: 700, marginBottom: 8 }}>Certifications CNPP</h1>
-          <p style={{ fontSize: 14, color: 'var(--color-text-2)', lineHeight: 1.7, margin: 0 }}>
-            Les portes NEXUS sont testées et certifiées au <strong>laboratoire CNPP</strong> (Centre National de Prévention et de Protection),
-            référence française pour les essais de sécurité. Chaque gamme est soumise aux normes européennes EN applicables
-            et fait l'objet d'un certificat officiel.
-          </p>
-        </div>
-        <div style={{
-          padding: '14px 18px', borderRadius: 12, minWidth: 220,
-          background: 'color-mix(in srgb, #2563eb 6%, var(--color-surface))',
-          border: '1px solid color-mix(in srgb, #2563eb 20%, var(--color-border))',
-          fontSize: 12, lineHeight: 1.9,
-        }}>
-          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, color: '#1e3a8a' }}>Chiffres clés</div>
-          <div>🔬 Laboratoire : <strong>CNPP France</strong></div>
-          <div>🔁 Durabilité : <strong>1 000 000 cycles</strong></div>
-          <div>📐 Jusqu'à : <strong>5 × 5 mètres</strong></div>
-          <div>✅ Garantie : <strong>10 ans</strong></div>
-          <div style={{ marginTop: 8, fontSize: 11, color: 'var(--color-text-3)' }}>
-            Source :{' '}
-            <a href="https://zerux.com" target="_blank" rel="noopener noreferrer" style={{ color: '#2563eb' }}>zerux.com</a>
-            {' '}· consulté avril 2026
-          </div>
-        </div>
-      </div>
-
-      {/* Tableau des normes par gamme */}
-      <div style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 12, overflow: 'hidden', marginBottom: 24 }}>
-        <div style={{ background: '#1e3a5f', color: '#fff', padding: '10px 18px', fontWeight: 700, fontSize: 13 }}>
-          Gammes certifiées — Référentiel normatif
-        </div>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-          <thead>
-            <tr style={{ background: 'color-mix(in srgb, #1e3a5f 8%, var(--color-surface))' }}>
-              <th style={{ padding: '8px 14px', textAlign: 'left', fontWeight: 700, borderBottom: '1px solid var(--color-border)' }}>Gamme</th>
-              <th style={{ padding: '8px 14px', textAlign: 'left', fontWeight: 700, borderBottom: '1px solid var(--color-border)' }}>Normes</th>
-              <th style={{ padding: '8px 14px', textAlign: 'left', fontWeight: 700, borderBottom: '1px solid var(--color-border)' }}>Laboratoire</th>
-              <th style={{ padding: '8px 14px', textAlign: 'left', fontWeight: 700, borderBottom: '1px solid var(--color-border)' }}>Description</th>
-              <th style={{ padding: '8px 14px', textAlign: 'center', fontWeight: 700, borderBottom: '1px solid var(--color-border)' }}>Dim. certifiées</th>
-            </tr>
-          </thead>
-          <tbody>
-            {GAMMES.map((g, i) => {
-              const st = certStats[g.id] || certStats[g.label] || null
-              return (
-                <tr key={g.id} style={{ borderBottom: '1px solid var(--color-border)', background: i % 2 === 0 ? 'transparent' : 'color-mix(in srgb, #000 2%, transparent)' }}>
-                  <td style={{ padding: '8px 14px' }}>
-                    <span style={{
-                      display: 'inline-block', padding: '3px 10px', borderRadius: 10,
-                      background: `color-mix(in srgb, ${g.color} 12%, transparent)`,
-                      color: g.color, fontWeight: 700, fontSize: 11,
-                    }}>
-                      {g.label}
-                    </span>
-                  </td>
-                  <td style={{ padding: '8px 14px', fontFamily: 'monospace', fontSize: 11, color: 'var(--color-text-2)' }}>{g.norm}</td>
-                  <td style={{ padding: '8px 14px', fontWeight: 600, color: '#2563eb' }}>{g.lab}</td>
-                  <td style={{ padding: '8px 14px', color: 'var(--color-text-2)' }}>{g.note}</td>
-                  <td style={{ padding: '8px 14px', textAlign: 'center' }}>
-                    {st && st.certified > 0 ? (
-                      <span style={{ color: '#0d6eaa', fontWeight: 700 }}>
-                        {st.certified} / {st.total}
-                      </span>
-                    ) : (
-                      <span style={{ color: 'var(--color-text-3)', fontSize: 11 }}>données catalogue</span>
-                    )}
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Explication code couleur tableaux */}
-      <div style={{
-        padding: '16px 20px', borderRadius: 12,
-        background: 'color-mix(in srgb, #a8d8f0 10%, var(--color-surface))',
-        border: '1px solid color-mix(in srgb, #5aaad8 30%, var(--color-border))',
-        fontSize: 13, lineHeight: 1.8,
-      }}>
-        <div style={{ fontWeight: 700, marginBottom: 10, fontSize: 14 }}>
-          Comment lire les tableaux de prix (onglet <em>Tableaux de prix</em>)
-        </div>
-        <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ width: 32, height: 22, borderRadius: 5, background: '#a8d8f0', border: '1px solid #5aaad8', flexShrink: 0, display: 'inline-block' }} />
-            <span><strong>Case bleue</strong> = dimension testée et certifiée au laboratoire CNPP.<br />
-            Le procès-verbal d'essai est disponible pour cette configuration exacte.</span>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ width: 32, height: 22, borderRadius: 5, background: '#f5f8ff', border: '1px solid #c8d8f0', flexShrink: 0, display: 'inline-block' }} />
-            <span><strong>Case blanche</strong> = dimension catalogue hors procès-verbal.<br />
-            Attention : <strong>quand on n'est pas en zone bleue, il faut chiffrer un avis de chantier.</strong></span>
-          </div>
-        </div>
-        <div style={{ marginTop: 12, fontSize: 11, color: 'var(--color-text-3)' }}>
-          Données extraites du fichier <code>TARIF NEXUS 2026-01.xlsx</code> · Cellules bleues identifiées par leur mise en forme (couleurs EN 1627/1630, EN 1634-1/1363-1)
-        </div>
-      </div>
-    </div>
-  )
-}
-
-
 
 function StatCard({ icon: Icon, color, label, value, sub, onClick }) {
   return (
