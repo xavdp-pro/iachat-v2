@@ -14,7 +14,7 @@ import { Router } from 'express'
 import { authenticate } from '../middleware/auth.js'
 import { chatCompletion } from '../services/ollama.js'
 import { getGlobalOllamaModel } from '../services/appSettings.js'
-import { searchExperiences } from '../services/memory.js'
+import { searchDesignationExamples, searchExperiences } from '../services/memory.js'
 import db from '../db/index.js'
 import multer from 'multer'
 import { execFile } from 'child_process'
@@ -70,6 +70,41 @@ function isBlockingUnpricedLine(line = {}) {
     ...(Array.isArray(line.options) ? line.options.map(option => `${option?.label || ''} ${option?.note || ''}`) : []),
   ].filter(Boolean).join(' ')
   return /hors catalogue|nous consulter|impossible|pas de prix de base|non chiffrable/i.test(text)
+}
+
+function parseMaybeJson(value, fallback = []) {
+  if (Array.isArray(value)) return value
+  if (value && typeof value === 'object') return value
+  if (typeof value !== 'string' || !value.trim()) return fallback
+  try { return JSON.parse(value) } catch { return fallback }
+}
+
+function designationSearchText(line = {}) {
+  const options = parseMaybeJson(line.options ?? line.options_json, [])
+  const equipments = parseMaybeJson(line.equip_extra ?? line.equipements_json, [])
+  const alerts = parseMaybeJson(line.alertes ?? line.alertes_json, [])
+  const docs = parseMaybeJson(line.docs ?? line.docs_json, [])
+  const parts = [
+    line.designation,
+    line.type,
+    line.type_porte,
+    line.gamme,
+    line.vantail,
+    line.haut_mm || line.hauteur_mm ? `H ${line.haut_mm || line.hauteur_mm}` : null,
+    line.larg_mm || line.largeur_mm ? `L ${line.larg_mm || line.largeur_mm}` : null,
+    line.serrure?.from,
+    line.serrure?.ref,
+    line.serrure_ref,
+    line.ferme_porte?.from,
+    line.ferme_porte?.ref,
+    line.ferme_porte_ref,
+    line.autres,
+    ...(Array.isArray(options) ? options.map((option) => `${option?.label || ''} ${option?.note || ''}`) : []),
+    ...(Array.isArray(equipments) ? equipments.map((item) => `${item?.label || ''} ${item?.note || ''}`) : []),
+    ...(Array.isArray(alerts) ? alerts : []),
+    ...(Array.isArray(docs) ? docs : []),
+  ]
+  return parts.filter(Boolean).join(' | ').replace(/\s+/g, ' ').trim()
 }
 
 // ── Multer : stockage dans /tmp, fichiers .xlsx uniquement ──────────────────
@@ -165,9 +200,10 @@ router.get('/types-options', async (_req, res) => {
 })
 
 // ── POST /api/devis/recompute-row ───────────────────────────────────────────
-// body: { row: [16 cols] } — recalcule une ligne en passant par detect_nexus.py --recompute
+// body: { row: [16 cols], qty?: number } — recalcule une ligne en passant par detect_nexus.py --recompute
 router.post('/recompute-row', async (req, res) => {
   const rowArr = req.body?.row
+  const qty = Math.max(1, parseInt(req.body?.qty) || 1)
   if (!Array.isArray(rowArr)) return res.status(400).json({ error: 'row (array) requis' })
   try {
     const { spawn } = await import('node:child_process')
@@ -175,7 +211,7 @@ router.post('/recompute-row', async (req, res) => {
     let stdout = '', stderr = ''
     child.stdout.on('data', d => { stdout += d.toString() })
     child.stderr.on('data', d => { stderr += d.toString() })
-    child.stdin.write(JSON.stringify({ row: rowArr }))
+    child.stdin.write(JSON.stringify({ row: rowArr, qty }))
     child.stdin.end()
     const exitCode = await new Promise(resolve => child.on('close', resolve))
     if (exitCode !== 0) {
@@ -188,6 +224,28 @@ router.post('/recompute-row', async (req, res) => {
     res.json({ result })
   } catch (err) {
     res.status(500).json({ error: 'Erreur recompute', details: err.message })
+  }
+})
+
+// ── POST /api/devis/lookup-ref ───────────────────────────────────────────────
+// body: { ref: "4402" } → { found, label, prix, source }
+router.post('/lookup-ref', async (req, res) => {
+  const ref = String(req.body?.ref || '').trim()
+  if (!ref) return res.status(400).json({ error: 'ref requise' })
+  try {
+    const { spawn } = await import('node:child_process')
+    const child = spawn('python3', [SCRIPT, '--lookup-ref', ref], { cwd: XLSX_DIR, env: await detectEnv() })
+    let stdout = '', stderr = ''
+    child.stdout.on('data', d => { stdout += d.toString() })
+    child.stderr.on('data', d => { stderr += d.toString() })
+    child.stdin.end()
+    const exitCode = await new Promise(resolve => child.on('close', resolve))
+    if (exitCode !== 0) return res.status(500).json({ error: 'lookup-ref échoué', details: stderr })
+    const lines = stdout.trim().split('\n').filter(l => l.trim().startsWith('{'))
+    const result = JSON.parse(lines[lines.length - 1] || '{"found":false}')
+    res.json(result)
+  } catch (err) {
+    res.status(500).json({ error: 'Erreur lookup-ref', details: err.message })
   }
 })
 
@@ -219,8 +277,8 @@ Format JSON attendu (toutes les clés présentes, null si absent):
   "serrure": "<libellé serrure ou null>",
   "garn_int": "<libellé garniture intérieure ou null>",
   "garn_ext": "<libellé garniture extérieure ou null>",
-  "fp": "<finition peinture ex: RAL 7016 ou null>",
-  "autres": "<autres équipements, RAL si thermolaquage, ou null>"
+  "fp": "<description du ferme-porte demandé ex: TS-5000 bras glissière, TS-4000 bras compas, ou null si aucun>",
+  "autres": "<autres équipements, thermolaquage/RAL si peinture spécifique, ou null>"
 }
 
 Règles:
@@ -228,6 +286,9 @@ Règles:
 - "CR4", "FB4", "EI60" peuvent être dans la description principale
 - Si la gamme est dans le type (ex "BP 1V CR4"), ne la duplique pas dans rc
 - "thermolaquage", "TL", "RAL XXXX" → mettre dans autres
+- La performance acoustique (30 dB, 35 dB, 40 dB, 45 dB) → mettre dans autres (ex: "acoustique 40 dB")
+- Le ferme-porte est dans fp ; si la description dit "avec FP", "ferme-porte bras glissière", etc. → mettre dans fp
+- tornade, seisme, aev = toujours null (gérés séparément)
 - Réponds UNIQUEMENT avec le JSON, aucun commentaire, aucun markdown`
 
   try {
@@ -277,6 +338,60 @@ Règles:
   }
 })
 
+// ── POST /api/devis/suggest-designation ────────────────────────────────────
+// Gemma propose une désignation PDF en s'appuyant sur les devis historiques vectorisés
+router.post('/suggest-designation', async (req, res) => {
+  const line = req.body?.line || req.body || {}
+  const query = designationSearchText(line)
+  if (!query) return res.status(400).json({ error: 'line requis' })
+
+  try {
+    const examples = await searchDesignationExamples({ text: query, topK: 4, minScore: 0.30 })
+    if (!examples.length) {
+      return res.status(404).json({ error: 'Aucun exemple historique proche trouvé', query })
+    }
+
+    const model = await getGlobalOllamaModel()
+    const examplesText = examples.map((example, index) => `EXEMPLE ${index + 1} - score ${Number(example.score || 0).toFixed(3)} - ${example.source_pdf} rep. ${example.repere || '?'}\n${example.designation}`).join('\n\n---\n\n')
+    const systemPrompt = `Tu es rédacteur de devis NEXUS.
+Tu dois générer le libellé commercial d'une ligne de devis PDF en reprenant le style des anciens devis DOORTAL/ZERUX.
+
+Contraintes:
+- Réponds uniquement avec le libellé final, sans markdown, sans commentaire.
+- Ne mets jamais de prix, quantité, délai, montant HT, conditions ou total.
+- Conserve le style en lignes courtes: titre produit puis performances, dimensions, équipements, finition/localisation si présents.
+- Utilise uniquement les informations de la ligne cible. Les exemples servent au style et aux formulations, pas à inventer des équipements.
+- Si une information est absente dans la ligne cible, ne l'ajoute pas.`
+
+    const userPrompt = `EXEMPLES HISTORIQUES A IMITER:\n\n${examplesText}\n\nLIGNE CIBLE:\n${query}\n\nLIBELLE A PRODUIRE:`
+    const designation = await chatCompletion({
+      model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      temperature: 0.2,
+      maxTokens: 500,
+    })
+
+    res.json({
+      designation: String(designation || '').trim(),
+      query,
+      examples: examples.map((example) => ({
+        score: example.score,
+        source_pdf: example.source_pdf,
+        page: example.page,
+        repere: example.repere,
+        title: example.title,
+        designation: example.designation,
+      })),
+    })
+  } catch (err) {
+    console.error('suggest-designation error:', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
 // ── POST /api/devis/ask ─────────────────────────────────────────────────────
 // body: { rows: [...], question: string, mdFiles: [string], scope: 'line'|'all' }
 router.post('/ask', async (req, res) => {
@@ -286,7 +401,7 @@ router.post('/ask', async (req, res) => {
   // ── Enrichissement automatique des markdowns selon les caractéristiques de la ligne ──
   // Objectif : garantir que Gemma a toujours accès aux bons référentiels croisés,
   // même si detect_nexus.py ne les a pas listés explicitement.
-  const ALWAYS_LOAD = ['GUIDE-DEVIS.md', 'BASE.md', 'EQUIP-COMMUN.md', 'SERRURES-GARNITURES.md']
+  const ALWAYS_LOAD = ['GUIDE-DEVIS.md', 'BASE.md', 'EQUIP-COMMUN.md', 'SERRURES-GARNITURES.md', 'TABLEAUX-ADDITIONNELS.md']
   // En mode "all", on prend toutes les lignes pour extraire les gammes/options ; sinon row[0]
   const contextRows = (scope === 'all' || rows.length > 1) ? rows : (rows[0] ? [rows[0]] : [])
   const row = contextRows[0] || {}
@@ -320,6 +435,9 @@ router.post('/ask', async (req, res) => {
       crossRefs.add('SEISME-AEV.md')
     }
     if (extraUpper.includes('BLAST')) crossRefs.add('BLAST.md')
+    if (extraUpper.includes('RAL') || extraUpper.includes('THERMOLAQUAGE') || extraUpper.includes('LAQUAGE')) {
+      crossRefs.add('THERMOLAQUAGE.md')
+    }
   }
 
   // Consolider : docs détectés + cross-refs + fichiers transverses systématiques
@@ -401,6 +519,7 @@ Pour chiffrer une porte correctement, tu dois TOUJOURS croiser plusieurs markdow
 - EQUIP-EI.md : si option coupe-feu (EI30/EI60/EI120)
 - EQUIP-FB.md : si option pare-balles (FB4/FB6/FB7)
 - SEISME-AEV.md : si option anti-séisme ou AEV
+- TABLEAUX-ADDITIONNELS.md : règles courtes issues des onglets additionnels du XLSX (séisme, AEV, Blast 0,5 t/m², bornes mini/maxi, pièces détachées)
 - SERRURES-GARNITURES.md : TOUJOURS consulter pour connaître la serrure et les garnitures livrées par défaut avec chaque gamme. Ne jamais laisser serrure_ref vide sans avoir vérifié ce fichier.
 
 CAS HORS CATALOGUE — traitement manuel obligatoire (ne jamais générer de prix automatique) :
@@ -841,6 +960,28 @@ router.post('/validate-lines', async (req, res) => {
   } catch (err) {
     console.error('validate-lines error:', err)
     res.status(500).json({ error: 'Erreur validation', details: err.message })
+  }
+})
+
+// ── POST /api/devis/save-as-rule ──────────────────────────────────────────
+// Crée une expérience "Validations individuelles R&D" pré-remplie depuis une ligne de grille.
+// Body: { title, content, category? }
+// Tout utilisateur authentifié peut soumettre (status=pending, un admin valide ensuite).
+router.post('/save-as-rule', async (req, res) => {
+  const { title, content, category } = req.body
+  if (!title?.trim() || !content?.trim()) {
+    return res.status(400).json({ error: 'title et content requis' })
+  }
+  const cat = category?.trim() || 'Validations individuelles R&D'
+  try {
+    const [result] = await db.query(
+      `INSERT INTO experiences (user_id, title, content, category, status, created_at) VALUES (?, ?, ?, ?, 'pending', NOW())`,
+      [req.user.id, title.trim(), content.trim(), cat]
+    )
+    const [rows] = await db.query('SELECT * FROM experiences WHERE id = ?', [result.insertId])
+    res.json(rows[0])
+  } catch (err) {
+    res.status(500).json({ error: err.message })
   }
 })
 

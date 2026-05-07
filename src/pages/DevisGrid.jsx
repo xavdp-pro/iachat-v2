@@ -5,7 +5,7 @@
  * Phase MVP : lecture seule + expand/collapse sous-rows
  */
 import { useState, useCallback, useRef, useEffect, Fragment } from 'react'
-import { Upload, RefreshCw, ChevronRight, ChevronDown, AlertTriangle, MessageSquare, ArrowLeft, PanelLeftClose, PanelLeftOpen, Plus, Minus, X, Check, Loader2, Settings, Trash2, Calculator, Truck, Package } from 'lucide-react'
+import { Upload, RefreshCw, ChevronRight, ChevronDown, AlertTriangle, MessageSquare, ArrowLeft, PanelLeftClose, PanelLeftOpen, Plus, Minus, X, Check, Loader2, Settings, Trash2, Calculator, Truck, Package, EyeOff, Eye, BookOpen, ShieldCheck } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import api from '../api/index.js'
 import Select from 'react-select'
@@ -248,6 +248,8 @@ export function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
     ? r.thermolaquage
     : !!(r._raw?.[16] && String(r._raw[16]).toUpperCase().includes('RAL'))
   const blastPerf = blastValue(r._raw?.[6]) || blastValue(r.blast) || blastValue(optionsText) || blastValue(r.designation) || blastValue(r.alertes?.join(' '))
+  const optAcoustic = (r.options || []).find(o => isAcousticValue(equipmentText(o)))
+  const acousticRef = optAcoustic ? (extractRef(optAcoustic.note) || extractRef(optAcoustic.label)) : null
   return {
     ...r,
     _pu: pu,
@@ -263,7 +265,12 @@ export function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
     _vitrageLabel: vitrageLabel || null,
     _vitrageNote: vitrageNote || null,
     _vitragePrix: optVitrage?.prix ?? null,
-    _acousticValue: acousticValue(r._raw?.[9]) || acousticValue(r._raw?.[16]) || acousticValue(r.acoustique) || acousticValue(optionsText),
+    _acousticValue: r._overrideAcoustic !== undefined
+      ? r._overrideAcoustic
+      : (acousticValue(r._raw?.[16]) || acousticValue(r.acoustique) || acousticValue(optionsText)),
+    _acousticRef: acousticRef,
+    _acousticPrix: optAcoustic?.prix ?? null,
+    _optAcoustic: optAcoustic,
     _garnIntRef: garnInt,
     _garnExtRef: garnExt,
     _garnIntPrix: garnIntPrix,
@@ -343,15 +350,8 @@ function GammeBadge({ gamme, fullWidth }) {
   )
 }
 
-const PERF_CONTROL_WIDTH = {
-  rc: 58,
-  pb: 58,
-  cf: 58,
-  blast: 64,
-  belier: 64,
-  prison: 64,
-  acoustic: 72,
-}
+// Largeur calculée automatiquement après PERF_OPTIONS
+const PERF_CONTROL_WIDTH = {}
 
 const perfActionButtonStyle = {
   width: 28,
@@ -427,16 +427,208 @@ function productLeafCount(rows = []) {
   }, 0))
 }
 
+// ─── Modal : enregistrer une ligne comme règle R&D ───────────────────────────
+function SaveAsRuleModal({ initial, onClose, onSave }) {
+  const [title, setTitle] = useState(initial?.title || '')
+  const [content, setContent] = useState(initial?.content || '')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [saved, setSaved] = useState(false)
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    if (!title.trim() || !content.trim()) { setError('Titre et contenu requis'); return }
+    setSaving(true); setError('')
+    try {
+      await onSave({ title: title.trim(), content: content.trim() })
+      setSaved(true)
+      setTimeout(onClose, 1200)
+    } catch (err) {
+      setError(err?.response?.data?.error || err?.message || 'Erreur serveur')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div
+      onClick={onClose}
+      style={{ position: 'fixed', inset: 0, zIndex: 9000, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{ background: 'var(--color-surface)', borderRadius: 10, padding: '22px 24px', width: 520, maxWidth: '94vw', boxShadow: '0 8px 32px rgba(0,0,0,0.28)' }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 7, fontWeight: 700, fontSize: 14, color: '#0f766e' }}>
+            <BookOpen size={15} /> Enregistrer comme règle R&amp;D
+          </span>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-3)', padding: 4 }}><X size={15} /></button>
+        </div>
+        {saved ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#22c55e', fontWeight: 600, padding: '16px 0' }}>
+            <Check size={18} /> Règle soumise ! Elle sera visible après validation par un admin.
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit}>
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-2)', display: 'block', marginBottom: 4 }}>Titre *</label>
+              <input
+                value={title}
+                onChange={e => setTitle(e.target.value)}
+                maxLength={255}
+                autoFocus
+                style={{ width: '100%', boxSizing: 'border-box', padding: '7px 10px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-input-bg)', color: 'var(--color-text)', fontSize: 13 }}
+              />
+            </div>
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-2)', display: 'block', marginBottom: 4 }}>Contenu / règle *</label>
+              <textarea
+                value={content}
+                onChange={e => setContent(e.target.value)}
+                rows={6}
+                style={{ width: '100%', boxSizing: 'border-box', padding: '7px 10px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-input-bg)', color: 'var(--color-text)', fontSize: 12, fontFamily: 'var(--font-mono, monospace)', resize: 'vertical' }}
+              />
+            </div>
+            {error && <div style={{ color: '#ef4444', fontSize: 12, marginBottom: 10 }}>{error}</div>}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button type="button" onClick={onClose} style={{ padding: '7px 16px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'transparent', cursor: 'pointer', fontSize: 13 }}>Annuler</button>
+              <button type="submit" disabled={saving} style={{ padding: '7px 16px', borderRadius: 6, border: 'none', background: '#0f766e', color: '#fff', fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer', fontSize: 13, opacity: saving ? 0.7 : 1 }}>
+                {saving ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : 'Soumettre'}
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─── Modal : vérifier les règles IA sur une ligne ────────────────────────────
+const VERDICT_STYLE = {
+  ok:        { bg: 'rgba(34,197,94,0.1)',  text: '#16a34a', label: 'OK' },
+  warning:   { bg: 'rgba(245,158,11,0.1)', text: '#b45309', label: 'Attention' },
+  violation: { bg: 'rgba(239,68,68,0.1)',  text: '#dc2626', label: 'Violation' },
+  na:        { bg: 'rgba(120,130,140,0.08)', text: 'var(--color-text-3)', label: 'N/A' },
+}
+
+function VerifyRulesModal({ row, onClose }) {
+  const [loading, setLoading] = useState(true)
+  const [result, setResult] = useState(null)
+  const [error, setError] = useState('')
+  const [recomputing, setRecomputing] = useState(false)
+  const [recomputeMsg, setRecomputeMsg] = useState('')
+
+  useEffect(() => {
+    const run = async () => {
+      setLoading(true); setError('')
+      try {
+        const lineLike = {
+          designation: row.designation || row.type,
+          type: row.type,
+          gamme: row.gamme,
+          vantail: row.vantail,
+          haut_mm: row.haut_mm,
+          larg_mm: row.larg_mm,
+          prix_base_ht: row.prix_base_ht,
+          prix_total_min_ht: row.prix_total_min_ht,
+          options: row.options,
+          alertes: row.alertes,
+        }
+        const data = await api.post('/devis/validate-lines', { lines: [lineLike] })
+        setResult(data)
+      } catch (err) {
+        setError(err?.response?.data?.error || err?.message || 'Erreur analyse')
+      } finally {
+        setLoading(false)
+      }
+    }
+    run()
+  }, [row])
+
+  const summary = result?.summary || {}
+  const verdicts = result?.lines?.[0]?.verdicts || []
+  const shownVerdicts = verdicts.filter(v => v.status !== 'na')
+
+  return (
+    <div
+      onClick={onClose}
+      style={{ position: 'fixed', inset: 0, zIndex: 9000, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{ background: 'var(--color-surface)', borderRadius: 10, padding: '22px 24px', width: 600, maxWidth: '96vw', maxHeight: '80vh', overflowY: 'auto', boxShadow: '0 8px 32px rgba(0,0,0,0.28)' }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 7, fontWeight: 700, fontSize: 14, color: 'var(--color-primary)' }}>
+            <ShieldCheck size={15} /> Vérification des règles IA
+          </span>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-3)', padding: 4 }}><X size={15} /></button>
+        </div>
+
+        <div style={{ fontSize: 11, color: 'var(--color-text-2)', marginBottom: 12, padding: '6px 10px', background: 'var(--color-input-bg)', borderRadius: 6 }}>
+          {row.designation || row.type || 'Ligne'} — {row.haut_mm}×{row.larg_mm} mm — {row.prix_base_ht ? `${Number(row.prix_base_ht).toLocaleString('fr-FR')} € HT` : 'prix N/A'}
+        </div>
+
+        {loading && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '20px 0', color: 'var(--color-text-2)', fontSize: 13 }}>
+            <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} /> Analyse en cours…
+          </div>
+        )}
+
+        {error && <div style={{ color: '#ef4444', fontSize: 12, padding: '10px 0' }}>{error}</div>}
+
+        {result && !loading && (
+          <>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
+              {[['ok', '#22c55e'], ['warning', '#f59e0b'], ['violation', '#ef4444']].map(([s, c]) =>
+                summary[s] > 0 && (
+                  <span key={s} style={{ fontSize: 11, fontWeight: 600, color: c, background: `${c}18`, padding: '3px 10px', borderRadius: 99 }}>
+                    {summary[s]} {VERDICT_STYLE[s].label}
+                  </span>
+                )
+              )}
+              {result.rules_count === 0 && <span style={{ fontSize: 11, color: 'var(--color-text-3)' }}>Aucune règle approuvée trouvée.</span>}
+            </div>
+
+            {shownVerdicts.length === 0 && result.rules_count > 0 && (
+              <div style={{ fontSize: 12, color: '#22c55e', padding: '8px 0' }}>✓ Toutes les règles sont respectées.</div>
+            )}
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {shownVerdicts.map((v, vi) => {
+                const s = VERDICT_STYLE[v.status] || VERDICT_STYLE.na
+                return (
+                  <div key={vi} style={{ background: s.bg, borderRadius: 7, padding: '9px 12px', borderLeft: `3px solid ${s.text}` }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: s.text, background: `${s.text}18`, padding: '1px 7px', borderRadius: 99 }}>{s.label}</span>
+                      <span style={{ fontSize: 12, fontWeight: 600 }}>{v.rule_title}</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--color-text-2)' }}>{v.reason}</div>
+                    {v.fix && <div style={{ fontSize: 11, color: s.text, marginTop: 4 }}>→ {v.fix}</div>}
+                  </div>
+                )
+              })}
+            </div>
+
+            {recomputeMsg && <div style={{ marginTop: 10, fontSize: 12, color: '#22c55e' }}>{recomputeMsg}</div>}
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ─── Composant ligne principale ──────────────────────────────────────────────
-function MainRow({ row, index, displayIndex = index, expanded, onToggle, change, tva, multGlobal, editMode, onUpdate, onRecompute, onDelete }) {
+function MainRow({ row, index, displayIndex = index, expanded, onToggle, change, tva, multGlobal, editMode, onUpdate, onRecompute, onDelete, onSaveAsRule, onVerifyRules, hiddenCols = new Set() }) {
   const r = resolveRow(row, change, tva, multGlobal)
   const qty = Number.isFinite(r.qty) ? r.qty : 1
   const isAmountSection = sectionOf(row) !== 'products'
   const [showEmptyPerfs, setShowEmptyPerfs] = useState(false)
   const perfKeys = ['rc', 'pb', 'cf', 'blast', 'belier', 'prison', 'acoustic']
-  const rawIndexByPerf = { rc: 3, pb: 4, cf: 5, blast: 6, belier: 7, prison: 8, acoustic: 9 }
+  const rawIndexByPerf = { rc: 3, pb: 4, cf: 5, blast: 6, belier: 7, prison: 8, acoustic: null }
   const visiblePerfKeys = isAmountSection ? [] : (editMode
-    ? perfKeys.filter(key => row._manualBlank || showEmptyPerfs || row._raw?.[rawIndexByPerf[key]] != null || (key === 'acoustic' && r._acousticValue) || (key === 'blast' && r._blastValue))
+    ? perfKeys.filter(key => row._manualBlank || showEmptyPerfs || (key !== 'acoustic' && row._raw?.[rawIndexByPerf[key]] != null) || (key === 'acoustic' && r._acousticValue) || (key === 'blast' && r._blastValue))
     : perfKeys)
   const hiddenPerfCount = perfKeys.length - visiblePerfKeys.length
   const canCollapseEmptyPerfs = editMode && !isAmountSection && showEmptyPerfs && !row._manualBlank && hiddenPerfCount === 0
@@ -495,7 +687,7 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
               {visiblePerfKeys.map(key => {
                 const rawIdx = rawIndexByPerf[key]
                 const cur = key === 'acoustic'
-                  ? (r._acousticValue || row._raw?.[rawIdx] || null)
+                  ? (row._overrideAcoustic !== undefined ? row._overrideAcoustic : r._acousticValue)
                   : (key === 'blast' ? (r._blastValue || blastValue(row._raw?.[rawIdx]) || null) : (row._raw?.[rawIdx] ?? null))
                 const isSet = cur != null
                 const controlWidth = PERF_CONTROL_WIDTH[key] || 58
@@ -505,7 +697,16 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
                       value={cur ?? ''}
                       onChange={e => {
                         const v = e.target.value || null
-                        onRecompute?.({ [`_raw_${rawIdx}`]: v })
+                        if (key === 'acoustic') {
+                          // Rebuild _raw[16] with or without the acoustic value so the
+                          // server recomputes the price (acoustic treatment is priced server-side).
+                          const raw16 = String(row._raw?.[16] ?? '')
+                          const stripped = stripAcousticInfo(raw16)
+                          const newRaw16 = v ? (stripped ? `${stripped} ${v}` : v) : (stripped || null)
+                          onRecompute?.({ _raw_16: newRaw16 })
+                        } else {
+                          onRecompute?.({ [`_raw_${rawIdx}`]: v })
+                        }
                       }}
                       title={key === 'acoustic' ? 'Acoustique' : key.toUpperCase()}
                       style={{
@@ -553,8 +754,8 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
           ) : (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, fontSize: 9 }}>
               {(['rc','pb','cf','blast','belier','prison','acoustic']).map(key => {
-                const rawIdx = { rc: 3, pb: 4, cf: 5, blast: 6, belier: 7, prison: 8, acoustic: 9 }[key]
-                const cur = key === 'acoustic' ? r._acousticValue : (key === 'blast' ? (r._blastValue || blastValue(row._raw?.[rawIdx])) : row._raw?.[rawIdx])
+                const rawIdx = { rc: 3, pb: 4, cf: 5, blast: 6, belier: 7, prison: 8, acoustic: null }[key]
+                const cur = key === 'acoustic' ? (row._overrideAcoustic !== undefined ? row._overrideAcoustic : r._acousticValue) : (key === 'blast' ? (r._blastValue || blastValue(row._raw?.[rawIdx])) : row._raw?.[rawIdx])
                 if (!cur) return null
                 return (
                   <span key={key} style={{ padding: '1px 4px', borderRadius: 3, background: 'color-mix(in srgb, #fbbf24 14%, transparent)', fontWeight: 600 }}>{cur}</span>
@@ -621,7 +822,7 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{mainEquipLabel(row._raw?.[14] || r._garnExtLabel) || '—'}</span>}
       </Td>
       {/* Vitrage */}
-      <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 130 }}>
+      <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 130, ...(hiddenCols.has('vitrage') ? { display: 'none' } : {}) }}>
         {editMode
           ? (isAmountSection ? <EditableText value={row.notes || row.alertes?.[0] || ''} onCommit={v => onUpdate?.({ notes: v, alertes: v ? [v] : [] })} placeholder="note…" /> : <EditableText value={stripAcousticInfo(row._raw?.[16])} onCommit={v => onRecompute?.({ [`_raw_16`]: v })} placeholder="" />)
           : (r._vitrageLabel ? (
@@ -633,34 +834,53 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
           ) : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{isAcousticValue(row._raw?.[16]) ? '' : (row._raw?.[16] || '')}</span>)}
       </Td>
       {/* FP */}
-      <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 60 }}>
+      <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 60, ...(hiddenCols.has('fp') ? { display: 'none' } : {}) }}>
         {editMode
           ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableText value={mainEquipLabel(row._raw?.[15] ?? r._fpLabel ?? '')} onCommit={v => onRecompute?.({ [`_raw_15`]: v })} placeholder="FP…" />)
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{mainEquipLabel(row._raw?.[15] || r._fpLabel) || '—'}</span>}
       </Td>
       {/* Crémone */}
-      <Td palette="normal" style={{ minWidth: 110, fontSize: 11, color: 'var(--color-text-2)' }}>
-        {r._cremoneLabel ? (
-          <Popover content={r._cremoneNote || r._cremoneLabel}>
-            <span style={{ display: 'inline-block', padding: '2px 4px', fontWeight: 600 }}>
-              {mainEquipLabel(r._cremoneLabel)}{r._cremoneRef ? ` · réf.${r._cremoneRef}` : ''}{r._cremonePrix != null ? ` · ${Number(r._cremonePrix).toLocaleString('fr-FR')} €` : ''}
-            </span>
-          </Popover>
-        ) : '—'}
+      <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 110, ...(hiddenCols.has('cremone') ? { display: 'none' } : {}) }}>
+        {editMode
+          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableText value={row._overrideCremone !== undefined ? row._overrideCremone : mainEquipLabel(r._cremoneLabel ?? '')} onCommit={v => onUpdate?.({ _overrideCremone: v })} placeholder="crémone…" />)
+          : (() => {
+              const label = row._overrideCremone !== undefined ? row._overrideCremone : r._cremoneLabel
+              return label ? (
+                <Popover content={r._cremoneNote || label}>
+                  <span style={{ display: 'inline-block', padding: '2px 4px', fontSize: 11, fontWeight: 600, color: 'var(--color-text-2)' }}>
+                    {mainEquipLabel(label)}{r._cremoneRef ? ` · réf.${r._cremoneRef}` : ''}{r._cremonePrix != null ? ` · ${Number(r._cremonePrix).toLocaleString('fr-FR')} €` : ''}
+                  </span>
+                </Popover>
+              ) : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', color: 'var(--color-text-2)' }}>—</span>
+            })()}
       </Td>
       {/* Autres équipements */}
-      <Td palette="normal" style={{ minWidth: 140, fontSize: 11, color: 'var(--color-text-2)' }}>
-        {r._otherExtras?.length ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            {r._otherExtras.map((e, extraIndex) => (
-              <Popover key={`${e.ref || e.label || extraIndex}`} content={e.note || e.label}>
-                <span style={{ display: 'inline-block', padding: '1px 4px', fontWeight: 600 }}>
-                  {mainEquipLabel(e.label)}{e.ref ? ` · réf.${e.ref}` : ''}{e.prix != null ? ` · ${Number(e.prix).toLocaleString('fr-FR')} €` : ''}
+      <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 140, ...(hiddenCols.has('autres') ? { display: 'none' } : {}) }}>
+        {editMode
+          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableText value={row._overrideAutres !== undefined ? row._overrideAutres : (r._otherExtras?.map(e => mainEquipLabel(e.label)).join(', ') ?? '')} onCommit={v => onUpdate?.({ _overrideAutres: v })} placeholder="autres équip…" />)
+          : (row._overrideAutres !== undefined
+              ? (row._overrideAutres ? <span style={{ fontSize: 11, padding: '2px 4px', display: 'inline-block', fontWeight: 600, color: 'var(--color-text-2)' }}>{row._overrideAutres}</span> : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', color: 'var(--color-text-2)' }}>—</span>)
+              : (r._otherExtras?.length ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    {r._otherExtras.map((e, extraIndex) => (
+                      <Popover key={`${e.ref || e.label || extraIndex}`} content={e.note || e.label}>
+                        <span style={{ display: 'inline-block', padding: '1px 4px', fontSize: 11, fontWeight: 600, color: 'var(--color-text-2)' }}>
+                          {mainEquipLabel(e.label)}{e.ref ? ` · réf.${e.ref}` : ''}{e.prix != null ? ` · ${Number(e.prix).toLocaleString('fr-FR')} €` : ''}
+                        </span>
+                      </Popover>
+                    ))}
+                  </div>
+                ) : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', color: 'var(--color-text-2)' }}>—</span>))}
+      </Td>
+      {/* Acoustique */}
+      <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 90, ...(hiddenCols.has('acoustic') ? { display: 'none' } : {}) }}>
+        {isAmountSection
+          ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span>
+          : (r._acousticValue
+              ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', fontWeight: 600 }}>
+                  {r._acousticValue}{r._acousticRef ? ` · réf.${r._acousticRef}` : ''}
                 </span>
-              </Popover>
-            ))}
-          </div>
-        ) : '—'}
+              : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', color: 'var(--color-text-2)' }}>—</span>)}
       </Td>
       {/* PU HT */}
       <Td palette="gray" style={{ textAlign: 'right', fontWeight: 600, whiteSpace: 'nowrap' }}>
@@ -669,7 +889,7 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
           : (r._pu > 0 ? r._pu.toLocaleString('fr-FR') + ' €' : '—')}
       </Td>
       {/* Remise */}
-      <Td palette="yellow" style={{ textAlign: 'center', width: 60, padding: 0 }}>
+      <Td palette="yellow" style={{ textAlign: 'center', width: 90, padding: 0 }}>
         <EditableNumber
           value={Number.isFinite(row.multiple) ? row.multiple : multGlobal}
           onCommit={v => onUpdate?.({ multiple: v })}
@@ -681,23 +901,45 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
         />
       </Td>
       {/* Q (toujours éditable) */}
-      <Td palette="yellow" style={{ textAlign: 'center', width: 36, padding: 0 }}>
+      <Td palette="yellow" style={{ textAlign: 'center', width: 90, padding: 0 }}>
         <EditableNumber value={qty} onCommit={v => onUpdate?.({ qty: v })} step={1} min={1} max={9999} width="100%" />
       </Td>
       {/* Total HT */}
       <Td palette="blue" style={{ textAlign: 'right', fontWeight: 800, whiteSpace: 'nowrap', fontSize: 12 }}>
         {r._pu > 0 ? r._totalHt.toLocaleString('fr-FR') + ' €' : '—'}
       </Td>
-      <Td style={{ width: 32, textAlign: 'center', padding: 0 }}>
+      <Td style={{ width: editMode ? 72 : 32, textAlign: 'center', padding: 0 }}>
         {editMode && (
-          <button
-            type="button"
-            onClick={e => { e.stopPropagation(); onDelete?.() }}
-            title="Supprimer la ligne"
-            style={{ width: '100%', height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 'none', background: 'transparent', color: '#a33c3c', cursor: 'pointer' }}
-          >
-            <Trash2 size={13} />
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2 }}>
+            {!isAmountSection && (
+              <>
+                <button
+                  type="button"
+                  onClick={e => { e.stopPropagation(); onVerifyRules?.() }}
+                  title="Vérifier les règles IA sur cette ligne"
+                  style={{ width: 22, height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 'none', background: 'transparent', color: 'var(--color-primary)', cursor: 'pointer', borderRadius: 3 }}
+                >
+                  <ShieldCheck size={12} />
+                </button>
+                <button
+                  type="button"
+                  onClick={e => { e.stopPropagation(); onSaveAsRule?.() }}
+                  title="Enregistrer comme règle R&D"
+                  style={{ width: 22, height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 'none', background: 'transparent', color: '#0f766e', cursor: 'pointer', borderRadius: 3 }}
+                >
+                  <BookOpen size={12} />
+                </button>
+              </>
+            )}
+            <button
+              type="button"
+              onClick={e => { e.stopPropagation(); onDelete?.() }}
+              title="Supprimer la ligne"
+              style={{ width: 22, height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 'none', background: 'transparent', color: '#a33c3c', cursor: 'pointer', borderRadius: 3 }}
+            >
+              <Trash2 size={13} />
+            </button>
+          </div>
         )}
       </Td>
     </tr>
@@ -812,13 +1054,15 @@ function AmountRow({ row, index, displayIndex = index, change, tva, multGlobal, 
 }
 
 // ─── Sous-row références ─────────────────────────────────────────────────────
-function SubRowRefs({ row }) {
+function SubRowRefs({ row, editMode, onRefCommit, hiddenCols = new Set() }) {
   const r = resolveRow(row)
   const cells = [
     r._serrureRef, r._garnIntRef, r._garnExtRef,
     r._vitrageRef,
     r._fpRef, r._cremoneRef, r._otherExtrasRefs?.join(', ') || null,
+    r._acousticRef,
   ]
+  const colKeys = [null, null, null, 'vitrage', 'fp', 'cremone', 'autres', 'acoustic']
   return (
     <tr style={{ background: SUBROW_BG }}>
       <td colSpan={3} style={{ padding: '3px 8px 3px 40px', fontSize: 10, fontWeight: 700, color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }}>
@@ -827,8 +1071,15 @@ function SubRowRefs({ row }) {
       <td colSpan={2} style={{ padding: '3px 8px', fontSize: 10, color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }}></td>
       <td style={{ padding: '3px 8px', fontSize: 10, color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }}></td>
       {cells.map((ref, i) => (
-        <td key={i} style={{ padding: '3px 8px', fontSize: 11, fontWeight: 700, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}>
-          {ref || '—'}
+        <td key={i} style={{ padding: 0, fontSize: 11, fontWeight: 700, ...CELL.yellow, borderBottom: '1px solid var(--color-border)', ...(colKeys[i] && hiddenCols.has(colKeys[i]) ? { display: 'none' } : {}) }}>
+          {editMode
+            ? <EditableText
+                value={ref || ''}
+                onCommit={v => onRefCommit?.(i, v)}
+                placeholder="réf…"
+                fontSize={11}
+              />
+            : <span style={{ display: 'block', padding: '3px 8px' }}>{ref || '—'}</span>}
         </td>
       ))}
       <td colSpan={5} style={{ borderBottom: '1px solid var(--color-border)', ...CELL.gray }}></td>
@@ -837,12 +1088,14 @@ function SubRowRefs({ row }) {
 }
 
 // ─── Sous-row prix ────────────────────────────────────────────────────────────
-function SubRowPrices({ row }) {
+function SubRowPrices({ row, hiddenCols = new Set() }) {
   const r = resolveRow(row)
   const prices = [
     r._optSerrure?.prix, r._garnIntPrix, r._garnExtPrix,
     r._vitragePrix, r._optFP?.prix, r._cremonePrix, r._otherExtrasPrix || null,
+    r._acousticPrix,
   ]
+  const colKeys = [null, null, null, 'vitrage', 'fp', 'cremone', 'autres', 'acoustic']
   const visiblePrices = r._unpriced ? prices.map(() => undefined) : prices
   return (
     <tr style={{ background: SUBROW_BG }}>
@@ -852,7 +1105,7 @@ function SubRowPrices({ row }) {
       <td colSpan={2} style={{ padding: '3px 8px', borderBottom: '1px solid var(--color-border)', ...CELL.gray }}></td>
       <td style={{ borderBottom: '1px solid var(--color-border)', ...CELL.gray }}></td>
       {visiblePrices.map((p, i) => (
-        <td key={i} style={{ padding: '3px 8px', fontSize: 11, ...CELL.gray, borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}>
+        <td key={i} style={{ padding: '3px 8px', fontSize: 11, ...CELL.gray, borderBottom: '1px solid var(--color-border)', textAlign: 'right', ...(colKeys[i] && hiddenCols.has(colKeys[i]) ? { display: 'none' } : {}) }}>
           {p === undefined ? '—' : (p != null ? p.toLocaleString('fr-FR') + ' €' : <span style={{ color: 'var(--color-text-3)' }}>de série</span>)}
         </td>
       ))}
@@ -880,6 +1133,10 @@ const PERF_OPTIONS = {
   prison: [{ value: null, label: '—' }, { value: 'Prison', label: 'Prison' }],
   acoustic: [{ value: null, label: '—' }, { value: '30 dB', label: '30 dB' }, { value: '35 dB', label: '35 dB' }, { value: '40 dB', label: '40 dB' }, { value: '45 dB', label: '45 dB' }],
 }
+// Largeur dynamique : longueur du label le plus long × 9px + 32px (padding + flèche), min 52
+Object.entries(PERF_OPTIONS).forEach(([k, opts]) => {
+  PERF_CONTROL_WIDTH[k] = Math.max(52, Math.max(...opts.map(o => o.label.length)) * 9 + 32)
+})
 
 const TYPE_OPTIONS = ['BP 1V', 'BP 2V', 'Chassis', 'Guichet'].map(value => ({ value, label: value }))
 
@@ -1894,7 +2151,8 @@ export function DevisGridWorkspace({
       _recomputing: true,
     } : r))
     // Appel API — hors de tout updater → jamais dupliqué par Strict Mode
-    api.post('/devis/recompute-row', { row: raw }, { timeout: 30000 })
+    const qtyInt = Number.isFinite(qty) && qty > 0 ? Math.round(qty) : 1
+    api.post('/devis/recompute-row', { row: raw, qty: qtyInt }, { timeout: 30000 })
       .then(res => {
         const result = res?.result
         if (!result) return
@@ -1915,6 +2173,32 @@ export function DevisGridWorkspace({
         showToast('Erreur recalcul', 'error')
       })
   }, [onRowsCommit, showToast, updateRow])
+
+  // 0=serrure, 1=garnInt, 2=garnExt, 3=vitrage, 4=fp, 5=crémone, 6=autres
+  const handleRefCommit = useCallback(async (rowIdx, colIdx, refVal) => {
+    if (!refVal) return
+    const REF_COL_RAW = ['_raw_12', '_raw_13', '_raw_14', '_raw_16', '_raw_15']
+    let label = refVal
+    let prix = null
+    try {
+      const res = await api.post('/devis/lookup-ref', { ref: refVal })
+      if (res?.found) { label = res.label; prix = res.prix }
+    } catch { /* non bloquant */ }
+    if (colIdx < 5) {
+      const rawVal = `${label} — réf.${refVal}`
+      recomputeRow(rowIdx, { [REF_COL_RAW[colIdx]]: rawVal })
+    } else if (colIdx === 5) {
+      const patch = { _overrideCremone: label }
+      if (prix != null) patch._overrideCremonePrix = prix
+      updateRow(rowIdx, patch)
+      showToast('Crémone mise à jour', 'success')
+    } else {
+      const patch = { _overrideAutres: label }
+      if (prix != null) patch._overrideAutresPrix = prix
+      updateRow(rowIdx, patch)
+      showToast('Autres équipements mis à jour', 'success')
+    }
+  }, [recomputeRow, updateRow, showToast])
 
   const handleFile = async (file) => {
     if (!file) return
@@ -1948,8 +2232,61 @@ export function DevisGridWorkspace({
   }
 
   // totaux
+  const [hideEmptyCols, setHideEmptyCols] = useState(false)
+  // ─── Modales règles R&D ────────────────────────────────────────────────────
+  const [saveAsRuleModal, setSaveAsRuleModal] = useState(null) // { row, initial }
+  const [verifyRulesModal, setVerifyRulesModal] = useState(null) // row
+
+  const handleSaveAsRule = useCallback((rowIdx) => {
+    const row = rowsRef.current[rowIdx]
+    if (!row) return
+    const r = resolveRow(row)
+    const type = r.type || row.type || ''
+    const h = r.haut_mm || row.haut_mm || ''
+    const l = r.larg_mm || row.larg_mm || ''
+    const prix = r._pu > 0 ? `${r._pu.toLocaleString('fr-FR')} € HT` : ''
+    const perfs = ['rc','pb','cf','blast','belier','prison'].filter(k => {
+      const idx = { rc: 3, pb: 4, cf: 5, blast: 6, belier: 7, prison: 8 }[k]
+      return row._raw?.[idx] != null
+    }).map(k => {
+      const idx = { rc: 3, pb: 4, cf: 5, blast: 6, belier: 7, prison: 8 }[k]
+      return `${k.toUpperCase()}=${row._raw[idx]}`
+    }).join(', ')
+    const title = `Validation R&D — ${type}${h && l ? ` ${h}×${l}` : ''}${perfs ? ` [${perfs}]` : ''}${prix ? ` → ${prix}` : ''}`
+    const lines = [
+      `Type : ${type || '—'}`,
+      `Dimensions : ${h ? `H=${h} mm` : '—'} × ${l ? `L=${l} mm` : '—'}`,
+      prix ? `Prix unitaire HT : ${prix}` : '',
+      perfs ? `Performances : ${perfs}` : '',
+      row._raw?.[12] ? `Serrure : ${row._raw[12]}` : '',
+      r._serrureLabel ? `Serrure résolue : ${r._serrureLabel}` : '',
+      row._raw?.[15] ? `Ferme-porte : ${row._raw[15]}` : '',
+      row._raw?.[16] ? `Autres équipements : ${row._raw[16]}` : '',
+      r._cremoneLabel ? `Crémone : ${r._cremoneLabel}` : '',
+      row.ref_base ? `Référence base : ${row.ref_base}` : '',
+      row.alertes?.length ? `Alertes : ${row.alertes.join('; ')}` : '',
+    ].filter(Boolean).join('\n')
+    setSaveAsRuleModal({ row, initial: { title, content: lines } })
+  }, [])
+
+  const handleVerifyRules = useCallback((rowIdx) => {
+    const row = rowsRef.current[rowIdx]
+    if (!row) return
+    setVerifyRulesModal(row)
+  }, [])
   const totalPU  = rows.reduce((s, r) => s + (resolveRow(r, change, tva, multGlobal)._pu), 0)
   const totalHT = rows.reduce((s, r) => s + (resolveRow(r, change, tva, multGlobal)._totalHt || 0), 0)
+
+  // Colonnes masquables : calculer lesquelles ont des données sur les lignes produits
+  const productRows = rows.filter(r => sectionOf(r) === 'products')
+  const hasVitrage = productRows.some(r => { const rv = resolveRow(r); return !!(rv._vitrageLabel) })
+  const hasFP = productRows.some(r => { const rv = resolveRow(r); return !!(rv._fpLabel || r._raw?.[15]) })
+  const hasCremone = productRows.some(r => { const rv = resolveRow(r); return !!(r._overrideCremone !== undefined ? r._overrideCremone : rv._cremoneLabel) })
+  const hasAutres = productRows.some(r => { const rv = resolveRow(r); return !!(r._overrideAutres !== undefined ? r._overrideAutres : rv._otherExtras?.length) })
+  const hasAcoustic = productRows.some(r => { const rv = resolveRow(r); return !!(rv._acousticValue) })
+  const hiddenCols = hideEmptyCols
+    ? new Set([...(!hasVitrage ? ['vitrage'] : []), ...(!hasFP ? ['fp'] : []), ...(!hasCremone ? ['cremone'] : []), ...(!hasAutres ? ['autres'] : []), ...(!hasAcoustic ? ['acoustic'] : [])])
+    : new Set()
   let displayIndex = 0
   const sectionEntries = SECTION_ORDER.flatMap(section => {
     const sectionRows = rows.map((row, index) => ({ row, index })).filter(item => sectionOf(item.row) === section)
@@ -2131,6 +2468,17 @@ export function DevisGridWorkspace({
             )}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            {rows.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setHideEmptyCols(v => !v)}
+                title={hideEmptyCols ? 'Afficher toutes les colonnes équipements' : 'Masquer les colonnes équipements vides'}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, padding: '3px 8px', background: hideEmptyCols ? 'color-mix(in srgb, var(--color-primary) 12%, var(--color-surface))' : 'var(--color-surface)', border: `1px solid ${hideEmptyCols ? 'var(--color-primary)' : 'var(--color-border)'}`, borderRadius: 4, cursor: 'pointer', color: hideEmptyCols ? 'var(--color-primary)' : 'var(--color-text-2)', fontWeight: 700 }}
+              >
+                {hideEmptyCols ? <Eye size={12} /> : <EyeOff size={12} />}
+                {hideEmptyCols ? 'Afficher colonnes équipements' : 'Masquer colonnes vides'}
+              </button>
+            )}
             <ModeSwitch value={editMode} onChange={setEditMode} />
             <Legend />
           </div>
@@ -2165,14 +2513,15 @@ export function DevisGridWorkspace({
                   <Th>Serrure</Th>
                   <Th>Garniture int.</Th>
                   <Th>Garniture ext.</Th>
-                  <Th>Vitrage</Th>
-                  <Th>Ferme-porte</Th>
-                  <Th>Crémone</Th>
-                  <Th>Autres équipements</Th>
+                  <Th style={hiddenCols.has('vitrage') ? { display: 'none' } : {}}>Vitrage</Th>
+                  <Th style={hiddenCols.has('fp') ? { display: 'none' } : {}}>Ferme-porte</Th>
+                  <Th style={hiddenCols.has('cremone') ? { display: 'none' } : {}}>Crémone</Th>
+                  <Th style={hiddenCols.has('autres') ? { display: 'none' } : {}}>Autres équipements</Th>
+                  <Th style={hiddenCols.has('acoustic') ? { display: 'none' } : {}}>Acoustique</Th>
                   <Th style={{ ...CELL.gray, width: 90 }}>PU HT</Th>
-                  <Th style={{ ...CELL.yellow, width: 60 }}>Remise</Th>
-                  <Th style={{ ...CELL.yellow, width: 36 }}>Q.</Th>
-                  <Th style={{ ...CELL.blue, width: 110 }}>Total HT</Th>
+                  <Th style={{ ...CELL.yellow, width: 90 }}>Remise</Th>
+                  <Th style={{ ...CELL.yellow, width: 90 }}>Q.</Th>
+                  <Th style={{ ...CELL.blue, width: 90 }}>Total HT</Th>
                   <Th style={{ width: 32 }}></Th>
                 </tr>
               </thead>
@@ -2184,7 +2533,7 @@ export function DevisGridWorkspace({
                     return (
                       <Fragment key={`section-${entry.section}`}>
                         <tr>
-                          <td colSpan={18} style={{ position: 'sticky', top: 31, zIndex: 1, padding: '7px 12px', background: 'color-mix(in srgb, var(--color-primary) 7%, var(--color-surface))', borderTop: '1px solid var(--color-border)', borderBottom: '1px solid var(--color-border)' }}>
+                          <td colSpan={19} style={{ position: 'sticky', top: 31, zIndex: 1, padding: '7px 12px', background: 'color-mix(in srgb, var(--color-primary) 7%, var(--color-surface))', borderTop: '1px solid var(--color-border)', borderBottom: '1px solid var(--color-border)' }}>
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
                               <span style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 11, fontWeight: 900, letterSpacing: '0.02em', textTransform: 'uppercase' }}>
                                 <Icon size={13} /> {meta.label} <span style={{ color: 'var(--color-text-3)', fontWeight: 700 }}>({entry.count})</span>
@@ -2219,11 +2568,11 @@ export function DevisGridWorkspace({
                   }
                   return (
                   <Fragment key={`row-${i}-${entryIndex}`}>
-                    <MainRow row={row} index={i} displayIndex={entry.displayIndex} expanded={expandedRows.has(i)} onToggle={() => toggleRow(i)} change={change} tva={tva} multGlobal={multGlobal} editMode={editMode} onUpdate={(patch) => updateRow(i, patch)} onRecompute={(patch) => recomputeRow(i, patch)} onDelete={() => deleteRow(i)} />
+                    <MainRow row={row} index={i} displayIndex={entry.displayIndex} expanded={expandedRows.has(i)} onToggle={() => toggleRow(i)} change={change} tva={tva} multGlobal={multGlobal} editMode={editMode} onUpdate={(patch) => updateRow(i, patch)} onRecompute={(patch) => recomputeRow(i, patch)} onDelete={() => deleteRow(i)} onSaveAsRule={() => handleSaveAsRule(i)} onVerifyRules={() => handleVerifyRules(i)} hiddenCols={hiddenCols} />
                     {expandedRows.has(i) && (
                       <Fragment>
-                        <SubRowRefs row={row} />
-                        <SubRowPrices row={row} />
+                        <SubRowRefs row={row} editMode={editMode} onRefCommit={(colIdx, ref) => handleRefCommit(i, colIdx, ref)} hiddenCols={hiddenCols} />
+                        <SubRowPrices row={row} hiddenCols={hiddenCols} />
                         {/* Options supplémentaires */}
                         {(row.options || []).filter(o => !isColumnEquipmentOption(o) && !/acoustique|\b(30|35|40|45)\s*dB\b|remplissage|vitrage|ferme.?porte|garniture|serrure|msl|lss|kel|d[ée]ny/i.test(equipmentText(o))).map((opt, oi) => (
                           <tr key={`opt-${i}-${oi}`} style={{ background: SUBROW_BG }}>
@@ -2242,7 +2591,7 @@ export function DevisGridWorkspace({
                         {/* Alertes */}
                         {(row.alertes || []).filter(a => a.startsWith('❌') || a.startsWith('⚠️')).map((a, ai) => (
                           <tr key={`alerte-${i}-${ai}`} style={{ background: 'rgba(160,106,44,0.06)' }}>
-                            <td colSpan={18} style={{ padding: '2px 8px 2px 52px', fontSize: 10, color: a.startsWith('❌') ? '#a33c3c' : '#a06a2c', borderBottom: '1px solid var(--color-border)' }}>
+                            <td colSpan={19} style={{ padding: '2px 8px 2px 52px', fontSize: 10, color: a.startsWith('❌') ? '#a33c3c' : '#a06a2c', borderBottom: '1px solid var(--color-border)' }}>
                               {a}
                             </td>
                           </tr>
@@ -2255,7 +2604,7 @@ export function DevisGridWorkspace({
               </tbody>
               <tfoot>
                 <tr>
-                  <td colSpan={18} style={{ padding: '8px 12px', borderTop: '1px solid var(--color-border)', background: 'var(--color-surface)' }}>
+                  <td colSpan={19} style={{ padding: '8px 12px', borderTop: '1px solid var(--color-border)', background: 'var(--color-surface)' }}>
                     <button
                       type="button"
                       onClick={addBlankRow}
@@ -2304,6 +2653,24 @@ export function DevisGridWorkspace({
       )}
 
       {/* Toast d'enregistrement */}
+      {/* ── Modales R&D ── */}
+      {saveAsRuleModal && (
+        <SaveAsRuleModal
+          initial={saveAsRuleModal.initial}
+          onClose={() => setSaveAsRuleModal(null)}
+          onSave={async ({ title, content }) => {
+            await api.post('/devis/save-as-rule', { title, content, category: 'Validations individuelles R&D' })
+            showToast('Règle R&D soumise — en attente de validation admin', 'success')
+          }}
+        />
+      )}
+      {verifyRulesModal && (
+        <VerifyRulesModal
+          row={verifyRulesModal}
+          onClose={() => setVerifyRulesModal(null)}
+        />
+      )}
+
       {toast && (
         <div
           role="status"

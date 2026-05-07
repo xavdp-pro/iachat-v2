@@ -16,6 +16,7 @@
 
 import { QdrantClient } from '@qdrant/js-client-rest'
 import { EmbeddingModel, FlagEmbedding } from 'fastembed'
+import crypto from 'node:crypto'
 
 const COLLECTION = process.env.QDRANT_COLLECTION || 'iachat_memory'
 const QDRANT_URL = process.env.QDRANT_URL || 'http://127.0.0.1:6333'
@@ -330,6 +331,87 @@ export async function searchDocuments({ text, topK = 5, minScore = 0.40 }) {
     }))
   } catch (err) {
     console.error('searchDocuments error:', err.message)
+    return []
+  }
+}
+
+// ─── NEXUS DESIGNATIONS (exemples issus des devis PDF historiques) ──────────
+
+const DESIGNATIONS_COLLECTION = process.env.QDRANT_DESIGNATIONS_COLLECTION || 'nexus_designations'
+
+async function ensureDesignationsCollection() {
+  try {
+    await client.getCollection(DESIGNATIONS_COLLECTION)
+  } catch {
+    await client.createCollection(DESIGNATIONS_COLLECTION, {
+      vectors: { size: VECTOR_SIZE, distance: 'Cosine' },
+    })
+    console.log(`✅ Qdrant: collection "${DESIGNATIONS_COLLECTION}" created`)
+  }
+}
+
+function designationPointId(example) {
+  const key = [example.source_pdf, example.page, example.repere, example.title, example.config_text].filter(Boolean).join('|')
+  return parseInt(crypto.createHash('sha256').update(key).digest('hex').slice(0, 12), 16)
+}
+
+export async function storeDesignationExamples({ examples = [] }) {
+  const usable = examples.filter((example) => example?.config_text?.trim() && example?.designation?.trim())
+  if (!usable.length) return { stored: 0 }
+  await ensureDesignationsCollection()
+
+  let stored = 0
+  for (const example of usable) {
+    const vector = await embed(example.config_text.slice(0, 2000))
+    await client.upsert(DESIGNATIONS_COLLECTION, {
+      points: [
+        {
+          id: designationPointId(example),
+          vector,
+          payload: {
+            source_pdf: example.source_pdf ?? null,
+            page: example.page ?? null,
+            repere: example.repere ?? null,
+            title: example.title ?? null,
+            designation: example.designation.slice(0, 2500),
+            config_text: example.config_text.slice(0, 2000),
+            dimensions: example.dimensions ?? [],
+            performances: example.performances ?? [],
+            equipments: example.equipments ?? [],
+          },
+        },
+      ],
+    })
+    stored += 1
+  }
+  return { stored }
+}
+
+export async function searchDesignationExamples({ text, topK = 4, minScore = 0.35 }) {
+  if (!text?.trim()) return []
+  try {
+    await ensureDesignationsCollection()
+    const vector = await embed(text.slice(0, 2000))
+    const result = await client.search(DESIGNATIONS_COLLECTION, {
+      vector,
+      limit: topK,
+      score_threshold: minScore,
+      with_payload: true,
+    })
+    return result.map((r) => ({
+      score: r.score,
+      source_pdf: r.payload.source_pdf,
+      page: r.payload.page,
+      repere: r.payload.repere,
+      title: r.payload.title,
+      designation: r.payload.designation,
+      config_text: r.payload.config_text,
+      dimensions: r.payload.dimensions ?? [],
+      performances: r.payload.performances ?? [],
+      equipments: r.payload.equipments ?? [],
+    }))
+  } catch (err) {
+    console.error('searchDesignationExamples error:', err.message)
     return []
   }
 }

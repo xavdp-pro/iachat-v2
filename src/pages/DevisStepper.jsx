@@ -71,6 +71,11 @@ function companyDeliveryAddress(company) {
   ].filter(Boolean).join(', ')
 }
 
+function repLetter(index) {
+  if (index < 26) return String.fromCharCode(65 + index)
+  return String(index + 1)
+}
+
 function parseJsonArray(value) {
   if (Array.isArray(value)) return value
   if (!value) return []
@@ -1220,14 +1225,88 @@ function StepEditor({
 // ══════════════════════════════════════════════════════════════════════════════
 // ── STEP 4: PDF GENERATION ──────────────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════════════════
-function StepPDF({ devisId, lines, clientName, dealName, onSendHubSpot }) {
+function StepPDF({ devisId, lines, setLines, clientName, dealName, onSendHubSpot }) {
   const [copied, setCopied] = useState(false)
-  const grandTotal = lines.reduce((s, l) => s + (Number(l.total_ligne_ht) || 0), 0)
+  const [draftLines, setDraftLines] = useState(lines)
+  const [savingId, setSavingId] = useState(null)
+  const [suggestingId, setSuggestingId] = useState(null)
+  const [downloading, setDownloading] = useState(false)
+  const [statusMsg, setStatusMsg] = useState('')
+
+  useEffect(() => { setDraftLines(lines) }, [lines])
+
+  const grandTotal = draftLines.reduce((s, l) => s + (Number(l.total_ligne_ht) || 0), 0)
+
+  const updateDraftDesignation = (lineId, designation) => {
+    setDraftLines(prev => prev.map(line => line.id === lineId ? { ...line, designation } : line))
+  }
+
+  const saveDesignation = async (line) => {
+    if (!devisId || !line?.id) return
+    setSavingId(line.id); setStatusMsg('')
+    try {
+      const updated = await api.put(`/devis/${devisId}/lines/${line.id}`, { designation: line.designation || null })
+      setDraftLines(prev => prev.map(item => item.id === line.id ? { ...item, ...updated } : item))
+      setLines?.(prev => prev.map(item => item.id === line.id ? { ...item, ...updated } : item))
+      setStatusMsg('Libellé enregistré')
+    } catch (err) {
+      setStatusMsg(err?.error || err?.message || 'Erreur enregistrement')
+    } finally {
+      setSavingId(null)
+    }
+  }
+
+  const saveAllDesignations = async () => {
+    for (const line of draftLines.filter(item => item.id)) {
+      await saveDesignation(line)
+    }
+    setStatusMsg('Textes PDF enregistrés')
+  }
+
+  const suggestDesignation = async (line) => {
+    if (!line?.id) return
+    setSuggestingId(line.id); setStatusMsg('')
+    try {
+      const data = await api.post('/devis/suggest-designation', { line: dbLineToGridRow(line) }, { timeout: 90000 })
+      if (data?.designation) updateDraftDesignation(line.id, data.designation)
+      setStatusMsg(data?.examples?.length ? `Suggestion IA prête (${data.examples.length} exemples)` : 'Suggestion IA prête')
+    } catch (err) {
+      setStatusMsg(err?.error || err?.message || 'Erreur suggestion IA')
+    } finally {
+      setSuggestingId(null)
+    }
+  }
+
+  const downloadFinalPdf = async () => {
+    if (!devisId) return
+    setDownloading(true); setStatusMsg('')
+    try {
+      await saveAllDesignations()
+      const res = await fetch(`/api/devis/${devisId}/pdf`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+      })
+      if (!res.ok) throw new Error(`PDF HTTP ${res.status}`)
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `devis-${devisId}.pdf`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+      setStatusMsg('PDF téléchargé')
+    } catch (err) {
+      setStatusMsg(err?.message || 'Erreur téléchargement PDF')
+    } finally {
+      setDownloading(false)
+    }
+  }
 
   const buildMarkdown = () => {
     const date = new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' })
     const fmt = (v) => v != null ? Number(v).toLocaleString('fr-FR') + ' €' : '—'
-    const linesStr = lines.map((l, i) => {
+    const linesStr = draftLines.map((l, i) => {
       const opts = (() => { try { return JSON.parse(l.options_json || '[]') } catch { return [] } })()
       const optsStr = opts.map(o => `  - ${o.label} : +${(o.prix || 0).toLocaleString('fr-FR')} €`).join('\n')
       return [
@@ -1267,14 +1346,24 @@ function StepPDF({ devisId, lines, clientName, dealName, onSendHubSpot }) {
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <FileText size={16} color="var(--color-primary)" />
-          <span style={{ fontWeight: 700, fontSize: '14px' }}>Aperçu du devis</span>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: '14px' }}>Édition PDF avant impression</div>
+            <div style={{ fontSize: 10, color: 'var(--color-text-3)' }}>Modifier les libellés commerciaux, puis générer le PDF définitif</div>
+          </div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
+          {statusMsg && <span style={{ alignSelf: 'center', fontSize: 11, color: statusMsg.toLowerCase().includes('erreur') ? '#dc2626' : 'var(--color-text-2)' }}>{statusMsg}</span>}
           <button onClick={copyText} style={ghostBtn()}>
             {copied ? <><Check size={13} /> Copié !</> : <><Copy size={13} /> Copier</>}
           </button>
+          <button onClick={saveAllDesignations} style={ghostBtn()} disabled={!!savingId}>
+            {savingId ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Check size={13} />} Enregistrer textes
+          </button>
           <button onClick={() => window.print()} style={ghostBtn()}>
             <Printer size={13} /> Imprimer
+          </button>
+          <button onClick={downloadFinalPdf} disabled={downloading} style={ghostBtn()}>
+            {downloading ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Download size={13} />} PDF final
           </button>
           <button onClick={onSendHubSpot} style={{
             display: 'flex', alignItems: 'center', gap: 5, padding: '6px 14px',
@@ -1285,9 +1374,44 @@ function StepPDF({ devisId, lines, clientName, dealName, onSendHubSpot }) {
           </button>
         </div>
       </div>
-      <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px' }}>
-        <div style={{ maxWidth: 760, margin: '0 auto' }}>
+      <div style={{ flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: 'minmax(360px, 0.95fr) minmax(420px, 1.05fr)', overflow: 'hidden' }}>
+        <div style={{ overflowY: 'auto', borderRight: '1px solid var(--color-border)', padding: '14px', background: 'var(--color-surface)' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {draftLines.map((line, index) => {
+              const isProduct = (line.line_section || 'products') === 'products'
+              return (
+                <div key={line.id || index} style={{ border: '1px solid var(--color-border)', borderRadius: 8, background: 'var(--color-bg)', overflow: 'hidden' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderBottom: '1px solid var(--color-border)' }}>
+                    <span style={{ minWidth: 22, height: 22, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 4, background: gammeColor(line.gamme), color: '#fff', fontSize: 11, fontWeight: 800 }}>{repLetter(index)}</span>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{line.gamme || line.type_porte || line.line_section || 'Ligne'}</div>
+                      <div style={{ fontSize: 10, color: 'var(--color-text-3)' }}>H {line.hauteur_mm || '?'} × L {line.largeur_mm || '?'} mm</div>
+                    </div>
+                    {isProduct && (
+                      <button type="button" onClick={() => suggestDesignation(line)} disabled={suggestingId === line.id} style={ghostBtn()}>
+                        {suggestingId === line.id ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Sparkles size={12} />} IA
+                      </button>
+                    )}
+                    <button type="button" onClick={() => saveDesignation(line)} disabled={savingId === line.id} style={ghostBtn()}>
+                      {savingId === line.id ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Check size={12} />} OK
+                    </button>
+                  </div>
+                  <textarea
+                    value={line.designation || ''}
+                    onChange={e => updateDraftDesignation(line.id, e.target.value)}
+                    rows={Math.max(4, Math.min(12, String(line.designation || '').split('\n').length + 1))}
+                    style={{ width: '100%', boxSizing: 'border-box', border: 'none', resize: 'vertical', padding: 10, background: 'transparent', color: 'var(--color-text)', fontSize: 12, lineHeight: 1.45, fontFamily: 'var(--font-body)', outline: 'none' }}
+                    placeholder="Libellé imprimé sur le PDF…"
+                  />
+                </div>
+              )
+            })}
+          </div>
+        </div>
+        <div style={{ overflowY: 'auto', padding: '20px 24px' }}>
+          <div style={{ maxWidth: 760, margin: '0 auto' }}>
           <MarkdownRenderer content={mdText} />
+          </div>
         </div>
       </div>
     </div>
@@ -1590,7 +1714,7 @@ export default function DevisStepper() {
         )}
         {step === 4 && (
           <StepPDF
-            devisId={currentDevisId} lines={lines}
+            devisId={currentDevisId} lines={lines} setLines={setLines}
             clientName={selectedCompany?.name} dealName={selectedDeal?.name}
             onSendHubSpot={handleSendHubSpot}
           />

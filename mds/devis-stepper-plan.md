@@ -135,6 +135,13 @@
 - [ ] Route DELETE /api/devis/:id/lines/:lineId — supprimer une ligne
 - [ ] Route POST /api/devis/ask enrichi : Gemma peut lire les lignes en BDD
 
+### Tarification — markdowns métier ↔ code
+
+- Les tableaux catalogue NEXUS (bloc-porte par gamme / vantail) sont portés dans **Python** : `../../ressources/XLSX/detect_nexus.py` (`TABLES`, `CATALOG_LIMITS`). La même information est aussi publiée en **Markdown** dans `../../ressources/XLSX/*.md` (CR3.md, FB6-7.md, GUIDE-DEVIS.md, …) pour la doc métier et l’assistant IA (`POST /api/devis/ask` charge ces fichiers).
+- **`../knowledge_tables.json`** (à la racine du projet `iachat-v2/`) : export structuré (grilles, options) utilisé par l’API (`GET /api/devis/types-options`) et aligné sur le même référentiel ; toute évolution du classeur tarif doit d’abord mettre à jour `detect_nexus.py`, puis régénérer ce JSON si nécessaire.
+- **Hors grille** (`POST /api/devis/recompute-row`) : l’alerte indique désormais clairement quelle borne l’écarter (min/max H ou L par rapport au tableau).
+- **BP 2 V avec largeur &lt; pas minimum du tableau 2 V** : le moteur retombe sur la **grille 1 V** (convention catalogue `tariff_floor_lookup`), avec une alerte explicite quand une ligne « BP 2 V » est ainsi tarifée en 1 V.
+
 ---
 
 ## Step 4 — Generation PDF & HubSpot
