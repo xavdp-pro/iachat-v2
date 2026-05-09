@@ -236,6 +236,91 @@ export async function searchExperiences({ text, topK = 5, minScore = 0.45 }) {
   }
 }
 
+// ─── DEVIS RULES (règles atomiques opérationnelles) ────────────────────────
+
+const DEVIS_RULES_COLLECTION = process.env.QDRANT_DEVIS_RULES_COLLECTION || 'devis_rules'
+
+async function ensureDevisRulesCollection() {
+  try {
+    await client.getCollection(DEVIS_RULES_COLLECTION)
+  } catch {
+    await client.createCollection(DEVIS_RULES_COLLECTION, {
+      vectors: { size: VECTOR_SIZE, distance: 'Cosine' },
+    })
+    console.log(`✅ Qdrant: collection "${DEVIS_RULES_COLLECTION}" created`)
+  }
+}
+
+export async function storeDevisRule({ ruleId, title, content, category, severity, sourceType, sourceRef, tags = [] }) {
+  if (!ruleId || !title?.trim() || !content?.trim()) return null
+  const text = [title, content, category, severity, sourceRef, ...tags].filter(Boolean).join('\n').slice(0, 2500)
+  try {
+    await ensureDevisRulesCollection()
+    const vector = await embed(text)
+    await client.upsert(DEVIS_RULES_COLLECTION, {
+      points: [
+        {
+          id: Number(ruleId),
+          vector,
+          payload: {
+            type: 'devis_rule',
+            rule_id: Number(ruleId),
+            title,
+            excerpt: content.slice(0, 700),
+            category: category ?? null,
+            severity: severity ?? 'warning',
+            source_type: sourceType ?? null,
+            source_ref: sourceRef ?? null,
+            tags,
+          },
+        },
+      ],
+    })
+    return String(ruleId)
+  } catch (err) {
+    console.error('storeDevisRule error:', err.message)
+    return null
+  }
+}
+
+export async function deleteDevisRule(ruleId) {
+  if (!ruleId) return
+  try {
+    await ensureDevisRulesCollection()
+    await client.delete(DEVIS_RULES_COLLECTION, { points: [Number(ruleId)] })
+  } catch (err) {
+    console.error('deleteDevisRule error:', err.message)
+  }
+}
+
+export async function searchDevisRules({ text, topK = 8, minScore = 0.35 }) {
+  if (!text?.trim()) return []
+  try {
+    await ensureDevisRulesCollection()
+    const vector = await embed(text.slice(0, 2000))
+    const result = await client.search(DEVIS_RULES_COLLECTION, {
+      vector,
+      limit: topK,
+      score_threshold: minScore,
+      with_payload: true,
+    })
+    return result.map((r) => ({
+      score: r.score,
+      rule_id: r.payload.rule_id,
+      title: r.payload.title,
+      excerpt: r.payload.excerpt,
+      category: r.payload.category,
+      severity: r.payload.severity,
+      source_type: r.payload.source_type,
+      source_ref: r.payload.source_ref,
+      tags: r.payload.tags ?? [],
+    }))
+  } catch (err) {
+    console.error('searchDevisRules error:', err.message)
+    return []
+  }
+}
+
 // ─── DOCUMENTS (pipeline d'analyse documentaire) ─────────────────────────────
 
 const DOCUMENTS_COLLECTION = process.env.QDRANT_DOCUMENTS_COLLECTION || 'iachat_documents'

@@ -157,6 +157,16 @@ export async function ensureDbSchema() {
       console.log('✅ DB: devis.validation_json column added')
     }
 
+    // ── devis.current_version_id (active version pointer) ────────────────
+    const [currentVersionCols] = await db.query(
+      `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'devis' AND COLUMN_NAME = 'current_version_id'`
+    )
+    if (!currentVersionCols.length) {
+      await db.query('ALTER TABLE devis ADD COLUMN current_version_id INT DEFAULT NULL AFTER validation_json')
+      console.log('✅ DB: devis.current_version_id column added')
+    }
+
     // ── devis_lines (individual quote line items) ───────────────────────
     await db.query(`
       CREATE TABLE IF NOT EXISTS devis_lines (
@@ -207,6 +217,112 @@ export async function ensureDbSchema() {
       await db.query('ALTER TABLE devis_lines ADD COLUMN ref_base VARCHAR(50) DEFAULT NULL AFTER prix_base_ht')
       console.log('✅ DB: devis_lines.ref_base column added')
     }
+
+    // ── devis_versions (tree-based quote versions) ───────────────────────
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS devis_versions (
+        id                INT AUTO_INCREMENT PRIMARY KEY,
+        devis_id          INT NOT NULL,
+        parent_version_id INT DEFAULT NULL,
+        version_label     VARCHAR(50) NOT NULL,
+        branch_label      VARCHAR(100) DEFAULT NULL,
+        title             VARCHAR(255) DEFAULT NULL,
+        status            ENUM('draft','editing','prepdf','checked','pdf_generated','sent_hubspot','archived') NOT NULL DEFAULT 'draft',
+        snapshot_json     JSON DEFAULT NULL,
+        total_ht          DECIMAL(12,2) DEFAULT NULL,
+        pdf_path          VARCHAR(500) DEFAULT NULL,
+        hubspot_note_id   VARCHAR(50) DEFAULT NULL,
+        hubspot_file_id   VARCHAR(50) DEFAULT NULL,
+        locked_at         DATETIME DEFAULT NULL,
+        created_by        INT DEFAULT NULL,
+        created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at        DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_dv_devis (devis_id),
+        INDEX idx_dv_parent (parent_version_id),
+        CONSTRAINT fk_dv_devis FOREIGN KEY (devis_id) REFERENCES devis(id) ON DELETE CASCADE,
+        CONSTRAINT fk_dv_parent FOREIGN KEY (parent_version_id) REFERENCES devis_versions(id) ON DELETE SET NULL,
+        CONSTRAINT fk_dv_user FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `)
+    console.log('✅ DB: devis_versions table ready')
+
+    // ── devis_version_lines (snapshot/editable lines by version) ─────────
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS devis_version_lines (
+        id              INT AUTO_INCREMENT PRIMARY KEY,
+        version_id      INT NOT NULL,
+        source_line_id  INT DEFAULT NULL,
+        position        INT NOT NULL DEFAULT 0,
+        line_section    ENUM('products','calculations','transport') NOT NULL DEFAULT 'products',
+        grid_json       JSON NOT NULL,
+        designation_pdf TEXT DEFAULT NULL,
+        total_ligne_ht  DECIMAL(12,2) DEFAULT NULL,
+        created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_dvl_version (version_id),
+        CONSTRAINT fk_dvl_version FOREIGN KEY (version_id) REFERENCES devis_versions(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `)
+    console.log('✅ DB: devis_version_lines table ready')
+
+    // ── devis_version_comments (comments/checkpoints timeline) ───────────
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS devis_version_comments (
+        id          INT AUTO_INCREMENT PRIMARY KEY,
+        version_id  INT NOT NULL,
+        step_key    VARCHAR(50) DEFAULT NULL,
+        kind        ENUM('comment','checkpoint','check','pdf','hubspot') NOT NULL DEFAULT 'comment',
+        content     TEXT NOT NULL,
+        meta_json   JSON DEFAULT NULL,
+        created_by  INT DEFAULT NULL,
+        created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_dvc_version (version_id),
+        CONSTRAINT fk_dvc_version FOREIGN KEY (version_id) REFERENCES devis_versions(id) ON DELETE CASCADE,
+        CONSTRAINT fk_dvc_user FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `)
+    console.log('✅ DB: devis_version_comments table ready')
+
+    // ── devis_rules (atomic operational rules, separate from experiences) ─
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS devis_rules (
+        id           INT AUTO_INCREMENT PRIMARY KEY,
+        title        VARCHAR(255) NOT NULL,
+        content      TEXT NOT NULL,
+        category     VARCHAR(100) DEFAULT NULL,
+        severity     ENUM('info','warning','blocking') NOT NULL DEFAULT 'warning',
+        source_type  ENUM('markdown','human','experience','pdf','xlsx') NOT NULL DEFAULT 'human',
+        source_ref   VARCHAR(255) DEFAULT NULL,
+        tags_json    JSON DEFAULT NULL,
+        status       ENUM('draft','active','obsolete') NOT NULL DEFAULT 'draft',
+        qdrant_id    VARCHAR(128) DEFAULT NULL,
+        created_by   INT DEFAULT NULL,
+        approved_by  INT DEFAULT NULL,
+        created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_dr_status (status),
+        INDEX idx_dr_category (category),
+        CONSTRAINT fk_dr_created_user FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+        CONSTRAINT fk_dr_approved_user FOREIGN KEY (approved_by) REFERENCES users(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `)
+    console.log('✅ DB: devis_rules table ready')
+
+    // ── devis_rule_checks (persisted validation reports by version) ───────
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS devis_rule_checks (
+        id           INT AUTO_INCREMENT PRIMARY KEY,
+        version_id   INT NOT NULL,
+        report_json  JSON NOT NULL,
+        summary_json JSON DEFAULT NULL,
+        created_by   INT DEFAULT NULL,
+        created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_drc_version (version_id),
+        CONSTRAINT fk_drc_version FOREIGN KEY (version_id) REFERENCES devis_versions(id) ON DELETE CASCADE,
+        CONSTRAINT fk_drc_user FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `)
+    console.log('✅ DB: devis_rule_checks table ready')
 
     // ── transport tariffs (editable price rules) ────────────────────────
     await db.query(`

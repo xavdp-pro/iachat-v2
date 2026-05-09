@@ -1,6 +1,6 @@
 # Plan — Stepper Devis NEXUS
 
-> Parcours complet de creation d'un devis, en 4 etapes (stepper), avec assistant IA Gemma.
+> Parcours complet de creation d'un devis NEXUS. Le stepper ne doit pas etre un tunnel lineaire : il doit devenir un poste de pilotage versionne, avec boucle de travail sur chaque version, assistants Gemma 4 contextuels, checks de regles, pre-edition PDF et envoi HubSpot trace.
 
 ---
 
@@ -9,10 +9,88 @@
 ```
 [Bouton central page] → Stepper
    Step 1: Client & Contexte
-   Step 2: Etude IA (analyse + chat)
-   Step 3: Editeur de lignes de devis
-   Step 4: Generation PDF + HubSpot
+  Step 2: Versions du devis (arbre, variantes, commentaires)
+  Step 3: Etude IA (analyse + chat) ou depart de zero
+  Step 4: Grid devis complet (nouvelle grille editable)
+  Step 5: Pre-edition PDF (libelles commerciaux)
+  Step 6: Check final + Generation PDF
+  Step 7: Envoi HubSpot + archivage
 ```
+
+Le commercial doit pouvoir boucler sur une version tant qu'elle n'est pas finalisee :
+
+```
+Version choisie
+  ↓
+Grid devis
+  ↓
+Pre-edition PDF
+  ↓
+Check regles / assistant Gemma 4
+  ↓
+PDF brouillon ou final
+  ↓
+Commentaire + decision
+  ↓
+Revenir sur la meme version OU creer une nouvelle version / branche
+```
+
+---
+
+## Principes transverses — versionnage, regles, IA
+
+### Etat implemente au fil de l'integration
+
+- [x] Table `devis_rules` creee par `ensureDbSchema`.
+- [x] API `/api/rules` creee pour lister, creer, modifier, activer, rendre obsolete et supprimer les regles.
+- [x] Page `/rules` creee, separee de `/knowledge` et accessible depuis le stepper devis.
+- [x] Le check `/api/devis/:id/validate-rules` persiste un rapport par version dans `devis_rule_checks`.
+- [x] Le moteur de validation lit les regles actives de `devis_rules` en plus des experiences approuvees historiques.
+- [x] Le pre-editeur PDF sauvegarde les libelles dans `devis_version_lines.designation_pdf` pour la version active.
+- [x] Indexer les regles actives dans Qdrant avec un type de payload dedie `devis_rule`.
+- [x] API `/api/rules/search` et `/api/rules/reindex` ajoutees pour recherche semantique et reindexation admin.
+- [ ] Ajouter extraction automatique de regles depuis les Markdown source.
+
+### Versionnage en arbre
+
+- [ ] Une version de devis est un snapshot complet : entete, lignes grid, reglages, libelles PDF, commentaires, checks, PDF genere, statut HubSpot.
+- [ ] Les versions doivent fonctionner en arbre, pas seulement en sequence lineaire : `V1` peut produire `V2`, `V2B`, `V3B`, etc.
+- [ ] Chaque version conserve son parent (`parent_version_id`) pour permettre les branches et variantes.
+- [ ] Tant qu'une version est en brouillon (`draft`, `editing`, `prepdf`, `checked`), le commercial peut boucler dessus.
+- [ ] Une version devient verrouillee apres generation finale ou envoi HubSpot (`pdf_generated`, `sent_hubspot`, `archived`). Toute correction apres envoi cree une nouvelle version ou branche.
+- [ ] La barre du stepper doit toujours afficher la version active et proposer : `Commenter`, `Checkpoint`, `Dupliquer`, `Creer branche`, `Comparer`, `Finaliser PDF`.
+
+### Commentaires et checkpoints
+
+- [ ] Un commentaire peut etre laisse a tout moment : entree dans la grid, sauvegarde de checkpoint, pre-edition PDF, check final, generation PDF, envoi HubSpot.
+- [ ] Les commentaires sont internes : ils apparaissent dans le versionneur, jamais dans le PDF client.
+- [ ] Chaque checkpoint trace : auteur, date, step courant, action, commentaire, total HT, resume des alertes/checks.
+
+### Donnees persistantes en base
+
+- [ ] Aucune donnee importante du grid, du pre-editeur PDF ou du PDF final ne doit rester uniquement en `localStorage`.
+- [ ] Le grid doit persister toutes les donnees structurees : lignes, performances, equipements, references, prix, remises, quantites, overrides utilisateur, alertes et sources.
+- [ ] Le pre-editeur PDF doit persister les libelles commerciaux multi-lignes par version.
+- [ ] Les resultats de checks doivent etre rattaches a la version auditee.
+
+### Assistants Gemma 4 par step
+
+- [ ] Step Client : aide a comprendre l'historique client/deal et les devis precedents.
+- [ ] Step Versions : aide a choisir, comparer, nommer ou brancher une version.
+- [ ] Step Analyse : aide a lire l'Excel, expliquer les detections et corriger les ambiguïtés.
+- [ ] Step Grid : aide technique/tarifaire ligne par ligne, avec contexte complet de la grille.
+- [ ] Step Pre-PDF : aide redactionnelle pour les libelles commerciaux, style anciens devis Doortal/Zerux via Qdrant.
+- [ ] Step Check/PDF : audit qualite, synthese des risques, preparation de la version finale.
+- [ ] Step HubSpot : aide a rediger la note CRM et confirmer ce qui a ete envoye.
+
+### Regles, Knowledge, Experiences
+
+- [ ] Creer une page `Regles`, proche de `/experiences`, pour exposer les regles atomiques qui ne sont pas de simples experiences terrain.
+- [ ] Les regles doivent etre filtrables par categorie, source, severite, statut, gamme, tag et fichier markdown source.
+- [ ] Les regles peuvent venir des markdowns `ressources/XLSX/*.md`, d'une creation humaine, ou d'une experience promue en regle.
+- [ ] Les regles actives doivent etre indexees dans Qdrant et utilisables par Gemma 4.
+- [ ] Le check doit combiner : regles humaines actives, experiences approuvees, knowledge markdown, et contexte de la version.
+- [ ] La page `/knowledge` reste la vision documentaire ; la page `Regles` devient la vision operationnelle et auditable.
 
 ---
 
@@ -34,7 +112,7 @@
 - [ ] Barre de recherche client
 - [ ] Tableau / liste des deals avec statut
 - [ ] Indicateur visuel des devis existants par deal
-- [ ] Bouton "Suivant" → Step 2
+- [ ] Bouton "Suivant" → Step 2 (Versions du devis)
 
 ### Backend / BDD
 
@@ -45,7 +123,38 @@
 
 ---
 
-## Step 2 — Etude IA (analyse + discussion)
+## Step 2 — Versions du devis
+
+> Objectif : choisir la version de travail avant d'entrer dans l'analyse ou la grille, et donner au commercial une vision claire des variantes.
+
+### Fonctionnalites
+
+- [ ] Afficher l'arbre des versions du devis pour le deal/client selectionne.
+- [ ] Creer un nouveau devis avec `V1` initiale.
+- [ ] Ouvrir une version existante.
+- [ ] Dupliquer une version en nouvelle version fille.
+- [ ] Creer une branche / variante depuis n'importe quelle version.
+- [ ] Comparer deux versions : total HT, lignes ajoutees/supprimees, differences de libelles PDF, checks, statut PDF/HubSpot.
+- [ ] Ajouter un commentaire avant d'entrer dans la grid ou avant de finaliser une version.
+- [ ] Voir rapidement : statut, total HT, auteur, dernier commentaire, dernier check, PDF genere/envoye ou non.
+
+### UI
+
+- [ ] Timeline/arbre des versions avec branches visuelles.
+- [ ] Panneau detail version : meta, commentaires, checkpoints, checks, PDF, HubSpot.
+- [ ] Actions visibles : `Ouvrir`, `Dupliquer`, `Creer branche`, `Comparer`, `Commenter`, `Archiver`.
+- [ ] Badge de verrouillage sur les versions `pdf_generated`, `sent_hubspot`, `archived`.
+
+### Backend / BDD
+
+- [ ] Table `devis_versions` : snapshot complet et meta de version.
+- [ ] Table `devis_version_lines` : copie immuable ou editable selon statut de toutes les lignes de la version.
+- [ ] Table `devis_version_comments` : commentaires et checkpoints.
+- [ ] Routes : lister arbre, creer version, dupliquer, commenter, verrouiller, comparer.
+
+---
+
+## Step 3 — Etude IA (analyse + discussion)
 
 > Objectif : uploader un Excel, analyser via detect_nexus.py, discuter avec Gemma pour valider/ajuster.
 
@@ -60,7 +169,7 @@
 - [x] Gemma applique la regle de lookup par fourchette (ceiling) pour les prix
 - [ ] Gemma peut proposer des corrections sur les resultats d'analyse
 - [ ] Le commercial peut valider/refuser chaque suggestion de Gemma
-- [ ] Bouton "Valider et passer a l'editeur" → Step 3 (transfere les lignes validees)
+- [ ] Bouton "Valider et passer a l'editeur" → Step 4 (transfere les lignes validees dans la version active)
 
 ### UI
 
@@ -68,7 +177,7 @@
 - [x] Zone droite : assistant Gemma + chat
 - [ ] Bouton "Valider" par ligne ou global
 - [ ] Indicateur de progression (lignes validees / total)
-- [ ] Bouton "Suivant" → Step 3
+- [ ] Bouton "Suivant" → Step 4
 
 ### Backend / BDD
 
@@ -79,9 +188,9 @@
 
 ---
 
-## Step 3 — Editeur de lignes de devis
+## Step 4 — Grid devis complet
 
-> Objectif : editer ligne par ligne le devis, ajouter/supprimer des lignes, echanger avec Gemma.
+> Objectif : remplacer l'ancien editeur par la nouvelle grille modifiable, editer ligne par ligne le devis, ajouter/supprimer des lignes, echanger avec Gemma 4 et persister toutes les donnees en base.
 
 ### Fonctionnalites
 
@@ -107,10 +216,11 @@
 - [ ] Bouton **supprimer** (icone poubelle) par ligne
 - [ ] Edition inline des champs (clic pour editer)
 - [ ] Calcul automatique du total par ligne et du total general
-- [ ] Persistance en BDD a chaque modification (auto-save ou bouton)
+- [ ] Persistance en BDD a chaque modification (auto-save ou bouton) dans la version active.
 - [ ] Chat Gemma accessible — Gemma a acces au contenu de l'editeur via la BDD
 - [ ] Gemma peut suggerer des modifications / alerter sur des incoherences
-- [ ] Bouton "Suivant" → Step 4
+- [ ] Bouton "Checkpoint" avec commentaire interne.
+- [ ] Bouton "Suivant" → Step 5 (pre-edition PDF)
 
 ### UI
 
@@ -144,22 +254,54 @@
 
 ---
 
-## Step 4 — Generation PDF & HubSpot
+## Step 5 — Pre-edition PDF
 
-> Objectif : generer le devis PDF final et l'associer au deal HubSpot.
+> Objectif : retravailler les libelles commerciaux multi-lignes avant generation PDF, sans melanger cette redaction avec les donnees techniques de la grid.
+
+### Fonctionnalites
+
+- [ ] Editeur de libelles PDF par ligne (textarea multi-lignes).
+- [ ] Ligne 1 = titre commercial ; lignes suivantes = corps de designation PDF.
+- [ ] Suggestion IA via Qdrant a partir des anciens devis Doortal/Zerux.
+- [ ] Suggestion globale de tous les libelles PDF.
+- [ ] Sauvegarde en base dans la version active, pas uniquement en localStorage.
+- [ ] Commentaire/checkpoint possible avant passage au check final.
+- [ ] Apercu PDF web ou markdown proche du rendu final.
+
+### UI
+
+- [ ] Colonne gauche : cartes/textarea par ligne.
+- [ ] Colonne droite : preview PDF ou preview web fidele.
+- [ ] Boutons : `Suggestion IA`, `Suggestion globale`, `Enregistrer`, `Checkpoint`, `Retour grid`, `Check final`.
+
+### Backend / BDD
+
+- [ ] Stocker les libelles PDF dans `devis_version_lines.designation_pdf` ou champ equivalent.
+- [ ] Route de suggestion IA enrichie avec contexte version + lignes voisines.
+- [ ] Historiser les changements importants via commentaires/checkpoints.
+
+---
+
+## Step 6/7 — Check final, Generation PDF & HubSpot
+
+> Objectif : auditer la version, generer le PDF final, le stocker, puis l'associer au deal HubSpot. Une version envoyee est verrouillee.
 
 ### Fonctionnalites
 
 - [ ] Apercu du devis avant generation (preview)
+- [ ] Check final avec regles actives, experiences approuvees et knowledge markdown.
+- [ ] Rapport de check persiste sur la version.
 - [ ] Generation PDF (serveur) avec mise en page professionnelle
 - [ ] Telechargement du PDF
 - [ ] Creation d'une note dans le deal HubSpot selectionne (Step 1)
 - [ ] Attachement du PDF a la note HubSpot
-- [ ] Mise a jour du statut du devis en BDD (brouillon → genere → envoye)
+- [ ] Mise a jour du statut de version en BDD (brouillon → checke → pdf_genere → envoye)
+- [ ] Verrouillage de la version apres PDF final/envoye ; correction ulterieure via nouvelle version/branche.
 
 ### UI
 
 - [ ] Apercu PDF integre (iframe ou viewer)
+- [ ] Synthese des checks : bloquants, avertissements, OK, sources.
 - [ ] Bouton "Generer le PDF"
 - [ ] Bouton "Envoyer dans HubSpot" (cree la note + attache le PDF)
 - [ ] Confirmation de succes avec lien vers le deal
@@ -170,7 +312,8 @@
 - [ ] Route POST /api/devis/:id/pdf — generer le PDF
 - [ ] Route POST /api/devis/:id/hubspot — creer la note + attacher le PDF
 - [ ] Stockage du PDF dans /apps/zeruxcom-v1/sav/devis/ (hors git)
-- [ ] Mise a jour table `devis` : status, pdf_path, hubspot_note_id
+- [ ] Mise a jour version : status, pdf_path, hubspot_note_id, hubspot_file_id si disponible
+- [ ] Table de rapports de checks rattachee a la version.
 
 ---
 
@@ -220,13 +363,89 @@ CREATE TABLE devis_lines (
 );
 ```
 
+### Extensions BDD cible — versions, commentaires, regles
+
+```sql
+CREATE TABLE devis_versions (
+  id                INT AUTO_INCREMENT PRIMARY KEY,
+  devis_id          INT NOT NULL,
+  parent_version_id INT DEFAULT NULL,
+  version_label     VARCHAR(50) NOT NULL, -- V1, V2, V2B...
+  branch_label      VARCHAR(100) DEFAULT NULL,
+  status            ENUM('draft','editing','prepdf','checked','pdf_generated','sent_hubspot','archived') DEFAULT 'draft',
+  snapshot_json     JSON DEFAULT NULL,
+  total_ht          DECIMAL(12,2) DEFAULT NULL,
+  pdf_path          VARCHAR(500) DEFAULT NULL,
+  hubspot_note_id   VARCHAR(50) DEFAULT NULL,
+  hubspot_file_id   VARCHAR(50) DEFAULT NULL,
+  locked_at         DATETIME DEFAULT NULL,
+  created_by        INT DEFAULT NULL,
+  created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at        DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE devis_version_lines (
+  id                INT AUTO_INCREMENT PRIMARY KEY,
+  version_id        INT NOT NULL,
+  source_line_id    INT DEFAULT NULL,
+  position          INT NOT NULL DEFAULT 0,
+  line_section      ENUM('products','calculations','transport') DEFAULT 'products',
+  grid_json         JSON NOT NULL,
+  designation_pdf   TEXT DEFAULT NULL,
+  total_ligne_ht    DECIMAL(12,2) DEFAULT NULL,
+  created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at        DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE devis_version_comments (
+  id          INT AUTO_INCREMENT PRIMARY KEY,
+  version_id  INT NOT NULL,
+  step_key    VARCHAR(50) DEFAULT NULL,
+  kind        ENUM('comment','checkpoint','check','pdf','hubspot') DEFAULT 'comment',
+  content     TEXT NOT NULL,
+  meta_json   JSON DEFAULT NULL,
+  created_by  INT DEFAULT NULL,
+  created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE devis_rules (
+  id             INT AUTO_INCREMENT PRIMARY KEY,
+  title          VARCHAR(255) NOT NULL,
+  content        TEXT NOT NULL,
+  category       VARCHAR(100) DEFAULT NULL,
+  severity       ENUM('info','warning','blocking') DEFAULT 'warning',
+  source_type    ENUM('markdown','human','experience','pdf','xlsx') DEFAULT 'human',
+  source_ref     VARCHAR(255) DEFAULT NULL,
+  tags_json      JSON DEFAULT NULL,
+  status         ENUM('draft','active','obsolete') DEFAULT 'draft',
+  qdrant_id      VARCHAR(128) DEFAULT NULL,
+  created_by     INT DEFAULT NULL,
+  approved_by    INT DEFAULT NULL,
+  created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE devis_rule_checks (
+  id             INT AUTO_INCREMENT PRIMARY KEY,
+  version_id     INT NOT NULL,
+  report_json    JSON NOT NULL,
+  summary_json   JSON DEFAULT NULL,
+  created_by     INT DEFAULT NULL,
+  created_at     DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+```
+
 ---
 
 ## Ordre d'implementation recommande
 
-1. **BDD** : creer les tables `devis` et `devis_lines`
-2. **Step 1** : UI recherche client + selection deal
-3. **Step 2** : adapter la zone existante dans le stepper + bouton validation
-4. **Step 3** : editeur de lignes (coeur du travail)
-5. **Step 4** : generation PDF + integration HubSpot
-6. **Transversal** : enrichir Gemma pour qu'il lise/modifie les lignes en BDD
+1. **BDD versionnage** : ajouter `devis_versions`, commentaires/checkpoints, checks, regles.
+2. **Step 1** : UI recherche client + selection deal.
+3. **Step 2 Versions** : arbre de versions, duplication, branche, ouverture, commentaire.
+4. **Step 3 Analyse** : import Excel ou depart de zero vers la version active.
+5. **Step 4 Grid** : integrer la nouvelle grille comme editeur principal, avec persistance versionnee.
+6. **Step 5 Pre-PDF** : editeur de libelles PDF persistant + suggestion Qdrant.
+7. **Step 6 Check/PDF** : check regles + generation PDF stockee.
+8. **Step 7 HubSpot** : note CRM + attachement PDF + verrouillage version.
+9. **Page Regles** : extraire/gerer les regles atomiques, filtres humains, index Qdrant.
+10. **Transversal** : assistants Gemma 4 specialises par step avec contexte de version.

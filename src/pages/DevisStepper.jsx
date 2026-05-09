@@ -9,8 +9,8 @@ import {
   ChevronLeft, ChevronRight, ArrowLeft, ArrowRight,
   AlertTriangle, Bot, Send, X, FileText, Printer, Copy,
   Check, Info, Euro, Shield, Search, Building2,
-  Wrench, Package, Sparkles, RefreshCw, Plus, Trash2,
-  MessageCircleReply, Clock, FolderOpen, LayoutGrid, LayoutPanelLeft, PanelBottom,
+  Wrench, Package, Sparkles, RefreshCw, Plus,
+  MessageCircleReply, Clock, FolderOpen, LayoutGrid,
   Briefcase, User, Hash, ExternalLink, Download, Columns3, Columns2, Columns,
 } from 'lucide-react'
 import { MarkdownRenderer } from '../components/MarkdownRenderer.jsx'
@@ -203,7 +203,7 @@ function normalizeCalculationRows(rows) {
     if (note) {
       String(note)
         .split(/\s+—\s+(?=(?:Hauteur|Dimensions|Hors zone bleue Blast))/u)
-        .map(part => part.replace(/^[⚠️✅❌\s]+/u, '').trim())
+        .map(part => part.replace(/^(?:\s|⚠️|⚠|✅|❌)+/u, '').trim())
         .filter(part => part && !/mutualis[ée]/i.test(part))
         .forEach(part => bucket.notes.add(part))
     }
@@ -259,9 +259,10 @@ function normalizeCalculationRows(rows) {
 
 const STEP_LABELS = [
   { num: 1, label: 'Client', icon: Building2 },
-  { num: 2, label: 'Analyse IA', icon: Bot },
-  { num: 3, label: 'Éditeur devis', icon: FileText },
-  { num: 4, label: 'Générer PDF', icon: Download },
+  { num: 2, label: 'Versions', icon: FolderOpen },
+  { num: 3, label: 'Analyse IA', icon: Bot },
+  { num: 4, label: 'Grid devis', icon: LayoutGrid },
+  { num: 5, label: 'PDF / HubSpot', icon: Download },
 ]
 
 // ── Style helpers ────────────────────────────────────────────────────────────
@@ -347,10 +348,17 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
   const [companyDetail, setCompanyDetail] = useState(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const timerRef = useRef(null)
+  const selectedCompanyId = selectedCompany?.id
 
   // Debounced search
   useEffect(() => {
-    if (!query.trim()) { setCompanies([]); setSearchDone(false); return }
+    if (!query.trim()) {
+      const resetTimer = setTimeout(() => {
+        setCompanies([])
+        setSearchDone(false)
+      }, 0)
+      return () => clearTimeout(resetTimer)
+    }
     clearTimeout(timerRef.current)
     timerRef.current = setTimeout(async () => {
       setLoading(true)
@@ -366,13 +374,29 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
 
   // Load company detail when selected
   useEffect(() => {
-    if (!selectedCompany) { setCompanyDetail(null); return }
-    setDetailLoading(true)
-    api.get(`/prospects/companies/${selectedCompany.id}`)
-      .then(d => setCompanyDetail(d))
-      .catch(() => setCompanyDetail(null))
-      .finally(() => setDetailLoading(false))
-  }, [selectedCompany?.id])
+    let active = true
+    if (!selectedCompanyId) {
+      const resetTimer = setTimeout(() => {
+        if (active) setCompanyDetail(null)
+      }, 0)
+      return () => {
+        active = false
+        clearTimeout(resetTimer)
+      }
+    }
+    Promise.resolve().then(async () => {
+      setDetailLoading(true)
+      try {
+        const detail = await api.get(`/prospects/companies/${selectedCompanyId}`)
+        if (active) setCompanyDetail(detail)
+      } catch {
+        if (active) setCompanyDetail(null)
+      } finally {
+        if (active) setDetailLoading(false)
+      }
+    })
+    return () => { active = false }
+  }, [selectedCompanyId])
 
   const selectCompany = (c) => {
     onSelect({
@@ -678,6 +702,226 @@ function RowCard({ row, index, active, expanded, onToggle, onSelect }) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// ── STEP 2: VERSION TREE ───────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+function StepVersions({ devisId, currentVersionId, onVersionSelected, onContinue }) {
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [data, setData] = useState(null)
+  const [comment, setComment] = useState('')
+  const [busyId, setBusyId] = useState(null)
+
+  const loadVersions = useCallback(async () => {
+    if (!devisId) return
+    setLoading(true)
+    setError('')
+    try {
+      const payload = await api.get(`/devis/${devisId}/versions`)
+      setData(payload)
+      if (!currentVersionId && payload.current_version_id) onVersionSelected?.(payload.current_version_id)
+    } catch (err) {
+      setError(err?.error || err?.message || 'Erreur chargement versions')
+    } finally {
+      setLoading(false)
+    }
+  }, [currentVersionId, devisId, onVersionSelected])
+
+  useEffect(() => { loadVersions() }, [loadVersions])
+
+  const versions = useMemo(() => Array.isArray(data?.versions) ? data.versions : [], [data?.versions])
+  const activeVersionId = currentVersionId || data?.current_version_id || null
+  const activeVersion = versions.find(v => v.id === activeVersionId) || versions[0] || null
+  const childrenByParent = useMemo(() => {
+    const map = new Map()
+    for (const version of versions) {
+      const key = version.parent_version_id || 0
+      const list = map.get(key) || []
+      list.push(version)
+      map.set(key, list)
+    }
+    return map
+  }, [versions])
+  const orderedVersions = useMemo(() => {
+    const out = []
+    const walk = (parentId, depth) => {
+      for (const version of childrenByParent.get(parentId) || []) {
+        out.push({ ...version, _depth: depth })
+        walk(version.id, depth + 1)
+      }
+    }
+    walk(0, 0)
+    return out.length ? out : versions.map(version => ({ ...version, _depth: 0 }))
+  }, [childrenByParent, versions])
+
+  const activateVersion = async (version) => {
+    if (!version || !devisId) return
+    setBusyId(version.id)
+    try {
+      await api.post(`/devis/${devisId}/versions/${version.id}/activate`)
+      onVersionSelected?.(version.id)
+      await loadVersions()
+    } catch (err) {
+      setError(err?.error || err?.message || 'Erreur activation version')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const duplicateVersion = async (version) => {
+    if (!version || !devisId) return
+    setBusyId(`dup-${version.id}`)
+    try {
+      const created = await api.post(`/devis/${devisId}/versions`, {
+        source_version_id: version.id,
+        branch_label: version.branch_label || null,
+        title: `Copie de ${version.version_label}`,
+        comment: comment.trim() || `Nouvelle version depuis ${version.version_label}`,
+        step_key: 'versions',
+      })
+      onVersionSelected?.(created.id)
+      setComment('')
+      await loadVersions()
+    } catch (err) {
+      setError(err?.error || err?.message || 'Erreur duplication version')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const addComment = async () => {
+    if (!activeVersion || !comment.trim()) return
+    setBusyId(`comment-${activeVersion.id}`)
+    try {
+      await api.post(`/devis/${devisId}/versions/${activeVersion.id}/comments`, {
+        content: comment.trim(),
+        step_key: 'versions',
+        kind: 'comment',
+      })
+      setComment('')
+      await loadVersions()
+    } catch (err) {
+      setError(err?.error || err?.message || 'Erreur commentaire')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const statusLabel = (status) => ({
+    draft: 'Brouillon',
+    editing: 'Edition',
+    prepdf: 'Pré-PDF',
+    checked: 'Checké',
+    pdf_generated: 'PDF généré',
+    sent_hubspot: 'Envoyé HubSpot',
+    archived: 'Archivé',
+  }[status] || status || 'Brouillon')
+
+  return (
+    <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '26px 32px' }}>
+      <div style={{ maxWidth: 960, margin: '0 auto' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, marginBottom: 18 }}>
+          <div>
+            <h2 style={{ margin: '0 0 4px', fontSize: 20 }}>Versions du devis</h2>
+            <p style={{ margin: 0, color: 'var(--color-text-2)', fontSize: 13 }}>
+              Choisissez la version de travail, ajoutez un commentaire, ou créez une branche avant d'entrer dans l'analyse ou la grille.
+            </p>
+          </div>
+          <button type="button" onClick={loadVersions} style={ghostBtn()} disabled={loading}>
+            {loading ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <RefreshCw size={13} />}
+            Actualiser
+          </button>
+        </div>
+
+        {error && (
+          <div style={{ marginBottom: 12, padding: 10, borderRadius: 8, color: '#dc2626', background: 'rgba(220,38,38,0.08)', fontSize: 12 }}>
+            {error}
+          </div>
+        )}
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(360px, 1fr) minmax(280px, 0.8fr)', gap: 16 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {orderedVersions.map(version => {
+              const active = version.id === activeVersionId
+              return (
+                <div key={version.id} style={{ marginLeft: version._depth * 22 }}>
+                  <div style={{ border: active ? '1.5px solid var(--color-primary)' : '1px solid var(--color-border)', borderRadius: 8, background: active ? 'color-mix(in srgb, var(--color-primary) 6%, var(--color-surface))' : 'var(--color-surface)', padding: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ width: 34, height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 6, background: active ? 'var(--color-primary)' : 'var(--color-surface-2, var(--color-input-bg))', color: active ? '#fff' : 'var(--color-text)', fontWeight: 800, fontSize: 11 }}>
+                        {version.version_label}
+                      </span>
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div style={{ fontWeight: 800, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {version.title || version.branch_label || 'Version de travail'}
+                        </div>
+                        <div style={{ fontSize: 10, color: 'var(--color-text-3)' }}>
+                          {statusLabel(version.status)} · {Number(version.total_ht || 0).toLocaleString('fr-FR')} € HT · {version.comments?.length || 0} commentaire{(version.comments?.length || 0) > 1 ? 's' : ''}
+                        </div>
+                      </div>
+                      {version.locked && <span style={{ fontSize: 10, color: '#f59e0b', fontWeight: 700 }}>verrouillée</span>}
+                    </div>
+                    {version.comments?.length > 0 && (
+                      <div style={{ marginTop: 8, fontSize: 11, color: 'var(--color-text-2)', borderLeft: '2px solid var(--color-border)', paddingLeft: 8 }}>
+                        {version.comments[version.comments.length - 1].content}
+                      </div>
+                    )}
+                    <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
+                      <button type="button" onClick={() => activateVersion(version)} style={ghostBtn()} disabled={busyId === version.id || active}>
+                        {busyId === version.id ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Check size={12} />}
+                        {active ? 'Active' : 'Ouvrir'}
+                      </button>
+                      <button type="button" onClick={() => duplicateVersion(version)} style={ghostBtn()} disabled={busyId === `dup-${version.id}`}>
+                        {busyId === `dup-${version.id}` ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Copy size={12} />}
+                        Dupliquer
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+            {!orderedVersions.length && !loading && (
+              <div style={{ border: '1px dashed var(--color-border)', borderRadius: 8, padding: 18, fontSize: 12, color: 'var(--color-text-3)' }}>
+                Aucune version trouvée. Une version V1 sera créée automatiquement.
+              </div>
+            )}
+          </div>
+
+          <div style={{ border: '1px solid var(--color-border)', borderRadius: 8, background: 'var(--color-surface)', padding: 14, alignSelf: 'start' }}>
+            <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 4 }}>Version active</div>
+            <div style={{ fontSize: 12, color: 'var(--color-text-2)', marginBottom: 12 }}>
+              {activeVersion ? `${activeVersion.version_label} · ${statusLabel(activeVersion.status)}` : 'Aucune version active'}
+            </div>
+            <textarea
+              value={comment}
+              onChange={e => setComment(e.target.value)}
+              rows={4}
+              placeholder="Commentaire interne / raison de la branche…"
+              style={{ width: '100%', boxSizing: 'border-box', border: '1px solid var(--color-border)', borderRadius: 8, background: 'var(--color-input-bg, var(--color-bg))', color: 'var(--color-text)', padding: 10, fontSize: 12, resize: 'vertical', outline: 'none', fontFamily: 'var(--font-body)' }}
+            />
+            <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+              <button type="button" onClick={addComment} style={ghostBtn()} disabled={!activeVersion || !comment.trim() || busyId === `comment-${activeVersion?.id}`}>
+                {busyId === `comment-${activeVersion?.id}` ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <MessageCircleReply size={12} />}
+                Commenter
+              </button>
+              <button type="button" onClick={() => activeVersion && duplicateVersion(activeVersion)} style={ghostBtn()} disabled={!activeVersion}>
+                <Copy size={12} /> Nouvelle branche
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => activeVersion && onContinue?.()}
+              disabled={!activeVersion}
+              style={{ marginTop: 16, width: '100%', display: 'inline-flex', justifyContent: 'center', alignItems: 'center', gap: 6, padding: '9px 12px', borderRadius: 8, border: 'none', background: 'var(--color-primary)', color: '#fff', fontWeight: 800, cursor: activeVersion ? 'pointer' : 'default', opacity: activeVersion ? 1 : 0.5 }}
+            >
+              Continuer avec cette version <ArrowRight size={14} />
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // ── STEP 2: ANALYSIS (existing UI) ──────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════════════════
 function StepAnalysis({
@@ -894,19 +1138,15 @@ function StepAnalysis({
 // ── STEP 3: LINE EDITOR ─────────────────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════════════════
 function StepEditor({
-  devisId, lines, setLines, onRefresh,
+  devisId, versionId, lines, onRefresh,
   defaultTransportAddress = '',
-  aiMessages, aiInput, setAiInput, aiLoading, askAIEditor, aiEndRef, aiInputRef,
+  askAIEditor,
 }) {
   const [saving, setSaving] = useState(null)
-  const [chatHeight, setChatHeight] = useState(300)
-  const isResizing = useRef(false)
-  const startY = useRef(null)
-  const startH = useRef(null)
 
   const gridRows = useMemo(() => lines.map(dbLineToGridRow), [lines])
 
-  const commitGridRow = useCallback(async (row, index, patch = {}) => {
+  const commitGridRow = useCallback(async (row, index) => {
     if (!devisId) return
     setSaving(row._lineId || `new-${index}`)
     try {
@@ -916,7 +1156,7 @@ function StepEditor({
       } else {
         await api.post(`/devis/${devisId}/lines`, payload)
       }
-      if (patch._recomputed || patch._created || row._lineId) onRefresh()
+      await onRefresh()
     } catch (err) {
       console.error('Grid line commit error:', err)
     } finally {
@@ -935,6 +1175,23 @@ function StepEditor({
     }
   }, [devisId, onRefresh])
 
+  const checkpointVersion = useCallback(async () => {
+    if (!devisId || !versionId) return
+    setSaving('checkpoint')
+    try {
+      await api.post(`/devis/${devisId}/versions/${versionId}/checkpoint`, {
+        comment: 'Checkpoint manuel depuis la grille devis',
+        step_key: 'grid',
+        status: 'editing',
+      })
+      onRefresh()
+    } catch (err) {
+      console.error('Version checkpoint error:', err)
+    } finally {
+      setSaving(null)
+    }
+  }, [devisId, onRefresh, versionId])
+
   return (
     <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <div style={{ padding: '8px 14px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0, background: 'var(--color-surface)' }}>
@@ -945,6 +1202,10 @@ function StepEditor({
             {lines.length} ligne{lines.length !== 1 ? 's' : ''} · sauvegarde backend par ligne{saving ? ' · enregistrement…' : ''}
           </div>
         </div>
+        <button onClick={checkpointVersion} disabled={!versionId || saving === 'checkpoint'} style={ghostBtn()} title="Enregistrer un checkpoint dans la version active">
+          {saving === 'checkpoint' ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Clock size={13} />}
+          Checkpoint version
+        </button>
         <button onClick={() => askAIEditor('Contrôle les lignes du devis et liste les incohérences bloquantes.')} style={ghostBtn()}>
           <Bot size={13} /> Audit IA
         </button>
@@ -963,274 +1224,19 @@ function StepEditor({
       </div>
     </div>
   )
-
-  const onMouseDown = useCallback(e => {
-    e.preventDefault()
-    isResizing.current = true
-    startY.current = e.clientY
-    startH.current = chatHeight
-
-    const onMouseMove = moveE => {
-      if (!isResizing.current) return
-      const delta = startH.current + (startY.current - moveE.clientY)
-      const newH = Math.max(150, Math.min(window.innerHeight * 0.8, delta))
-      setChatHeight(newH)
-    }
-    const onMouseUp = () => {
-      isResizing.current = false
-      document.removeEventListener('mousemove', onMouseMove)
-      document.removeEventListener('mouseup', onMouseUp)
-    }
-
-    document.addEventListener('mousemove', onMouseMove)
-    document.addEventListener('mouseup', onMouseUp)
-  }, [chatHeight])
-
-  const updateLine = async (lineId, field, value) => {
-    setSaving(lineId)
-    try {
-      const payload = { [field]: value }
-      // Recalculate total_ligne_ht if price-related field changes
-      const line = lines.find(l => l.id === lineId)
-      if (['prix_base_ht', 'serrure_prix', 'ferme_porte_prix'].includes(field)) {
-        const updated = { ...line, [field]: value }
-        const optTotal = (JSON.parse(updated.options_json || '[]')).reduce((s, o) => s + (o.prix || 0), 0)
-        payload.total_ligne_ht = (Number(updated.prix_base_ht) || 0) + optTotal + (Number(updated.serrure_prix) || 0) + (Number(updated.ferme_porte_prix) || 0)
-      }
-      await api.put(`/devis/${devisId}/lines/${lineId}`, payload)
-      onRefresh()
-    } catch (err) {
-      console.error('Update line error:', err)
-    } finally {
-      setSaving(null)
-    }
-  }
-
-  const addLine = async () => {
-    try {
-      await api.post(`/devis/${devisId}/lines`, { designation: 'Nouvelle ligne', gamme: 'BASE', vantail: '1V' })
-      onRefresh()
-    } catch (err) {
-      console.error('Add line error:', err)
-    }
-  }
-
-  const deleteLine = async (lineId) => {
-    try {
-      await api.delete(`/devis/${devisId}/lines/${lineId}`)
-      onRefresh()
-    } catch (err) {
-      console.error('Delete line error:', err)
-    }
-  }
-
-  const grandTotal = lines.reduce((s, l) => s + (Number(l.total_ligne_ht) || 0), 0)
-
-  const handleKeyDown = (e, rowIdx, colIdx) => {
-    const cols = ['designation', 'gamme', 'vantail', 'hauteur', 'largeur', 'prix']
-    if (['ArrowUp', 'ArrowDown', 'Enter'].includes(e.key)) {
-      e.preventDefault()
-      const nr = e.key === 'ArrowUp' ? Math.max(0, rowIdx - 1) : Math.min(lines.length - 1, rowIdx + 1)
-      const el = document.getElementById(`cell-${nr}-${cols[colIdx]}`)
-      if (el) { el.focus(); setTimeout(() => el.select(), 0) }
-    } else if (e.key === 'ArrowRight' && e.target.selectionStart === e.target.value.length) {
-      e.preventDefault()
-      const nc = Math.min(cols.length - 1, colIdx + 1)
-      const el = document.getElementById(`cell-${rowIdx}-${cols[nc]}`)
-      if (el) { el.focus(); setTimeout(() => el.select(), 0) }
-    } else if (e.key === 'ArrowLeft' && e.target.selectionEnd === 0) {
-      e.preventDefault()
-      const nc = Math.max(0, colIdx - 1)
-      const el = document.getElementById(`cell-${rowIdx}-${cols[nc]}`)
-      if (el) { el.focus(); setTimeout(() => el.select(), 0) }
-    }
-  }
-
-  const tdStyle = { padding: 0, border: '1px solid var(--color-border)', position: 'relative', background: 'var(--color-surface)', verticalAlign: 'middle' }
-  const roStyle = { padding: '6px 8px', fontSize: '11px', color: 'var(--color-text-2)', background: 'var(--color-surface-2, transparent)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', verticalAlign: 'middle', border: '1px solid var(--color-border)' }
-  const inputClass = "excel-input"
-  const numInputClass = "excel-input excel-input-num"
-
-  return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
-      {/* Excel sheet styles */}
-      <style dangerouslySetInnerHTML={{__html:`
-        .excel-table { width: 100%; min-width: 1000px; border-collapse: collapse; font-family: var(--font-body); }
-        .excel-table th { background: var(--color-surface-2, transparent); border: 1px solid var(--color-border); padding: 8px; font-size: 10px; font-weight: 700; color: var(--color-text-3); text-transform: uppercase; letter-spacing: 0.04em; text-align: left; position: sticky; top: 0; z-index: 10; white-space: nowrap; }
-        .excel-input { display: block; width: 100%; height: 100%; min-height: 28px; padding: 6px 8px; border: none; background: transparent; color: var(--color-text); font-size: 12px; outline: none; font-family: inherit; font-weight: 500; }
-        .excel-input-num { text-align: right; font-variant-numeric: tabular-nums; }
-        .excel-input:focus { box-shadow: inset 0 0 0 2px var(--color-primary); background: color-mix(in srgb, var(--color-primary) 5%, transparent); z-index: 5; position: relative; }
-        .excel-row:hover td { background: color-mix(in srgb, var(--color-text) 2%, var(--color-surface)); }
-      `}} />
-      {/* Table editor */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
-        <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <FileText size={15} color="var(--color-primary)" />
-            <span style={{ fontWeight: 600, fontSize: '13px' }}>Éditeur de lignes — {lines.length} ligne{lines.length !== 1 ? 's' : ''}</span>
-          </div>
-          <button onClick={addLine} style={{
-            display: 'flex', alignItems: 'center', gap: 5, padding: '6px 14px',
-            borderRadius: '8px', border: 'none', background: 'var(--color-primary)', color: '#fff',
-            fontWeight: 600, fontSize: '12px', cursor: 'pointer',
-          }}>
-            <Plus size={14} /> Ajouter une ligne
-          </button>
-        </div>
-        <div style={{ flex: 1, overflowX: 'auto', overflowY: 'auto' }}>
-          <table className="excel-table">
-            <thead>
-              <tr>
-                {['#', 'Désignation', 'Gamme', 'V.', 'H (mm)', 'L (mm)', 'Base HT', 'Options', 'Serrure', 'F.-porte', 'Total HT', ''].map((h, i) => (
-                  <th key={i}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {lines.map((line, idx) => {
-                const opts = (() => { try { return JSON.parse(line.options_json || '[]') } catch { return [] } })()
-                const optStr = opts.map(o => `${o.label} +${(o.prix || 0).toLocaleString('fr-FR')}€`).join(', ')
-                return (
-                  <tr key={line.id} className="excel-row" style={{ background: saving === line.id ? 'color-mix(in srgb, var(--color-primary) 5%, var(--color-surface))' : 'var(--color-surface)' }}>
-                    <td style={{ ...roStyle, width: 30, fontWeight: 700, textAlign: 'center' }}>{idx + 1}</td>
-                    <td style={{ ...tdStyle, minWidth: 220 }}>
-                      <input id={`cell-${idx}-designation`} className={inputClass} spellCheck={false} title={line.designation || ''} value={line.designation || ''} onBlur={(e) => updateLine(line.id, 'designation', e.target.value)} onKeyDown={e => handleKeyDown(e, idx, 0)} onChange={(e) => setLines(ls => ls.map(l => l.id === line.id ? { ...l, designation: e.target.value } : l))} />
-                    </td>
-                    <td style={{ ...tdStyle, width: 120 }}>
-                      <input id={`cell-${idx}-gamme`} className={inputClass} spellCheck={false} style={{ color: line.gamme?.startsWith('⚠️') ? '#f59e0b' : 'inherit' }} title={line.gamme || ''} value={line.gamme || ''} onBlur={(e) => updateLine(line.id, 'gamme', e.target.value)} onKeyDown={e => handleKeyDown(e, idx, 1)} onChange={(e) => setLines(ls => ls.map(l => l.id === line.id ? { ...l, gamme: e.target.value } : l))} />
-                    </td>
-                    <td style={{ ...tdStyle, width: 50 }}>
-                      <input id={`cell-${idx}-vantail`} className={inputClass} style={{ textAlign: 'center' }} spellCheck={false} value={line.vantail || ''} onBlur={(e) => updateLine(line.id, 'vantail', e.target.value)} onKeyDown={e => handleKeyDown(e, idx, 2)} onChange={(e) => setLines(ls => ls.map(l => l.id === line.id ? { ...l, vantail: e.target.value } : l))} />
-                    </td>
-                    <td style={{ ...tdStyle, width: 70 }}>
-                      <input id={`cell-${idx}-hauteur`} className={numInputClass} value={line.hauteur_mm || ''} onBlur={(e) => updateLine(line.id, 'hauteur_mm', parseInt(e.target.value) || null)} onKeyDown={e => handleKeyDown(e, idx, 3)} onChange={(e) => setLines(ls => ls.map(l => l.id === line.id ? { ...l, hauteur_mm: e.target.value } : l))} />
-                    </td>
-                    <td style={{ ...tdStyle, width: 70 }}>
-                      <input id={`cell-${idx}-largeur`} className={numInputClass} value={line.largeur_mm || ''} onBlur={(e) => updateLine(line.id, 'largeur_mm', parseInt(e.target.value) || null)} onKeyDown={e => handleKeyDown(e, idx, 4)} onChange={(e) => setLines(ls => ls.map(l => l.id === line.id ? { ...l, largeur_mm: e.target.value } : l))} />
-                    </td>
-                    <td style={{ ...tdStyle, width: 90 }}>
-                      <input id={`cell-${idx}-prix`} className={numInputClass} value={line.prix_base_ht || ''} onBlur={(e) => updateLine(line.id, 'prix_base_ht', parseFloat(e.target.value) || null)} onKeyDown={e => handleKeyDown(e, idx, 5)} onChange={(e) => setLines(ls => ls.map(l => l.id === line.id ? { ...l, prix_base_ht: e.target.value } : l))} />
-                    </td>
-                    <td style={{ ...roStyle, minWidth: 120 }}>{optStr || '—'}</td>
-                    <td style={{ ...roStyle, maxWidth: 120 }}>{line.serrure_ref || '—'}</td>
-                    <td style={{ ...roStyle, maxWidth: 100 }}>{line.ferme_porte_ref || '—'}</td>
-                    <td style={{ ...roStyle, width: 100, fontWeight: 700, textAlign: 'right' }}>{prixFmt(line.total_ligne_ht) || '—'}</td>
-                    <td style={{ ...tdStyle, width: 36, textAlign: 'center' }}>
-                      <button onClick={() => deleteLine(line.id)} style={{ ...iconBtn(), color: '#a33c3c', width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }} title="Supprimer la ligne">
-                        <Trash2 size={14} />
-                      </button>
-                    </td>
-                  </tr>
-                )
-              })}
-              {lines.length === 0 && (
-                <tr><td colSpan={12} style={{ ...roStyle, textAlign: 'center', color: 'var(--color-text-3)', padding: 30 }}>
-                  Aucune ligne. Cliquez « Ajouter une ligne » pour commencer.
-                </td></tr>
-              )}
-            </tbody>
-            {lines.length > 0 && (
-              <tfoot>
-                <tr style={{ background: 'var(--color-surface-2, rgba(53,67,70,0.04))' }}>
-                  <td colSpan={10} style={{ ...roStyle, textAlign: 'right', fontWeight: 700, fontSize: '13px', borderTop: '2px solid var(--color-border)' }}>
-                    Total général HT
-                  </td>
-                  <td style={{ ...roStyle, textAlign: 'right', fontWeight: 800, fontSize: '14px', borderTop: '2px solid var(--color-border)', whiteSpace: 'nowrap' }}>
-                    {grandTotal.toLocaleString('fr-FR')} €
-                  </td>
-                  <td style={{ ...roStyle, borderTop: '2px solid var(--color-border)' }} />
-                </tr>
-              </tfoot>
-            )}
-          </table>
-        </div>
-      </div>
-
-      {/* Resizer */}
-      <div
-        onMouseDown={onMouseDown}
-        style={{
-          height: '6px', cursor: 'row-resize', background: 'var(--color-border)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0
-        }}
-      >
-        <div style={{ width: 40, height: 2, borderRadius: 1, background: 'var(--color-text-3)' }} />
-      </div>
-
-      {/* Bottom: Gemma chat for editor context */}
-      <div style={{
-        height: chatHeight, minHeight: 150, flexShrink: 0, display: 'flex', flexDirection: 'column',
-        width: '100%', overflow: 'hidden', background: 'var(--color-surface)',
-      }}>
-        <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-          <Bot size={16} color="var(--color-primary)" />
-          <div style={{ flex: 1, fontWeight: 700, fontSize: '13px' }}>Assistant Gemma</div>
-        </div>
-        <div style={{ flex: 1, overflowY: 'auto', padding: '12px', minHeight: 0 }}>
-          {aiMessages.length === 0 && (
-            <div style={{ textAlign: 'center', padding: 20, color: 'var(--color-text-3)', fontSize: '12px' }}>
-              <Bot size={28} style={{ opacity: 0.2, marginBottom: 8 }} /><br />
-              Posez vos questions sur le devis en cours d'édition.
-            </div>
-          )}
-          {aiMessages.map((m, i) => (
-            <div key={i} style={{ marginBottom: 12, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-              {m.role === 'assistant' && (
-                <div style={{ width: 24, height: 24, borderRadius: '50%', flexShrink: 0, background: 'var(--color-avatar-ai-bg, #e8ebea)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <Bot size={12} color="var(--color-avatar-ai-text, var(--color-primary))" />
-                </div>
-              )}
-              <div style={{
-                flex: 1, padding: '8px 10px', borderRadius: '10px',
-                background: m.role === 'user' ? 'var(--color-bubble-user, var(--color-primary))' : 'var(--color-surface-2, var(--color-input-bg))',
-                color: m.role === 'user' ? '#fff' : 'var(--color-text)', fontSize: '12px', lineHeight: 1.55,
-                marginLeft: m.role === 'user' ? 'auto' : 0, maxWidth: '92%',
-              }}>
-                {m.role === 'assistant' ? <MarkdownRenderer content={m.content} /> : m.content}
-              </div>
-            </div>
-          ))}
-          {aiLoading && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--color-text-3)', fontSize: '12px' }}>
-              <Loader2 size={14} style={{ animation: 'spin 0.8s linear infinite' }} /> Gemma réfléchit…
-            </div>
-          )}
-          <div ref={aiEndRef} />
-        </div>
-        <div style={{ padding: '10px 12px', borderTop: '1px solid var(--color-border)', display: 'flex', gap: 6, flexShrink: 0 }}>
-          <input ref={aiInputRef} value={aiInput} onChange={(e) => setAiInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), askAIEditor())}
-            placeholder="Question sur le devis…" disabled={aiLoading}
-            style={{
-              flex: 1, padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--color-border)',
-              background: 'var(--color-input-bg, var(--color-surface-2))', color: 'var(--color-text)',
-              fontSize: '12px', outline: 'none', fontFamily: 'var(--font-body)',
-            }}
-          />
-          <button onClick={() => askAIEditor()} disabled={!aiInput.trim() || aiLoading}
-            style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              padding: '8px 12px', borderRadius: '8px', border: 'none',
-              background: 'var(--color-primary)', color: '#fff', cursor: 'pointer',
-              opacity: (!aiInput.trim() || aiLoading) ? 0.4 : 1,
-            }}>
-            <Send size={14} />
-          </button>
-        </div>
-      </div>
-    </div>
-  )
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
 // ── STEP 4: PDF GENERATION ──────────────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════════════════
-function StepPDF({ devisId, lines, setLines, clientName, dealName, onSendHubSpot }) {
+function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, onSendHubSpot }) {
   const [copied, setCopied] = useState(false)
   const [draftLines, setDraftLines] = useState(lines)
   const [savingId, setSavingId] = useState(null)
   const [suggestingId, setSuggestingId] = useState(null)
   const [downloading, setDownloading] = useState(false)
+  const [checking, setChecking] = useState(false)
+  const [checkReport, setCheckReport] = useState(null)
   const [statusMsg, setStatusMsg] = useState('')
 
   useEffect(() => { setDraftLines(lines) }, [lines])
@@ -1241,13 +1247,38 @@ function StepPDF({ devisId, lines, setLines, clientName, dealName, onSendHubSpot
     setDraftLines(prev => prev.map(line => line.id === lineId ? { ...line, designation } : line))
   }
 
+  const pdfLabelPayload = (line) => ({
+    line_id: line.id,
+    position: line.position ?? 0,
+    line_section: line.line_section || 'products',
+    designation_pdf: line.designation || null,
+  })
+
+  const persistPdfLabels = async (labels, comment = null) => {
+    if (versionId) {
+      const result = await api.put(`/devis/${devisId}/versions/${versionId}/pdf-labels`, { labels, comment })
+      if (Array.isArray(result.lines)) {
+        setDraftLines(result.lines)
+        setLines?.(result.lines)
+      }
+      return result
+    }
+
+    const updatedLines = []
+    for (const label of labels) {
+      const updated = await api.put(`/devis/${devisId}/lines/${label.line_id}`, { designation: label.designation_pdf || null })
+      updatedLines.push(updated)
+    }
+    setDraftLines(prev => prev.map(item => updatedLines.find(updated => updated.id === item.id) || item))
+    setLines?.(prev => prev.map(item => updatedLines.find(updated => updated.id === item.id) || item))
+    return { success: true, updated: updatedLines.length }
+  }
+
   const saveDesignation = async (line) => {
     if (!devisId || !line?.id) return
     setSavingId(line.id); setStatusMsg('')
     try {
-      const updated = await api.put(`/devis/${devisId}/lines/${line.id}`, { designation: line.designation || null })
-      setDraftLines(prev => prev.map(item => item.id === line.id ? { ...item, ...updated } : item))
-      setLines?.(prev => prev.map(item => item.id === line.id ? { ...item, ...updated } : item))
+      await persistPdfLabels([pdfLabelPayload(line)], 'Libellé PDF modifié en pré-édition')
       setStatusMsg('Libellé enregistré')
     } catch (err) {
       setStatusMsg(err?.error || err?.message || 'Erreur enregistrement')
@@ -1257,10 +1288,18 @@ function StepPDF({ devisId, lines, setLines, clientName, dealName, onSendHubSpot
   }
 
   const saveAllDesignations = async () => {
-    for (const line of draftLines.filter(item => item.id)) {
-      await saveDesignation(line)
+    setSavingId('all'); setStatusMsg('')
+    try {
+      await persistPdfLabels(
+        draftLines.filter(item => item.id).map(pdfLabelPayload),
+        'Pré-édition PDF enregistrée'
+      )
+      setStatusMsg('Textes PDF enregistrés')
+    } catch (err) {
+      setStatusMsg(err?.error || err?.message || 'Erreur enregistrement textes PDF')
+    } finally {
+      setSavingId(null)
     }
-    setStatusMsg('Textes PDF enregistrés')
   }
 
   const suggestDesignation = async (line) => {
@@ -1274,6 +1313,21 @@ function StepPDF({ devisId, lines, setLines, clientName, dealName, onSendHubSpot
       setStatusMsg(err?.error || err?.message || 'Erreur suggestion IA')
     } finally {
       setSuggestingId(null)
+    }
+  }
+
+  const runFinalCheck = async () => {
+    if (!devisId) return
+    setChecking(true); setStatusMsg('')
+    try {
+      const report = await api.post(`/devis/${devisId}/validate-rules`, { version_id: versionId })
+      setCheckReport(report)
+      const summary = report?.summary || {}
+      setStatusMsg(`Check enregistré : ${summary.violation || 0} violation(s), ${summary.warning || 0} avertissement(s)`)
+    } catch (err) {
+      setStatusMsg(err?.error || err?.message || 'Erreur check règles')
+    } finally {
+      setChecking(false)
     }
   }
 
@@ -1359,6 +1413,9 @@ function StepPDF({ devisId, lines, setLines, clientName, dealName, onSendHubSpot
           <button onClick={saveAllDesignations} style={ghostBtn()} disabled={!!savingId}>
             {savingId ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Check size={13} />} Enregistrer textes
           </button>
+          <button onClick={runFinalCheck} style={ghostBtn()} disabled={checking || !versionId}>
+            {checking ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Shield size={13} />} Check règles
+          </button>
           <button onClick={() => window.print()} style={ghostBtn()}>
             <Printer size={13} /> Imprimer
           </button>
@@ -1374,6 +1431,15 @@ function StepPDF({ devisId, lines, setLines, clientName, dealName, onSendHubSpot
           </button>
         </div>
       </div>
+      {checkReport && (
+        <div style={{ flexShrink: 0, display: 'flex', gap: 14, alignItems: 'center', padding: '7px 14px', borderBottom: '1px solid var(--color-border)', background: 'color-mix(in srgb, var(--color-primary) 4%, var(--color-surface))', fontSize: 11 }}>
+          <strong>Audit version {checkReport.version_id || versionId}</strong>
+          <span style={{ color: '#228b54' }}>OK {checkReport.summary?.ok || 0}</span>
+          <span style={{ color: '#a06a2c' }}>Attention {checkReport.summary?.warning || 0}</span>
+          <span style={{ color: '#a33c3c' }}>Violation {checkReport.summary?.violation || 0}</span>
+          <span style={{ color: 'var(--color-text-3)' }}>{checkReport.rules_count || 0} règle(s)</span>
+        </div>
+      )}
       <div style={{ flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: 'minmax(360px, 0.95fr) minmax(420px, 1.05fr)', overflow: 'hidden' }}>
         <div style={{ overflowY: 'auto', borderRight: '1px solid var(--color-border)', padding: '14px', background: 'var(--color-surface)' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -1433,8 +1499,9 @@ export default function DevisStepper() {
   const [selectedDeal, setSelectedDeal] = useState(null)
   const [existingDevis, setExistingDevis] = useState([])
   const [currentDevisId, setCurrentDevisId] = useState(null)
+  const [currentVersionId, setCurrentVersionId] = useState(null)
 
-  // Step 2: analysis
+  // Step 3: analysis
   const [results, setResults] = useState([])
   const [analyzing, setAnalyzing] = useState(false)
   const [analysisError, setAnalysisError] = useState('')
@@ -1447,30 +1514,35 @@ export default function DevisStepper() {
   const aiEndRef = useRef(null)
   const aiInputRef = useRef(null)
 
-  // Step 3: editor
+  // Step 4: editor
   const [lines, setLines] = useState([])
   const [editorAiMessages, setEditorAiMessages] = useState([])
   const [editorAiInput, setEditorAiInput] = useState('')
   const [editorAiLoading, setEditorAiLoading] = useState(false)
   const editorAiEndRef = useRef(null)
   const editorAiInputRef = useRef(null)
+  const selectedCompanyId = selectedCompany?.id
 
   // Chat panel width ratio (1/3, 1/2, 2/3)
   const [chatRatio, setChatRatio] = useState('1/3')
 
   // Load existing devis when company changes
   useEffect(() => {
-    if (!selectedCompany) { setExistingDevis([]); return }
+    if (!selectedCompanyId) { setExistingDevis([]); return }
     api.get('/devis').then(all => {
-      setExistingDevis(all.filter(d => d.company_id === selectedCompany.id))
+      setExistingDevis(all.filter(d => d.company_id === selectedCompanyId))
     }).catch(() => setExistingDevis([]))
-  }, [selectedCompany?.id])
+  }, [selectedCompanyId])
 
-  // Load lines when devis ID changes and step is 3+
+  // Load materialized lines whenever the active devis/version changes.
   useEffect(() => {
-    if (!currentDevisId || step < 3) return
-    api.get(`/devis/${currentDevisId}/lines`).then(setLines).catch(() => setLines([]))
-  }, [currentDevisId, step])
+    if (!currentDevisId || !currentVersionId) return
+    let active = true
+    api.get(`/devis/${currentDevisId}/lines`)
+      .then((nextLines) => { if (active) setLines(nextLines) })
+      .catch(() => { if (active) setLines([]) })
+    return () => { active = false }
+  }, [currentDevisId, currentVersionId])
 
   // Scroll AI chat
   useEffect(() => { aiEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [aiMessages])
@@ -1492,6 +1564,7 @@ export default function DevisStepper() {
         name: `Devis ${selectedCompany.name} — ${new Date().toLocaleDateString('fr-FR')}`,
       })
       setCurrentDevisId(devis.id)
+      setCurrentVersionId(devis.current_version_id || devis.current_version?.id || null)
       goStep(2)
     } catch (err) {
       console.error('Create devis error:', err)
@@ -1499,18 +1572,18 @@ export default function DevisStepper() {
   }
 
   const handleOpenDevis = async (d) => {
-    setCurrentDevisId(d.id)
-    // Jump to appropriate step based on status
-    if (d.status === 'editing' || d.status === 'generated') {
-      const lns = await api.get(`/devis/${d.id}/lines`).catch(() => [])
-      setLines(lns)
-      goStep(3)
-    } else {
+    try {
+      const detail = await api.get(`/devis/${d.id}`)
+      setCurrentDevisId(detail.id)
+      setCurrentVersionId(detail.current_version_id || detail.current_version?.id || null)
+      setLines(detail.lines || [])
       goStep(2)
+    } catch (err) {
+      console.error('Open devis error:', err)
     }
   }
 
-  // Step 2: analysis
+  // Step 3: analysis
   const analyzeFile = async (f) => {
     setAnalyzing(true)
     setAnalysisError('')
@@ -1570,13 +1643,20 @@ export default function DevisStepper() {
     }
   }
 
-  // Validate step 2 → push lines to DB → step 3
+  // Validate step 3 → push lines to DB → step 4
   const handleValidateAnalysis = async () => {
     if (!currentDevisId || !results.length) return
     try {
       const savedLines = await api.post(`/devis/${currentDevisId}/lines/bulk`, { lines: splitCalculationOptions(results) })
       setLines(savedLines)
-      goStep(3)
+      if (currentVersionId) {
+        api.post(`/devis/${currentDevisId}/versions/${currentVersionId}/checkpoint`, {
+          comment: 'Import analyse IA validé dans la grille',
+          step_key: 'analysis',
+          status: 'editing',
+        }).catch(() => {})
+      }
+      goStep(4)
     } catch (err) {
       console.error('Bulk import error:', err)
     }
@@ -1588,10 +1668,10 @@ export default function DevisStepper() {
     setAiRow(null)
     setExpandedRow(null)
     setAiMessages([])
-    goStep(3)
+    goStep(4)
   }
 
-  // Step 3: editor AI
+  // Step 4: editor AI
   const askAIEditor = async (question = editorAiInput) => {
     const q = (question || editorAiInput).trim()
     if (!q || editorAiLoading) return
@@ -1621,11 +1701,16 @@ export default function DevisStepper() {
   }
 
   const refreshLines = () => {
-    if (!currentDevisId) return
-    api.get(`/devis/${currentDevisId}/lines`).then(setLines).catch(() => {})
+    if (!currentDevisId) return Promise.resolve([])
+    return api.get(`/devis/${currentDevisId}/lines`)
+      .then((nextLines) => {
+        setLines(nextLines)
+        return nextLines
+      })
+      .catch(() => [])
   }
 
-  // Step 4: HubSpot
+  // Step 5: HubSpot
   const handleSendHubSpot = async () => {
     // TODO: implement PDF generation + HubSpot note creation
     console.log('Send to HubSpot — devis:', currentDevisId)
@@ -1655,14 +1740,22 @@ export default function DevisStepper() {
               <ArrowLeft size={14} /> Étape précédente
             </button>
           )}
-          {step < 4 && step >= 2 && results.length > 0 && (
+          {step === 3 && results.length > 0 && (
             <button className="admin-btn-primary" onClick={() => {
-              if (step === 2) handleValidateAnalysis()
-              else goStep(step + 1)
+              handleValidateAnalysis()
             }} style={{ fontSize: '0.8125rem' }}>
-              Étape suivante <ArrowRight size={14} />
+              Valider vers la grille <ArrowRight size={14} />
             </button>
           )}
+          {step === 4 && (
+            <button className="admin-btn-primary" onClick={() => goStep(5)} style={{ fontSize: '0.8125rem' }}>
+              Préparer le PDF <ArrowRight size={14} />
+            </button>
+          )}
+          <button type="button" className="admin-btn-ghost" onClick={() => navigate('/rules')}>
+            <Shield size={16} />
+            <span>Règles</span>
+          </button>
           <button type="button" className="admin-btn-ghost" onClick={() => navigate('/chat')}>
             <MessageCircleReply size={16} />
             <span>Retour au chat</span>
@@ -1687,6 +1780,14 @@ export default function DevisStepper() {
           />
         )}
         {step === 2 && (
+          <StepVersions
+            devisId={currentDevisId}
+            currentVersionId={currentVersionId}
+            onVersionSelected={setCurrentVersionId}
+            onContinue={() => goStep(lines.length > 0 ? 4 : 3)}
+          />
+        )}
+        {step === 3 && (
           <StepAnalysis
             results={results} analyzing={analyzing} error={analysisError}
             expandedRow={expandedRow} setExpandedRow={setExpandedRow}
@@ -1701,9 +1802,9 @@ export default function DevisStepper() {
             chatRatio={chatRatio} setChatRatio={setChatRatio}
           />
         )}
-        {step === 3 && (
+        {step === 4 && (
           <StepEditor
-            devisId={currentDevisId} lines={lines} setLines={setLines}
+            devisId={currentDevisId} versionId={currentVersionId} lines={lines} setLines={setLines}
             onRefresh={refreshLines}
             defaultTransportAddress={companyDeliveryAddress(selectedCompany)}
             aiMessages={editorAiMessages} aiInput={editorAiInput} setAiInput={setEditorAiInput}
@@ -1712,9 +1813,9 @@ export default function DevisStepper() {
             chatRatio={chatRatio} setChatRatio={setChatRatio}
           />
         )}
-        {step === 4 && (
+        {step === 5 && (
           <StepPDF
-            devisId={currentDevisId} lines={lines} setLines={setLines}
+            devisId={currentDevisId} versionId={currentVersionId} lines={lines} setLines={setLines}
             clientName={selectedCompany?.name} dealName={selectedDeal?.name}
             onSendHubSpot={handleSendHubSpot}
           />

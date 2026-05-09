@@ -19,6 +19,7 @@ import devisRoutes from './routes/devis.js'
 import transportTariffsRoutes from './routes/transportTariffs.js'
 import prospectsRoutes from './routes/prospects.js'
 import knowledgeRoutes from './routes/knowledge.js'
+import rulesRoutes from './routes/rules.js'
 import { ensureDbSchema } from './db/ensureSchema.js'
 import { warmupMemory } from './services/memory.js'
 
@@ -55,6 +56,7 @@ app.use('/api/devis', devisRoutes)
 app.use('/api/transport-tariffs', transportTariffsRoutes)
 app.use('/api/prospects', prospectsRoutes)
 app.use('/api/knowledge', knowledgeRoutes)
+app.use('/api/rules', rulesRoutes)
 app.use('/api/tts', ttsRoutes)
 
 // Health check (capabilities help verify deploy: admin Ollama UI needs GET/PUT /api/admin/ollama-settings)

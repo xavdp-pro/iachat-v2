@@ -134,20 +134,27 @@ export function buildDevisNexusHtml(data) {
     const dims = (line.hauteur_mm && line.largeur_mm)
       ? ` H${line.hauteur_mm}×L${line.largeur_mm} mm` : "";
     const vantail = line.vantail ? ` — ${escapeHtml(line.vantail)}` : "";
-    const title = line.designation
-      ? escapeHtml(line.designation)
-      : `${gamme}${dims}${vantail}`;
 
-    // Build options description from options_json
+    // Split multi-line designation: first line = bold title, rest = body block
+    const desigLines = line.designation
+      ? line.designation.split('\n').map(l => l.trim()).filter(Boolean)
+      : [];
+    const titleLine = desigLines.length
+      ? escapeHtml(desigLines[0])
+      : `${gamme}${dims}${vantail}`;
+    const bodyHtml = desigLines.slice(1)
+      .map(l => escapeHtml(l))
+      .join('<br>');
+
+    // Build fallback options description (shown only when no multi-line body)
     let optDesc = "";
-    if (line.options_json) {
+    if (!bodyHtml && line.options_json) {
       const opts = typeof line.options_json === "string"
         ? (() => { try { return JSON.parse(line.options_json); } catch { return []; } })()
         : (Array.isArray(line.options_json) ? line.options_json : []);
       optDesc = opts.map(o => `${escapeHtml(o.label || "")}${o.prix ? ` (${formatEuro(o.prix)} €)` : ""}`).join(", ");
     }
-
-    const serrure = line.serrure_ref ? `Serrure : ${escapeHtml(line.serrure_ref)}` : "";
+    const serrure = (!bodyHtml && line.serrure_ref) ? `Serrure : ${escapeHtml(line.serrure_ref)}` : "";
     const descParts = [optDesc, serrure].filter(Boolean).join(" | ");
 
     const total = Number(line.total_ligne_ht) || Number(line.prix_base_ht) || 0;
@@ -156,8 +163,8 @@ export function buildDevisNexusHtml(data) {
       <tr>
         <td class="cell-rep">${escapeHtml(repLetter(displayIndex))}</td>
         <td class="cell-desc">
-          <div class="line-title">${title}</div>
-          ${descParts ? `<div class="line-desc">${descParts}</div>` : ""}
+          <div class="line-title">${titleLine}</div>
+          ${bodyHtml ? `<div class="line-body">${bodyHtml}</div>` : (descParts ? `<div class="line-desc">${descParts}</div>` : "")}
         </td>
         <td class="cell-delais">—</td>
         <td class="cell-num">1</td>
@@ -286,7 +293,8 @@ export function buildDevisNexusHtml(data) {
     .cell-delais { width: 65px; text-align: center; color: var(--zr-blue); font-size: 8.5pt; font-weight: 400; }
     .cell-num { width: 80px; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; font-weight: 300; }
 
-    .line-title { font-weight: 700; font-size: 9.5pt; margin-bottom: 4px; text-transform: uppercase; color: var(--zr-title); }
+    .line-title { font-weight: 700; font-size: 9.5pt; margin-bottom: 3px; text-transform: uppercase; color: var(--zr-title); }
+    .line-body { font-size: 8pt; color: var(--zr-body); line-height: 1.55; font-weight: 300; margin-top: 1px; }
     .line-desc { font-family: 'Montserrat', sans-serif; font-size: 8.5pt; color: var(--zr-body); line-height: 1.55; font-weight: 300; }
 
     /* ── TOTAL ── */

@@ -5,7 +5,7 @@
  * Phase MVP : lecture seule + expand/collapse sous-rows
  */
 import { useState, useCallback, useRef, useEffect, Fragment } from 'react'
-import { Upload, RefreshCw, ChevronRight, ChevronDown, AlertTriangle, MessageSquare, ArrowLeft, PanelLeftClose, PanelLeftOpen, Plus, Minus, X, Check, Loader2, Settings, Trash2, Calculator, Truck, Package, EyeOff, Eye, BookOpen, ShieldCheck } from 'lucide-react'
+import { Upload, RefreshCw, ChevronRight, ChevronDown, AlertTriangle, MessageSquare, ArrowLeft, PanelLeftClose, PanelLeftOpen, Plus, Minus, X, Check, Loader2, Settings, Trash2, Calculator, Truck, Package, EyeOff, Eye, BookOpen, ShieldCheck, Sparkles, FileText } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import api from '../api/index.js'
 import Select from 'react-select'
@@ -20,8 +20,6 @@ const CELL = {
 const SUBROW_BG = 'rgba(0,0,0,0.07)'
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
-const fmt = (v) => v == null ? '—' : typeof v === 'number' ? v.toLocaleString('fr-FR') + ' €' : v
-
 function rowLetterLabel(index) {
   let n = index + 1
   let label = ''
@@ -187,6 +185,7 @@ function isBlockingUnpricedRow(row) {
   return /hors catalogue|nous consulter|impossible|pas de prix de base|non chiffrable/i.test(text)
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
   if (r?.line_section === 'calculations' || r?.line_section === 'transport') {
     const qty = r.qty ?? r.quantite ?? 1
@@ -516,9 +515,6 @@ function VerifyRulesModal({ row, onClose }) {
   const [loading, setLoading] = useState(true)
   const [result, setResult] = useState(null)
   const [error, setError] = useState('')
-  const [recomputing, setRecomputing] = useState(false)
-  const [recomputeMsg, setRecomputeMsg] = useState('')
-
   useEffect(() => {
     const run = async () => {
       setLoading(true); setError('')
@@ -610,8 +606,6 @@ function VerifyRulesModal({ row, onClose }) {
                 )
               })}
             </div>
-
-            {recomputeMsg && <div style={{ marginTop: 10, fontSize: 12, color: '#22c55e' }}>{recomputeMsg}</div>}
           </>
         )}
       </div>
@@ -620,7 +614,7 @@ function VerifyRulesModal({ row, onClose }) {
 }
 
 // ─── Composant ligne principale ──────────────────────────────────────────────
-function MainRow({ row, index, displayIndex = index, expanded, onToggle, change, tva, multGlobal, editMode, onUpdate, onRecompute, onDelete, onSaveAsRule, onVerifyRules, hiddenCols = new Set() }) {
+function MainRow({ row, index, displayIndex = index, expanded, onToggle, change, tva, multGlobal, editMode, onUpdate, onRecompute, onDelete, onSaveAsRule, onVerifyRules, onSuggestDesignation, suggestingDesignation = false, hiddenCols = new Set() }) {
   const r = resolveRow(row, change, tva, multGlobal)
   const qty = Number.isFinite(r.qty) ? r.qty : 1
   const isAmountSection = sectionOf(row) !== 'products'
@@ -661,12 +655,36 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
                   placeholder={sectionOf(row) === 'transport' ? 'Frais de port…' : 'Avis / note…'}
                 />
               ) : (
-                <EditableSelect
-                  value={r.type}
-                  options={TYPE_OPTIONS}
-                  onCommit={(v) => onRecompute?.({ type: v })}
-                  placeholder="Type…"
-                />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4, paddingRight: 3 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <EditableSelect
+                      value={r.type}
+                      options={TYPE_OPTIONS}
+                      onCommit={(v) => onRecompute?.({ type: v })}
+                      placeholder="Type…"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onSuggestDesignation?.() }}
+                    title="Suggérer un libellé PDF depuis les devis historiques (Qdrant)"
+                    disabled={suggestingDesignation}
+                    style={{
+                      width: 24,
+                      height: 24,
+                      borderRadius: 6,
+                      border: '1px solid var(--color-border)',
+                      background: 'var(--color-surface)',
+                      color: 'var(--color-text-2)',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      cursor: suggestingDesignation ? 'default' : 'pointer',
+                    }}
+                  >
+                    {suggestingDesignation ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Sparkles size={12} />}
+                  </button>
+                </div>
               )}
             </div>
           ) : (
@@ -1118,11 +1136,6 @@ function SubRowPrices({ row, hiddenCols = new Set() }) {
   )
 }
 
-function truncate(s, n) {
-  if (!s) return ''
-  return s.length > n ? s.slice(0, n) + '…' : s
-}
-
 // ─── Options statiques Performances ─────────────────────────────────────────
 const PERF_OPTIONS = {
   rc:     [{ value: null, label: '—' }, { value: 'CR3', label: 'CR3' }, { value: 'CR4', label: 'CR4' }, { value: 'CR5', label: 'CR5' }, { value: 'CR6', label: 'CR6' }],
@@ -1283,7 +1296,7 @@ function normalizeCalculationRows(rows) {
     if (note) {
       String(note)
         .split(/\s+—\s+(?=(?:Hauteur|Dimensions|Hors zone bleue Blast))/u)
-        .map(part => part.replace(/^[⚠️✅❌\s]+/u, '').trim())
+        .map(part => part.replace(/^(?:\s|⚠️|⚠|✅|❌)+/u, '').trim())
         .filter(part => part && !/mutualis[ée]/i.test(part))
         .forEach(part => bucket.notes.add(part))
     }
@@ -1391,11 +1404,21 @@ function EditableSelect({ value, options, onCommit, placeholder = '—', loadOnM
   const [opts, setOpts] = useState(options || [])
   const [loading, setLoading] = useState(false)
   useEffect(() => {
-    if (options) { setOpts(options); return }
-    if (!loadOnMount || !loader) return
     let alive = true
-    setLoading(true)
-    loader().then(o => { if (alive) setOpts(o || []) }).finally(() => { if (alive) setLoading(false) })
+    Promise.resolve().then(async () => {
+      if (options) {
+        if (alive) setOpts(options)
+        return
+      }
+      if (!loadOnMount || !loader) return
+      if (alive) setLoading(true)
+      try {
+        const loadedOptions = await loader()
+        if (alive) setOpts(loadedOptions || [])
+      } finally {
+        if (alive) setLoading(false)
+      }
+    })
     return () => { alive = false }
   }, [options, loadOnMount, loader])
   const selected = value ? (opts.find(o => o.value === value) || { value, label: value }) : null
@@ -1423,7 +1446,11 @@ function EditableSelect({ value, options, onCommit, placeholder = '—', loadOnM
 function EditableText({ value, onCommit, placeholder = '—', width = '100%', fontSize = 11 }) {
   const [v, setV] = useState(value ?? '')
   const focused = useRef(false)
-  useEffect(() => { if (!focused.current) setV(value ?? '') }, [value])
+  useEffect(() => {
+    let alive = true
+    Promise.resolve().then(() => { if (alive && !focused.current) setV(value ?? '') })
+    return () => { alive = false }
+  }, [value])
   const commit = () => {
     focused.current = false
     const trimmed = v.trim()
@@ -1449,9 +1476,13 @@ function EditableText({ value, onCommit, placeholder = '—', width = '100%', fo
 }
 
 // ─── Cellule éditable (number) ───────────────────────────────────────────────
-function EditableNumber({ value, onCommit, step = 1, min, max, decimals = 0, suffix = '', width = 'auto', textAlign = 'center' }) {
+function EditableNumber({ value, onCommit, step = 1, min, max, width = 'auto', textAlign = 'center' }) {
   const [v, setV] = useState(value == null ? '' : String(value))
-  useEffect(() => { setV(value == null ? '' : String(value)) }, [value])
+  useEffect(() => {
+    let alive = true
+    Promise.resolve().then(() => { if (alive) setV(value == null ? '' : String(value)) })
+    return () => { alive = false }
+  }, [value])
   const commit = () => {
     // Accepte virgule décimale FR et espaces ("1 500", "1,5")
     const cleaned = String(v).replace(/\s/g, '').replace(',', '.')
@@ -1469,6 +1500,7 @@ function EditableNumber({ value, onCommit, step = 1, min, max, decimals = 0, suf
     <input
       type="text"
       inputMode="decimal"
+      step={step}
       value={v}
       onChange={e => setV(e.target.value)}
       onBlur={commit}
@@ -1959,10 +1991,12 @@ export function DevisGridWorkspace({
     return []
   })
   const [fileName, setFileName] = useState(() => {
+    if (embedded) return null
     try { return localStorage.getItem('devisGridFileName') || null } catch { return null }
   })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [suggestingRowId, setSuggestingRowId] = useState(null)
   const [toast, setToast] = useState(null) // { msg, kind: 'success'|'error', id }
   const toastTimerRef = useRef(null)
   const showToast = useCallback((msg, kind = 'success') => {
@@ -2225,6 +2259,20 @@ export function DevisGridWorkspace({
     }
   }
 
+  const clearImportedGrid = useCallback(() => {
+    const nextRows = []
+    setRows(nextRows)
+    setFileName(null)
+    setError(null)
+    setExpandedRows(new Set())
+    try {
+      localStorage.removeItem('devisGridRows')
+      localStorage.removeItem('devisGridFileName')
+    } catch { /* noop */ }
+    onRowsChange?.(nextRows)
+    showToast('Grille vide — vous pouvez réimporter un xlsx', 'success')
+  }, [onRowsChange, showToast])
+
   const onDrop = (e) => {
     e.preventDefault()
     const f = e.dataTransfer.files?.[0]
@@ -2274,6 +2322,26 @@ export function DevisGridWorkspace({
     if (!row) return
     setVerifyRulesModal(row)
   }, [])
+  const suggestDesignationForRow = useCallback(async (rowIdx) => {
+    const row = rowsRef.current[rowIdx]
+    if (!row || sectionOf(row) !== 'products') return
+    setSuggestingRowId(rowIdx)
+    try {
+      const payloadRow = resolveRow(row)
+      const data = await api.post('/devis/suggest-designation', { line: payloadRow }, { timeout: 90000 })
+      const designation = String(data?.designation || '').trim()
+      if (!designation) {
+        showToast('Aucune suggestion de libellé', 'error')
+        return
+      }
+      updateRow(rowIdx, { designation, type: row.type || designation })
+      showToast(data?.examples?.length ? `Libellé IA appliqué (${data.examples.length} exemples)` : 'Libellé IA appliqué', 'success')
+    } catch (err) {
+      showToast(err?.error || err?.message || 'Erreur suggestion IA', 'error')
+    } finally {
+      setSuggestingRowId(null)
+    }
+  }, [showToast, updateRow])
   const totalPU  = rows.reduce((s, r) => s + (resolveRow(r, change, tva, multGlobal)._pu), 0)
   const totalHT = rows.reduce((s, r) => s + (resolveRow(r, change, tva, multGlobal)._totalHt || 0), 0)
 
@@ -2292,6 +2360,13 @@ export function DevisGridWorkspace({
     const sectionRows = rows.map((row, index) => ({ row, index })).filter(item => sectionOf(item.row) === section)
     return sectionRows.length ? [{ type: 'section', section, count: sectionRows.length }, ...sectionRows.map(item => ({ type: 'row', ...item, displayIndex: displayIndex++ }))] : []
   })
+  const openPdfDraftView = useCallback(() => {
+    try {
+      localStorage.setItem('devisGridRows', JSON.stringify(rows))
+      if (fileName) localStorage.setItem('devisGridFileName', fileName)
+    } catch { /* noop */ }
+    navigate('/devis/grid/pdf-draft')
+  }, [fileName, navigate, rows])
 
   // ─── Layout ───────────────────────────────────────────────────────────────
   return (
@@ -2358,6 +2433,31 @@ export function DevisGridWorkspace({
           <div style={{ margin: '0 12px', padding: '6px 10px', background: 'var(--color-surface)', borderRadius: 6, fontSize: 10, color: 'var(--color-text-2)', wordBreak: 'break-all' }}>
             📄 {fileName}
           </div>
+        )}
+
+        {!embedded && (rows.length > 0 || fileName) && (
+          <button
+            type="button"
+            onClick={clearImportedGrid}
+            title="Supprime toutes les lignes et le nom de fichier enregistré pour réimporter (utile après une erreur 502)"
+            style={{
+              margin: '8px 12px 0',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 6,
+              padding: '7px 10px',
+              borderRadius: 6,
+              border: '1px solid color-mix(in srgb, #a33c3c 45%, var(--color-border))',
+              background: 'color-mix(in srgb, #a33c3c 10%, var(--color-surface))',
+              color: '#c45c5c',
+              fontSize: 10,
+              fontWeight: 700,
+              cursor: 'pointer',
+            }}
+          >
+            <Trash2 size={12} /> Vider la grille
+          </button>
         )}
 
         {/* Bouton ajout manuel */}
@@ -2458,6 +2558,15 @@ export function DevisGridWorkspace({
             >
               <Truck size={12} /> Transport
             </button>
+            {!embedded && <button
+              type="button"
+              onClick={openPdfDraftView}
+              disabled={!rows.length}
+              title="Pré-édition web du rendu PDF avec libellés éditables"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, padding: '3px 8px', background: 'color-mix(in srgb, var(--color-primary) 12%, var(--color-surface))', border: '1px solid var(--color-primary)', borderRadius: 4, cursor: rows.length ? 'pointer' : 'default', color: 'var(--color-primary)', fontWeight: 700, opacity: rows.length ? 1 : 0.6 }}
+            >
+              <FileText size={12} /> Pré-édition PDF
+            </button>}
             {rows.length > 0 && (
               <button
                 onClick={() => setExpandedRows(prev => prev.size === rows.length ? new Set() : new Set(rows.map((_, i) => i)))}
@@ -2568,7 +2677,7 @@ export function DevisGridWorkspace({
                   }
                   return (
                   <Fragment key={`row-${i}-${entryIndex}`}>
-                    <MainRow row={row} index={i} displayIndex={entry.displayIndex} expanded={expandedRows.has(i)} onToggle={() => toggleRow(i)} change={change} tva={tva} multGlobal={multGlobal} editMode={editMode} onUpdate={(patch) => updateRow(i, patch)} onRecompute={(patch) => recomputeRow(i, patch)} onDelete={() => deleteRow(i)} onSaveAsRule={() => handleSaveAsRule(i)} onVerifyRules={() => handleVerifyRules(i)} hiddenCols={hiddenCols} />
+                    <MainRow row={row} index={i} displayIndex={entry.displayIndex} expanded={expandedRows.has(i)} onToggle={() => toggleRow(i)} change={change} tva={tva} multGlobal={multGlobal} editMode={editMode} onUpdate={(patch) => updateRow(i, patch)} onRecompute={(patch) => recomputeRow(i, patch)} onDelete={() => deleteRow(i)} onSaveAsRule={() => handleSaveAsRule(i)} onVerifyRules={() => handleVerifyRules(i)} onSuggestDesignation={() => suggestDesignationForRow(i)} suggestingDesignation={suggestingRowId === i} hiddenCols={hiddenCols} />
                     {expandedRows.has(i) && (
                       <Fragment>
                         <SubRowRefs row={row} editMode={editMode} onRefCommit={(colIdx, ref) => handleRefCommit(i, colIdx, ref)} hiddenCols={hiddenCols} />

@@ -14,7 +14,9 @@ const Prospects = lazy(() => import('./pages/Prospects.jsx'))
 const ProspectQuotes = lazy(() => import('./pages/ProspectQuotes.jsx'))
 const DevisStepper = lazy(() => import('./pages/DevisStepper.jsx'))
 const Knowledge = lazy(() => import('./pages/Knowledge.jsx'))
+const Rules = lazy(() => import('./pages/Rules.jsx'))
 const DevisGrid = lazy(() => import('./pages/DevisGrid.jsx'))
+const DevisGridPdfDraft = lazy(() => import('./pages/DevisGridPdfDraft.jsx'))
 const TransportTariffs = lazy(() => import('./pages/TransportTariffs.jsx'))
 
 // Route guard — redirect to login if not authenticated
@@ -42,7 +44,7 @@ export default function App() {
     initTheme()
     fetchSkins()
     initAuth()
-  }, [])
+  }, [fetchSkins, initAuth, initTheme])
 
   return (
     <MotionConfig transition={{ duration: 0 }}>
@@ -70,6 +72,11 @@ export default function App() {
                 <Knowledge />
               </PrivateRoute>
             } />
+            <Route path="/rules" element={
+              <PrivateRoute>
+                <Rules />
+              </PrivateRoute>
+            } />
             <Route path="/devis" element={
               <PrivateRoute>
                 <DevisStepper />
@@ -83,6 +90,11 @@ export default function App() {
             <Route path="/devis/grid" element={
               <PrivateRoute>
                 <DevisGrid />
+              </PrivateRoute>
+            } />
+            <Route path="/devis/grid/pdf-draft" element={
+              <PrivateRoute>
+                <DevisGridPdfDraft />
               </PrivateRoute>
             } />
             <Route path="/devis/transport" element={

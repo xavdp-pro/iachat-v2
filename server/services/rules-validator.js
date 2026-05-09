@@ -14,14 +14,23 @@ import { getGlobalOllamaModel } from './appSettings.js'
 
 /** Récupère toutes les règles métier approuvées en DB. */
 export async function loadApprovedRules() {
-  const [rows] = await db.query(
+  const [ruleRows] = await db.query(
+    `SELECT id, title, content, category, severity, source_type, source_ref
+       FROM devis_rules
+      WHERE status = 'active'
+      ORDER BY id ASC`
+  )
+  const [experienceRows] = await db.query(
     `SELECT id, title, content, category
        FROM experiences
       WHERE status = 'approved'
         AND category IN ('Règle métier', 'Chiffrage', 'Validations individuelles R&D')
       ORDER BY id ASC`
   )
-  return rows
+  return [
+    ...ruleRows.map(row => ({ ...row, source: 'devis_rules' })),
+    ...experienceRows.map(row => ({ ...row, id: 1000000 + row.id, source: 'experience', source_id: row.id })),
+  ]
 }
 
 /** Construit le prompt de validation pour une ligne de devis. */
@@ -101,7 +110,7 @@ export async function validateLine({ line, rules, model }) {
       temperature: 0.0,
       maxTokens: 1500,
     })
-  } catch (err) {
+  } catch {
     // Fallback sans response_format si le modèle ne le supporte pas
     raw = await chatCompletion({ model, messages, temperature: 0.0, maxTokens: 1500 })
   }
@@ -127,7 +136,6 @@ export async function validateLine({ line, rules, model }) {
 export async function validateDevis({ devisId }) {
   const [devisRows] = await db.query('SELECT * FROM devis WHERE id = ?', [devisId])
   if (!devisRows.length) throw new Error('Devis introuvable')
-  const devis = devisRows[0]
 
   const [lines] = await db.query(
     'SELECT * FROM devis_lines WHERE devis_id = ? ORDER BY position ASC',

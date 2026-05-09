@@ -3,14 +3,26 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
 /**
- * SSL terminé par le serveur intermédiaire (zerux.com) → tunnel → nginx ici → Vite :7598.
- * HMR activé : browser → wss://zeruxcom-ds.zerux.com:443 → nginx intermédiaire (WebSocket upgrade)
- * → nginx local (WebSocket upgrade) → Vite :7598.
- * Les deux nginx doivent transmettre Upgrade + Connection "upgrade".
+ * SSL terminé par nginx (prod: devis.zerux.com, dev possible: zeruxcom-ds.zerux.com) → Vite :7598.
+ * HMR : navigateur → wss sur le même host public (port 443) → nginx → WebSocket → Vite.
+ * Nginx doit transmettre Upgrade + Connection "upgrade".
  */
+function resolvePublicHost(env) {
+  const raw = env.VITE_DEV_PUBLIC_URL?.trim()
+  if (raw) {
+    try {
+      const u = raw.startsWith('http') ? raw : `https://${raw}`
+      return new URL(u).hostname
+    } catch { /* ignore invalid URL */ }
+  }
+  const h = env.VITE_HMR_CLIENT_HOST?.trim()
+  if (h) return h
+  return 'devis.zerux.com'
+}
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
-  const publicHost = env.VITE_HMR_CLIENT_HOST || 'zeruxcom-ds.zerux.com'
+  const publicHost = resolvePublicHost(env)
 
   return {
     plugins: [
