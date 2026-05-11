@@ -1,6 +1,6 @@
 # Plan — Stepper Devis NEXUS
 
-> Parcours complet de creation d'un devis NEXUS. Le stepper ne doit pas etre un tunnel lineaire : il doit devenir un poste de pilotage versionne, avec boucle de travail sur chaque version, assistants Gemma 4 contextuels, checks de regles, pre-edition PDF et envoi HubSpot trace.
+> Parcours complet de creation d'un devis NEXUS. Le stepper ne doit pas etre un tunnel lineaire : il doit devenir un poste de pilotage versionne, avec boucle de travail sur chaque version, assistants Gemma 4 contextuels, checks de regles, pre-edition PDF et copie HubSpot tracee apres choix humain de l'affaire.
 
 ---
 
@@ -14,7 +14,7 @@
   Step 4: Grid devis complet (nouvelle grille editable)
   Step 5: Pre-edition PDF (libelles commerciaux)
   Step 6: Check final + Generation PDF
-  Step 7: Envoi HubSpot + archivage
+  Step 7: Choix affaire HubSpot dans Prospect + copie PDF API + archivage
 ```
 
 Le commercial doit pouvoir boucler sur une version tant qu'elle n'est pas finalisee :
@@ -46,7 +46,10 @@ Revenir sur la meme version OU creer une nouvelle version / branche
 - [x] Page `/rules` creee, separee de `/knowledge` et accessible depuis le stepper devis.
 - [x] Le check `/api/devis/:id/validate-rules` persiste un rapport par version dans `devis_rule_checks`.
 - [x] Le moteur de validation lit les regles actives de `devis_rules` en plus des experiences approuvees historiques.
+- [x] L'import XLSX dans la grille lance un controle automatique ligne par ligne via `/api/devis/validate-lines` et affiche les violations/avertissements par reference de regle.
 - [x] Le pre-editeur PDF sauvegarde les libelles dans `devis_version_lines.designation_pdf` pour la version active.
+- [x] La pre-edition PDF relance le controle regles + experiences apres generation IA des libelles et avant le telechargement du PDF final.
+- [x] La pre-edition PDF affiche les alertes detaillees par ligne avec reference de regle (`R001`, `R002`, etc.), raison et correctif propose.
 - [x] Indexer les regles actives dans Qdrant avec un type de payload dedie `devis_rule`.
 - [x] API `/api/rules/search` et `/api/rules/reindex` ajoutees pour recherche semantique et reindexation admin.
 - [ ] Ajouter extraction automatique de regles depuis les Markdown source.
@@ -89,6 +92,7 @@ Revenir sur la meme version OU creer une nouvelle version / branche
 - [ ] Les regles doivent etre filtrables par categorie, source, severite, statut, gamme, tag et fichier markdown source.
 - [ ] Les regles peuvent venir des markdowns `ressources/XLSX/*.md`, d'une creation humaine, ou d'une experience promue en regle.
 - [ ] Les regles actives doivent etre indexees dans Qdrant et utilisables par Gemma 4.
+- [ ] Chaque regle operationnelle doit avoir une reference stable `R001`, `R002`, etc., affichable dans `/rules`, recherchable et reprise dans les prompts de validation.
 - [ ] Le check doit combiner : regles humaines actives, experiences approuvees, knowledge markdown, et contexte de la version.
 - [ ] La page `/knowledge` reste la vision documentaire ; la page `Regles` devient la vision operationnelle et auditable.
 
@@ -105,6 +109,7 @@ Revenir sur la meme version OU creer une nouvelle version / branche
 - [ ] Affichage des deals lies au client selectionne
 - [ ] Liste des devis deja realises pour ce client (historique)
 - [ ] Bouton "Nouveau devis" pour partir de zero
+- [ ] Si le client n'a aucun deal, bouton de creation rapide du deal HubSpot puis selection automatique du nouveau deal
 - [ ] Selection du deal cible (pour association finale de la note)
 
 ### UI
@@ -118,6 +123,7 @@ Revenir sur la meme version OU creer une nouvelle version / branche
 
 - [ ] Route GET pour rechercher des clients HubSpot
 - [ ] Route GET pour lister les deals d'un client
+- [ ] Route POST pour creer un deal HubSpot lie a la societe selectionnee quand aucun deal n'existe
 - [ ] Route GET pour lister les devis existants par deal
 - [ ] Table `devis` (id, deal_id, client_name, status, created_at, updated_at)
 
@@ -263,6 +269,9 @@ Revenir sur la meme version OU creer une nouvelle version / branche
 - [ ] Editeur de libelles PDF par ligne (textarea multi-lignes).
 - [ ] Ligne 1 = titre commercial ; lignes suivantes = corps de designation PDF.
 - [ ] Suggestion IA via Qdrant a partir des anciens devis Doortal/Zerux.
+- [ ] Les exemples Qdrant proviennent des 161 PDFs `ressources/Bulk` et doivent rester nettoyes : pas de pied de page, pas de note type `SUITE PAGE SUIVANTE`, pas de prix/delai/montant.
+- [ ] Style attendu : titre en majuscules avec `"NEXUS"`, performances feu (`Performances coupe-feu EI² XX minutes recto/verso`, avec `sur avis de chantier` seulement si explicite), CR selon EN 1627-1630, FB majoritairement en `Performances pare-balle FBX selon norme EN 1522` sauf attestation explicite, dimensions, poids/finition uniquement si explicites, bloc `Equipement fourni-posé :` avec items `-`, puis `Localisation` si connue.
+- [ ] Gemma ne doit pas inventer Uw, poids, hors-tout, reservation ou equipement depuis les exemples historiques ; ces valeurs doivent etre presentes dans la ligne cible.
 - [ ] Suggestion globale de tous les libelles PDF.
 - [ ] Sauvegarde en base dans la version active, pas uniquement en localStorage.
 - [ ] Commentaire/checkpoint possible avant passage au check final.
@@ -284,7 +293,9 @@ Revenir sur la meme version OU creer une nouvelle version / branche
 
 ## Step 6/7 — Check final, Generation PDF & HubSpot
 
-> Objectif : auditer la version, generer le PDF final, le stocker, puis l'associer au deal HubSpot. Une version envoyee est verrouillee.
+> Objectif : auditer la version, generer le PDF final, le stocker, puis laisser l'utilisateur humain choisir l'affaire en cours dans la fiche prospect avant de copier/attacher le PDF via l'API HubSpot. Une version envoyee est verrouillee.
+
+> En environnement de test HubSpot, seuls les prospects `Client_IA_1` et `Client_IA_2` peuvent etre utilises. Ne pas creer, modifier, copier de PDF ou attacher de note sur d'autres clients HubSpot pendant les tests.
 
 ### Fonctionnalites
 
@@ -293,8 +304,9 @@ Revenir sur la meme version OU creer une nouvelle version / branche
 - [ ] Rapport de check persiste sur la version.
 - [ ] Generation PDF (serveur) avec mise en page professionnelle
 - [ ] Telechargement du PDF
-- [ ] Creation d'une note dans le deal HubSpot selectionne (Step 1)
-- [ ] Attachement du PDF a la note HubSpot
+- [ ] Redirection vers le prospect pour choix humain de l'affaire HubSpot en cours.
+- [ ] Creation d'une note dans l'affaire HubSpot choisie explicitement par l'utilisateur.
+- [ ] Attachement/copie du PDF a la note HubSpot via API.
 - [ ] Mise a jour du statut de version en BDD (brouillon → checke → pdf_genere → envoye)
 - [ ] Verrouillage de la version apres PDF final/envoye ; correction ulterieure via nouvelle version/branche.
 
@@ -303,14 +315,15 @@ Revenir sur la meme version OU creer une nouvelle version / branche
 - [ ] Apercu PDF integre (iframe ou viewer)
 - [ ] Synthese des checks : bloquants, avertissements, OK, sources.
 - [ ] Bouton "Generer le PDF"
-- [ ] Bouton "Envoyer dans HubSpot" (cree la note + attache le PDF)
-- [ ] Confirmation de succes avec lien vers le deal
+- [ ] Bouton "Choisir l'affaire HubSpot" qui ouvre le prospect avec le devis/version en contexte.
+- [ ] Confirmation de l'affaire cible avant copie API.
+- [ ] Confirmation de succes avec lien vers l'affaire HubSpot
 - [ ] Bouton "Retour a l'editeur" si corrections necessaires
 
 ### Backend / BDD
 
 - [ ] Route POST /api/devis/:id/pdf — generer le PDF
-- [ ] Route POST /api/devis/:id/hubspot — creer la note + attacher le PDF
+- [ ] Route POST /api/devis/:id/hubspot — recoit le `deal_id` choisi dans Prospect, cree la note et attache/copier le PDF via API HubSpot
 - [ ] Stockage du PDF dans /apps/zeruxcom-v1/sav/devis/ (hors git)
 - [ ] Mise a jour version : status, pdf_path, hubspot_note_id, hubspot_file_id si disponible
 - [ ] Table de rapports de checks rattachee a la version.
@@ -446,6 +459,6 @@ CREATE TABLE devis_rule_checks (
 5. **Step 4 Grid** : integrer la nouvelle grille comme editeur principal, avec persistance versionnee.
 6. **Step 5 Pre-PDF** : editeur de libelles PDF persistant + suggestion Qdrant.
 7. **Step 6 Check/PDF** : check regles + generation PDF stockee.
-8. **Step 7 HubSpot** : note CRM + attachement PDF + verrouillage version.
+8. **Step 7 HubSpot** : choix humain de l'affaire dans Prospect, note CRM + copie PDF API + verrouillage version.
 9. **Page Regles** : extraire/gerer les regles atomiques, filtres humains, index Qdrant.
 10. **Transversal** : assistants Gemma 4 specialises par step avec contexte de version.

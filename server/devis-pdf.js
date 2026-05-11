@@ -85,6 +85,36 @@ function formatDate(isoOrDate) {
   return d.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
+function isPdfChassisLine(line = {}) {
+  const text = [line.type_porte, line.type, line.designation, line.gamme, line.vantail, line.ref_base]
+    .filter(Boolean)
+    .join(" ")
+    .toUpperCase();
+  return /\bCH\b|CHASSIS|CHÂSSIS|CHASSIS FIXE|CHÂSSIS FIXE|CHASSIS VITR[ÉE]|CHÂSSIS VITR[ÉE]/u.test(text);
+}
+
+function isPdfTwoLeafLine(line = {}) {
+  const text = [line.type_porte, line.type, line.designation, line.vantail]
+    .filter(Boolean)
+    .join(" ")
+    .toUpperCase();
+  return /\b2\s*V\b|\b2VSFX\b|2\s*VANTAUX|DEUX\s+VANTAUX/u.test(text);
+}
+
+function pdfPassageDimensions(line = {}) {
+  const haut = Number(line.hauteur_mm ?? line.haut_mm);
+  const larg = Number(line.largeur_mm ?? line.larg_mm);
+  const chassis = isPdfChassisLine(line);
+  const twoLeaf = isPdfTwoLeafLine(line);
+  return {
+    label: chassis ? "CV" : "PL",
+    h: Number.isFinite(haut) ? haut - (chassis ? 140 : 70) : null,
+    l: Number.isFinite(larg) ? larg - (chassis ? 140 : (twoLeaf ? 270 : 205)) : null,
+    reservationH: Number.isFinite(haut) ? haut + 10 : null,
+    reservationL: Number.isFinite(larg) ? larg + 10 : null,
+  };
+}
+
 // ─── HTML builder ──────────────────────────────────────────────────────────
 /**
  * @param {{
@@ -133,6 +163,13 @@ export function buildDevisNexusHtml(data) {
     const gamme = line.gamme ? `[${escapeHtml(line.gamme)}]` : "";
     const dims = (line.hauteur_mm && line.largeur_mm)
       ? ` H${line.hauteur_mm}×L${line.largeur_mm} mm` : "";
+    const passageDims = pdfPassageDimensions(line);
+    const passageDimsLabel = passageDims.h != null && passageDims.l != null
+      ? `${passageDims.label} H${passageDims.h}×L${passageDims.l} mm`
+      : "";
+    const reservationDimsLabel = passageDims.reservationH != null && passageDims.reservationL != null
+      ? `Réservation GO H${passageDims.reservationH}×L${passageDims.reservationL} mm`
+      : "";
     const vantail = line.vantail ? ` — ${escapeHtml(line.vantail)}` : "";
 
     // Split multi-line designation: first line = bold title, rest = body block
@@ -145,6 +182,11 @@ export function buildDevisNexusHtml(data) {
     const bodyHtml = desigLines.slice(1)
       .map(l => escapeHtml(l))
       .join('<br>');
+    const localisation = String(line.localisation || "").trim();
+    const hasBodyLocalisation = desigLines.some(l => /^Localisation\s*:/i.test(l));
+    const localisationHtml = localisation && !hasBodyLocalisation
+      ? `<div class="line-localisation">Localisation : ${escapeHtml(localisation)}</div>`
+      : "";
 
     // Build fallback options description (shown only when no multi-line body)
     let optDesc = "";
@@ -155,7 +197,8 @@ export function buildDevisNexusHtml(data) {
       optDesc = opts.map(o => `${escapeHtml(o.label || "")}${o.prix ? ` (${formatEuro(o.prix)} €)` : ""}`).join(", ");
     }
     const serrure = (!bodyHtml && line.serrure_ref) ? `Serrure : ${escapeHtml(line.serrure_ref)}` : "";
-    const descParts = [optDesc, serrure].filter(Boolean).join(" | ");
+    const localisationDesc = localisation ? `Localisation : ${escapeHtml(localisation)}` : "";
+    const descParts = [passageDimsLabel, reservationDimsLabel, localisationDesc, optDesc, serrure].filter(Boolean).join(" | ");
 
     const total = Number(line.total_ligne_ht) || Number(line.prix_base_ht) || 0;
 
@@ -165,6 +208,7 @@ export function buildDevisNexusHtml(data) {
         <td class="cell-desc">
           <div class="line-title">${titleLine}</div>
           ${bodyHtml ? `<div class="line-body">${bodyHtml}</div>` : (descParts ? `<div class="line-desc">${descParts}</div>` : "")}
+          ${bodyHtml ? localisationHtml : ""}
         </td>
         <td class="cell-delais">—</td>
         <td class="cell-num">1</td>
@@ -295,6 +339,7 @@ export function buildDevisNexusHtml(data) {
 
     .line-title { font-weight: 700; font-size: 9.5pt; margin-bottom: 3px; text-transform: uppercase; color: var(--zr-title); }
     .line-body { font-size: 8pt; color: var(--zr-body); line-height: 1.55; font-weight: 300; margin-top: 1px; }
+    .line-localisation { font-size: 8pt; color: var(--zr-title); line-height: 1.45; font-weight: 600; margin-top: 4px; }
     .line-desc { font-family: 'Montserrat', sans-serif; font-size: 8.5pt; color: var(--zr-body); line-height: 1.55; font-weight: 300; }
 
     /* ── TOTAL ── */
@@ -472,10 +517,14 @@ export async function renderDevisPdfBuffer(html, opts = {}) {
     </div>
   `;
 
-  const browser = await chromium.launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+  const browser = await chromium.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+  });
   try {
     const ctx = await browser.newContext();
     const page = await ctx.newPage();
+    await page.setViewportSize({ width: 1200, height: 1600 });
     await page.setContent(html, { waitUntil: "networkidle" });
     const pdfBuf = await page.pdf({
       format: "A4",

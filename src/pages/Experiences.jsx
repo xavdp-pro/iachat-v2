@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
 import { ZrSearchableSelect } from '../ui/ZrSearchableSelect.jsx'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import {
+  ArrowLeft,
   Plus, Pencil, Trash2, CheckCircle2, Clock, XCircle,
   MessageCircleReply, Tag, BookOpen,
   Loader2, X, ChevronDown, ChevronUp, Search,
@@ -176,6 +177,9 @@ function ExpandableContent({ text, maxLen = 200 }) {
 
 export default function Experiences() {
   const navigate = useNavigate()
+  const location = useLocation()
+  const returnTo = location.state?.returnTo || '/chat'
+  const returnLabel = location.state?.returnLabel || 'Retour au chat'
   const { user } = useAuthStore()
 
   const [experiences, setExperiences] = useState([])
@@ -247,9 +251,9 @@ export default function Experiences() {
           </div>
         </div>
         <div className="admin-topbar-actions">
-          <button type="button" className="admin-btn-ghost" onClick={() => navigate('/chat')}>
-            <MessageCircleReply size={16} />
-            <span>Retour au chat</span>
+          <button type="button" className="admin-btn-ghost" onClick={() => navigate(returnTo)}>
+            {location.state?.returnTo ? <ArrowLeft size={16} /> : <MessageCircleReply size={16} />}
+            <span>{returnLabel}</span>
           </button>
         </div>
       </header>

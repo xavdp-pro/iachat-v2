@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import {
-  ArrowLeft, CheckCircle2, CircleAlert, CircleSlash, FileText, Filter,
+  ArrowLeft, CheckCircle2, ChevronDown, CircleAlert, CircleSlash, FileText, Filter,
   Loader2, Plus, Save, Search, Shield, Tag, Trash2, X,
 } from 'lucide-react'
 import api from '../api/index.js'
@@ -24,7 +24,16 @@ const STATUS_META = {
   obsolete: { label: 'Obsolète', color: '#777', icon: CircleSlash },
 }
 
+const SOURCE_TYPE_LABELS = {
+  human: 'Saisie humaine',
+  markdown: 'Markdown connaissance',
+  experience: 'Expérience validée',
+  pdf: 'PDF tarif',
+  xlsx: 'Classeur XLSX',
+}
+
 const emptyForm = {
+  rule_code: '',
   title: '',
   content: '',
   category: 'Règle métier',
@@ -49,8 +58,117 @@ function parseTags(value) {
   return String(value).split(',').map(tag => tag.trim()).filter(Boolean)
 }
 
+function SelectField({ value, options, onChange, ariaLabel }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+  const selected = options.find(option => option.value === value) || options[0]
+
+  useEffect(() => {
+    if (!open) return undefined
+    const onPointerDown = (event) => {
+      if (!ref.current?.contains(event.target)) setOpen(false)
+    }
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [open])
+
+  return (
+    <div ref={ref} style={{ position: 'relative', minWidth: 0 }}>
+      <button
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={ariaLabel}
+        onClick={() => setOpen(value => !value)}
+        style={{
+          ...inputStyle(),
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 8,
+          minHeight: 34,
+          textAlign: 'left',
+          cursor: 'pointer',
+          userSelect: 'none',
+        }}
+      >
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selected?.label || '—'}</span>
+        <ChevronDown size={15} style={{ flexShrink: 0, color: 'var(--color-text-3)', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 120ms ease' }} />
+      </button>
+      {open && (
+        <div
+          className="rules-scrollbar"
+          role="listbox"
+          style={{
+            position: 'absolute',
+            zIndex: 60,
+            top: 'calc(100% + 6px)',
+            left: 0,
+            right: 0,
+            maxHeight: 260,
+            overflowY: 'auto',
+            scrollbarGutter: 'stable',
+            padding: 4,
+            borderRadius: 8,
+            border: '1px solid var(--color-border)',
+            background: 'var(--color-surface)',
+            boxShadow: '0 14px 34px rgba(0, 0, 0, 0.28)',
+          }}
+        >
+          {options.map(option => {
+            const active = option.value === value
+            return (
+              <button
+                key={option.value}
+                type="button"
+                role="option"
+                aria-selected={active}
+                onClick={() => { onChange(option.value); setOpen(false) }}
+                style={{
+                  width: '100%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 8,
+                  border: 'none',
+                  borderRadius: 6,
+                  padding: '7px 9px',
+                  background: active ? 'var(--color-primary)' : 'transparent',
+                  color: active ? '#fff' : 'var(--color-text)',
+                  fontSize: 12,
+                  fontWeight: active ? 800 : 600,
+                  fontFamily: 'var(--font-body)',
+                  textAlign: 'left',
+                  cursor: 'pointer',
+                }}
+                onMouseEnter={(event) => {
+                  if (!active) event.currentTarget.style.background = 'var(--color-input-bg, var(--color-bg))'
+                }}
+                onMouseLeave={(event) => {
+                  if (!active) event.currentTarget.style.background = 'transparent'
+                }}
+              >
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{option.label}</span>
+                {active && <CheckCircle2 size={13} />}
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function RuleEditor({ initial, onSave, onCancel, saving }) {
   const [form, setForm] = useState(() => initial ? {
+    rule_code: initial.rule_code || '',
     title: initial.title || '',
     content: initial.content || '',
     category: initial.category || 'Règle métier',
@@ -64,24 +182,25 @@ function RuleEditor({ initial, onSave, onCancel, saving }) {
 
   return (
     <form onSubmit={(e) => { e.preventDefault(); onSave(form) }} style={{ display: 'grid', gap: 10 }}>
-      <input value={form.title} onChange={e => patch('title', e.target.value)} placeholder="Titre de règle" style={inputStyle()} autoFocus />
+      <div style={{ display: 'grid', gridTemplateColumns: '110px 1fr', gap: 8 }}>
+        <input value={form.rule_code} onChange={e => patch('rule_code', e.target.value)} placeholder="R001" style={inputStyle()} autoFocus />
+        <input value={form.title} onChange={e => patch('title', e.target.value)} placeholder="Titre de règle" style={inputStyle()} />
+      </div>
       <textarea value={form.content} onChange={e => patch('content', e.target.value)} placeholder="Règle opérationnelle vérifiable par Gemma" rows={7} style={{ ...inputStyle(), resize: 'vertical', lineHeight: 1.5 }} />
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 150px 150px', gap: 8 }}>
-        <select value={form.category} onChange={e => patch('category', e.target.value)} style={inputStyle()}>
-          {CATEGORIES.map(category => <option key={category} value={category}>{category}</option>)}
-        </select>
-        <select value={form.severity} onChange={e => patch('severity', e.target.value)} style={inputStyle()}>
-          <option value="info">Info</option>
-          <option value="warning">Attention</option>
-          <option value="blocking">Bloquante</option>
-        </select>
-        <select value={form.source_type} onChange={e => patch('source_type', e.target.value)} style={inputStyle()}>
-          <option value="human">Humaine</option>
-          <option value="markdown">Markdown</option>
-          <option value="experience">Experience</option>
-          <option value="pdf">PDF</option>
-          <option value="xlsx">XLSX</option>
-        </select>
+        <SelectField value={form.category} onChange={value => patch('category', value)} ariaLabel="Catégorie" options={CATEGORIES.map(category => ({ value: category, label: category }))} />
+        <SelectField value={form.severity} onChange={value => patch('severity', value)} ariaLabel="Sévérité" options={[
+          { value: 'info', label: 'Info' },
+          { value: 'warning', label: 'Attention' },
+          { value: 'blocking', label: 'Bloquante' },
+        ]} />
+        <SelectField value={form.source_type} onChange={value => patch('source_type', value)} ariaLabel="Type de source" options={[
+          { value: 'human', label: 'Humaine' },
+          { value: 'markdown', label: 'Markdown' },
+          { value: 'experience', label: 'Experience' },
+          { value: 'pdf', label: 'PDF' },
+          { value: 'xlsx', label: 'XLSX' },
+        ]} />
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
         <input value={form.source_ref} onChange={e => patch('source_ref', e.target.value)} placeholder="Source" style={inputStyle()} />
@@ -119,6 +238,9 @@ function buttonStyle(kind = 'ghost') {
 
 export default function Rules() {
   const navigate = useNavigate()
+  const location = useLocation()
+  const returnTo = location.state?.returnTo || '/devis'
+  const returnLabel = location.state?.returnLabel || 'Retour devis'
   const { user } = useAuthStore()
   const isAdmin = user?.role === 'admin'
   const [rules, setRules] = useState([])
@@ -191,9 +313,31 @@ export default function Rules() {
   }
 
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--color-bg)', color: 'var(--color-text)', display: 'grid', gridTemplateRows: 'auto auto 1fr' }}>
+    <div style={{ height: '100vh', background: 'var(--color-bg)', color: 'var(--color-text)', display: 'grid', gridTemplateRows: 'auto auto minmax(0, 1fr)', overflow: 'hidden' }}>
+      <style>{`
+        .rules-scrollbar {
+          scrollbar-width: thin;
+          scrollbar-color: var(--color-border-strong, var(--color-border)) var(--color-surface);
+        }
+        .rules-scrollbar::-webkit-scrollbar {
+          width: 10px;
+          height: 10px;
+        }
+        .rules-scrollbar::-webkit-scrollbar-track {
+          background: var(--color-surface);
+          border-left: 1px solid var(--color-border);
+        }
+        .rules-scrollbar::-webkit-scrollbar-thumb {
+          background: var(--color-border-strong, var(--color-border));
+          border: 2px solid var(--color-surface);
+          border-radius: 999px;
+        }
+        .rules-scrollbar::-webkit-scrollbar-thumb:hover {
+          background: var(--color-primary);
+        }
+      `}</style>
       <div style={{ height: 52, borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 10, padding: '0 16px', background: 'var(--color-surface)' }}>
-        <button type="button" onClick={() => navigate('/devis')} style={{ ...buttonStyle('ghost'), width: 34, padding: 0 }} title="Retour devis"><ArrowLeft size={15} /></button>
+        <button type="button" onClick={() => navigate(returnTo)} style={{ ...buttonStyle('ghost'), width: 34, padding: 0 }} title={returnLabel}><ArrowLeft size={15} /></button>
         <div style={{ flex: 1 }}>
           <div style={{ fontWeight: 900, fontSize: 16 }}>Règles</div>
           <div style={{ color: 'var(--color-text-3)', fontSize: 11 }}>Règles atomiques utilisées par les checks devis</div>
@@ -204,27 +348,27 @@ export default function Rules() {
       <div style={{ borderBottom: '1px solid var(--color-border)', padding: '10px 16px', display: 'grid', gridTemplateColumns: 'minmax(240px, 1fr) 140px 150px 180px', gap: 8, background: 'var(--color-surface)' }}>
         <div style={{ position: 'relative' }}>
           <Search size={14} style={{ position: 'absolute', left: 10, top: 9, color: 'var(--color-text-3)' }} />
-          <input value={filters.q} onChange={e => setFilters(prev => ({ ...prev, q: e.target.value }))} placeholder="Rechercher" style={{ ...inputStyle(), paddingLeft: 30 }} />
+          <input value={filters.q} onChange={e => setFilters(prev => ({ ...prev, q: e.target.value }))} placeholder="Rechercher R001, titre, source" style={{ ...inputStyle(), paddingLeft: 30 }} />
         </div>
-        <select value={filters.status} onChange={e => setFilters(prev => ({ ...prev, status: e.target.value }))} style={inputStyle()}>
-          <option value="all">Tous statuts</option>
-          <option value="active">Actives</option>
-          <option value="draft">Brouillons</option>
-          <option value="obsolete">Obsolètes</option>
-        </select>
-        <select value={filters.severity} onChange={e => setFilters(prev => ({ ...prev, severity: e.target.value }))} style={inputStyle()}>
-          <option value="all">Toutes sévérités</option>
-          <option value="info">Info</option>
-          <option value="warning">Attention</option>
-          <option value="blocking">Bloquante</option>
-        </select>
-        <select value={filters.category} onChange={e => setFilters(prev => ({ ...prev, category: e.target.value }))} style={inputStyle()}>
-          <option value="all">Toutes catégories</option>
-          {CATEGORIES.map(category => <option key={category} value={category}>{category}</option>)}
-        </select>
+        <SelectField value={filters.status} onChange={value => setFilters(prev => ({ ...prev, status: value }))} ariaLabel="Filtre statut" options={[
+          { value: 'all', label: 'Tous statuts' },
+          { value: 'active', label: 'Actives' },
+          { value: 'draft', label: 'Brouillons' },
+          { value: 'obsolete', label: 'Obsolètes' },
+        ]} />
+        <SelectField value={filters.severity} onChange={value => setFilters(prev => ({ ...prev, severity: value }))} ariaLabel="Filtre sévérité" options={[
+          { value: 'all', label: 'Toutes sévérités' },
+          { value: 'info', label: 'Info' },
+          { value: 'warning', label: 'Attention' },
+          { value: 'blocking', label: 'Bloquante' },
+        ]} />
+        <SelectField value={filters.category} onChange={value => setFilters(prev => ({ ...prev, category: value }))} ariaLabel="Filtre catégorie" options={[
+          { value: 'all', label: 'Toutes catégories' },
+          ...CATEGORIES.map(category => ({ value: category, label: category })),
+        ]} />
       </div>
 
-      <div style={{ minHeight: 0, overflow: 'auto', padding: 16 }}>
+      <div className="rules-scrollbar" style={{ minHeight: 0, overflowY: 'scroll', overflowX: 'hidden', padding: 16, scrollbarGutter: 'stable' }}>
         {error && <div style={{ marginBottom: 12, padding: 10, borderRadius: 7, background: 'rgba(220,38,38,0.1)', color: '#dc2626', fontSize: 12 }}>{error}</div>}
         {(showNew || editing) && (
           <div style={{ border: '1px solid var(--color-border)', borderRadius: 8, background: 'var(--color-surface)', padding: 14, marginBottom: 14 }}>
@@ -247,14 +391,16 @@ export default function Rules() {
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap', marginBottom: 6 }}>
+                      {rule.rule_code && <Pill meta={{ color: 'var(--color-primary)', icon: Shield }}>{rule.rule_code}</Pill>}
                       <strong style={{ fontSize: 13 }}>{rule.title}</strong>
                       <Pill meta={statusMeta}>{statusMeta.label}</Pill>
                       <Pill meta={severityMeta}>{severityMeta.label}</Pill>
                       {rule.category && <Pill meta={{ color: 'var(--color-primary)', icon: Filter }}>{rule.category}</Pill>}
                     </div>
                     <div style={{ color: 'var(--color-text-2)', fontSize: 12, lineHeight: 1.55, whiteSpace: 'pre-wrap' }}>{rule.content}</div>
-                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8, color: 'var(--color-text-3)', fontSize: 10 }}>
-                      {rule.source_ref && <span>Source: {rule.source_ref}</span>}
+                    <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid var(--color-border)', display: 'flex', gap: 8, flexWrap: 'wrap', color: 'var(--color-text-3)', fontSize: 10, lineHeight: 1.4 }}>
+                      <span style={{ fontWeight: 800, color: 'var(--color-text-2)' }}>Sources d'information</span>
+                      <span>{SOURCE_TYPE_LABELS[rule.source_type] || rule.source_type || 'Source'}{rule.source_ref ? ` : ${rule.source_ref}` : ''}</span>
                       {tags.map(tag => <span key={tag} style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}><Tag size={10} />{tag}</span>)}
                     </div>
                   </div>

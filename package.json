@@ -18,6 +18,7 @@
     "pm2:switch:dev": "pm2 stop zeruxcomm-api zeruxcomm-vite 2>/dev/null; pm2 delete zeruxcomm-api zeruxcomm-vite 2>/dev/null; pm2 start ecosystem.dev.config.cjs",
     "pm2:switch:prod": "pm2 stop zeruxcomm-api-dev zeruxcomm-vite-dev 2>/dev/null; pm2 delete zeruxcomm-api-dev zeruxcomm-vite-dev 2>/dev/null; pm2 start ecosystem.config.cjs",
     "check:ollama": "node scripts/check-ollama.mjs",
+    "playwright:install": "node node_modules/playwright/cli.js install chromium",
     "test:hubspot": "node scripts/test-hubspot-contacts.mjs",
     "test:hubspot:crm": "node scripts/test-hubspot-crm.mjs"
   },

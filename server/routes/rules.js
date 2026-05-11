@@ -22,6 +22,26 @@ function normalizeSourceType(value) {
   return SOURCE_TYPES.has(value) ? value : 'human'
 }
 
+function normalizeRuleCode(value) {
+  const raw = String(value || '').trim().toUpperCase()
+  if (!raw) return null
+  const digitsOnly = raw.match(/^\d+$/)
+  if (digitsOnly) return `R${raw.padStart(3, '0')}`
+  const match = raw.match(/^R\s*-?\s*(\d+)$/)
+  if (match) return `R${match[1].padStart(3, '0')}`
+  return raw.replace(/\s+/g, '')
+}
+
+async function nextRuleCode() {
+  const [rows] = await db.query("SELECT rule_code FROM devis_rules WHERE rule_code REGEXP '^R[0-9]+$'")
+  let max = 0
+  for (const row of rows) {
+    const n = Number(String(row.rule_code || '').replace(/^R/i, ''))
+    if (Number.isFinite(n)) max = Math.max(max, n)
+  }
+  return `R${String(max + 1).padStart(3, '0')}`
+}
+
 function parseTags(value) {
   if (Array.isArray(value)) return value.map(tag => String(tag).trim()).filter(Boolean)
   if (typeof value === 'string') return value.split(',').map(tag => tag.trim()).filter(Boolean)
@@ -49,6 +69,7 @@ function publicRule(row) {
 async function indexRule(row) {
   const qdrantId = await storeDevisRule({
     ruleId: row.id,
+    ruleCode: row.rule_code,
     title: row.title,
     content: row.content,
     category: row.category,
@@ -69,9 +90,9 @@ router.get('/', async (req, res) => {
   if (category && category !== 'all') { where.push('r.category = ?'); params.push(category) }
   if (severity && severity !== 'all') { where.push('r.severity = ?'); params.push(normalizeSeverity(severity)) }
   if (q?.trim()) {
-    where.push('(r.title LIKE ? OR r.content LIKE ? OR r.source_ref LIKE ?)')
+    where.push('(r.rule_code LIKE ? OR r.title LIKE ? OR r.content LIKE ? OR r.source_ref LIKE ?)')
     const like = `%${q.trim()}%`
-    params.push(like, like, like)
+    params.push(like, like, like, like)
   }
   try {
     const [rows] = await db.query(
@@ -115,14 +136,16 @@ router.post('/reindex', requireAdmin, async (_req, res) => {
 })
 
 router.post('/', async (req, res) => {
-  const { title, content, category, severity, source_type, source_ref, tags } = req.body || {}
+  const { rule_code, title, content, category, severity, source_type, source_ref, tags } = req.body || {}
   if (!title?.trim() || !content?.trim()) return res.status(400).json({ error: 'title and content required' })
   try {
+    const code = normalizeRuleCode(rule_code) || await nextRuleCode()
     const [result] = await db.query(
       `INSERT INTO devis_rules
-        (title, content, category, severity, source_type, source_ref, tags_json, status, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (rule_code, title, content, category, severity, source_type, source_ref, tags_json, status, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
+        code,
         title.trim(),
         content.trim(),
         category?.trim() || null,
@@ -146,7 +169,7 @@ router.post('/', async (req, res) => {
 })
 
 router.put('/:id', async (req, res) => {
-  const { title, content, category, severity, source_type, source_ref, tags } = req.body || {}
+  const { rule_code, title, content, category, severity, source_type, source_ref, tags } = req.body || {}
   if (!title?.trim() || !content?.trim()) return res.status(400).json({ error: 'title and content required' })
   try {
     const [rows] = await db.query('SELECT * FROM devis_rules WHERE id = ?', [req.params.id])
@@ -155,9 +178,10 @@ router.put('/:id', async (req, res) => {
     if (!canEditRule(rule, req.user)) return res.status(403).json({ error: 'Forbidden' })
     await db.query(
       `UPDATE devis_rules
-          SET title = ?, content = ?, category = ?, severity = ?, source_type = ?, source_ref = ?, tags_json = ?
+          SET rule_code = ?, title = ?, content = ?, category = ?, severity = ?, source_type = ?, source_ref = ?, tags_json = ?
         WHERE id = ?`,
       [
+        normalizeRuleCode(rule_code) || rule.rule_code || await nextRuleCode(),
         title.trim(),
         content.trim(),
         category?.trim() || null,

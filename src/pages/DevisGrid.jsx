@@ -18,6 +18,8 @@ const CELL = {
   normal:  { background: 'transparent',            border: '1px solid transparent' },
 }
 const SUBROW_BG = 'rgba(0,0,0,0.07)'
+const GRID_TOTAL_COLS = 22
+const DIMENSION_COLUMNS = ['haut_ht', 'larg_ht', 'haut_pl', 'larg_pl']
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 function rowLetterLabel(index) {
@@ -113,6 +115,37 @@ function optionAsEquipment(option) {
   }
 }
 
+function thermolaquageTypeFromText(value) {
+  const text = equipmentText(value).toUpperCase()
+  if (/\bNCS\b/.test(text)) return 'NCS'
+  if (/\bRAL\b|THERMOLAQUAGE|LAQUAGE/.test(text)) return 'RAL'
+  return null
+}
+
+function thermolaquageInfo(row = {}) {
+  const equipments = Array.isArray(row.equip_extra) ? row.equip_extra : []
+  const equipment = equipments.find(item => /THERMOLAQUAGE|\bRAL\b|\bNCS\b|LAQUAGE/i.test(equipmentText(item)))
+  const type = row.thermolaquage_type || thermolaquageTypeFromText(equipment) || thermolaquageTypeFromText(row._raw?.[16]) || (row.thermolaquage ? 'RAL' : null)
+  return {
+    type,
+    label: equipment?.label || (type ? `Thermolaquage ${type}` : ''),
+    ref: equipment?.ref || extractOptionRef(equipment),
+    prix: equipment?.prix ?? equipment?.price ?? null,
+    note: equipment?.note || '',
+  }
+}
+
+function setThermolaquageInRawValue(current, nextType) {
+  const cleaned = String(current || '')
+    .replace(/\b(?:thermolaquage|laquage)\s*(?:RAL|NCS)?\b/giu, '')
+    .replace(/\b(?:RAL|NCS)\b/giu, '')
+    .replace(/\s*,\s*,+/g, ',')
+    .replace(/^\s*,\s*|\s*,\s*$/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+  return nextType ? (cleaned ? `${cleaned}, ${nextType}` : nextType) : (cleaned || null)
+}
+
 function findExtraEquipment(row, pattern) {
   const extra = (row?.equip_extra || []).find(e => typeof e === 'object' && pattern.test(equipmentText(e)))
   if (extra) return extra
@@ -122,8 +155,9 @@ function findExtraEquipment(row, pattern) {
 
 function nonCremoneExtraEquipments(row) {
   const cremoneRe = /cr[ée]mone|semi.?fixe|vam/i
+  const thermolaquageRe = /thermolaquage|\bRAL\b|\bNCS\b|laquage/i
   const optionEquipmentRe = /judas|oeilleton|œilleton|plinthe|seuil|ventouse|contact|g[âa]che|b[ée]quille|poign[ée]e|garniture|serrure|ferme.?porte|anti.?panique|barre|paumelle|pivot|but[ée]e/i
-  const extras = (row?.equip_extra || []).filter(e => typeof e === 'object' && !cremoneRe.test(equipmentText(e)))
+  const extras = (row?.equip_extra || []).filter(e => typeof e === 'object' && !cremoneRe.test(equipmentText(e)) && !thermolaquageRe.test(equipmentText(e)))
   const optionExtras = (row?.options || [])
     .filter(o => optionEquipmentRe.test(equipmentText(o)) && !cremoneRe.test(equipmentText(o)))
     .filter(o => !/acoustique|\b(30|35|40|45)\s*dB\b|remplissage|vitrage|ferme.?porte|garniture|serrure|msl|lss|kel|d[ée]ny/i.test(equipmentText(o)))
@@ -185,6 +219,54 @@ function isBlockingUnpricedRow(row) {
   return /hors catalogue|nous consulter|impossible|pas de prix de base|non chiffrable/i.test(text)
 }
 
+function numberOrNull(value) {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+function isChassisRow(row = {}) {
+  const text = [row.type, row.designation, row.gamme, row.vantail, row.ref_base, ...(Array.isArray(row._raw) ? row._raw : [])]
+    .filter(Boolean)
+    .join(' ')
+    .toUpperCase()
+  return /\bCH\b|CHASSIS|CHÂSSIS|CHASSIS FIXE|CHÂSSIS FIXE|CHASSIS VITR[ÉE]|CHÂSSIS VITR[ÉE]/u.test(text)
+}
+
+function isTwoLeafRow(row = {}) {
+  const text = [row.type, row.designation, row.vantail, ...(Array.isArray(row._raw) ? row._raw : [])]
+    .filter(Boolean)
+    .join(' ')
+    .toUpperCase()
+  return /\b2\s*V\b|\b2VSFX\b|2\s*VANTAUX|DEUX\s+VANTAUX/u.test(text)
+}
+
+export function computePassageDimensions(row = {}) {
+  const hautHt = numberOrNull(row.haut_mm ?? row.hauteur_mm)
+  const largHt = numberOrNull(row.larg_mm ?? row.largeur_mm)
+  const chassis = isChassisRow(row)
+  const twoLeaf = isTwoLeafRow(row)
+  const hDelta = chassis ? 140 : 70
+  const lDelta = chassis ? 140 : (twoLeaf ? 270 : 205)
+  return {
+    hauteur_pl_mm: hautHt != null ? hautHt - hDelta : null,
+    largeur_pl_mm: largHt != null ? largHt - lDelta : null,
+    hauteur_reservation_mm: hautHt != null ? hautHt + 10 : null,
+    largeur_reservation_mm: largHt != null ? largHt + 10 : null,
+    _dimensionMode: chassis ? 'cv' : 'pl',
+    _dimensionLabel: chassis ? 'CV' : 'PL',
+  }
+}
+
+function htPatchFromPassageDimension(row, field, value) {
+  const n = numberOrNull(value)
+  if (n == null) return {}
+  const chassis = isChassisRow(row)
+  const twoLeaf = isTwoLeafRow(row)
+  if (field === 'hauteur_pl_mm') return { haut_mm: n + (chassis ? 140 : 70) }
+  if (field === 'largeur_pl_mm') return { larg_mm: n + (chassis ? 140 : (twoLeaf ? 270 : 205)) }
+  return {}
+}
+
 // eslint-disable-next-line react-refresh/only-export-components
 export function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
   if (r?.line_section === 'calculations' || r?.line_section === 'transport') {
@@ -243,14 +325,17 @@ export function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
   const garnExt   = extractRef(r.garnitures?.ext) || extractRef(r.garniture_ext_ref) || extractOptionRef(optGarnExt) || extractRef(r._raw?.[14]) || fallbackGarnitureRef(r, 'ext', garnExtLabel)
   const garnIntPrix = optGarnInt?.prix ?? equipmentPriceByRef(garnInt)
   const garnExtPrix = optGarnExt?.prix ?? equipmentPriceByRef(garnExt)
+  const tlInfo = thermolaquageInfo(r)
   const thermolaquage = r.thermolaquage != null
     ? r.thermolaquage
-    : !!(r._raw?.[16] && String(r._raw[16]).toUpperCase().includes('RAL'))
+    : !!tlInfo.type
   const blastPerf = blastValue(r._raw?.[6]) || blastValue(r.blast) || blastValue(optionsText) || blastValue(r.designation) || blastValue(r.alertes?.join(' '))
   const optAcoustic = (r.options || []).find(o => isAcousticValue(equipmentText(o)))
   const acousticRef = optAcoustic ? (extractRef(optAcoustic.note) || extractRef(optAcoustic.label)) : null
+  const passageDims = computePassageDimensions(r)
   return {
     ...r,
+    ...passageDims,
     _pu: pu,
     _pv: pv,
     _totalHt: totalHt,
@@ -282,6 +367,11 @@ export function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
     _otherExtras: otherExtras,
     _otherExtrasRefs: otherExtras.map(e => e.ref || extractRef(e.note) || extractRef(e.label)).filter(Boolean),
     _otherExtrasPrix: otherExtras.reduce((sum, e) => sum + (Number(e.prix) || 0), 0),
+    _thermolaquageType: tlInfo.type,
+    _thermolaquageRef: tlInfo.ref,
+    _thermolaquagePrix: tlInfo.prix,
+    _thermolaquageLabel: tlInfo.label,
+    _thermolaquageNote: tlInfo.note,
     _garnIntLabel: garnIntLabel,
     _garnExtLabel: garnExtLabel,
     _serrureLabel: serrure,
@@ -294,7 +384,7 @@ export function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
 }
 
 // ─── Composant cellule header ───────────────────────────────────────────────
-function Th({ children, style = {} }) {
+function Th({ children, style = {}, ...props }) {
   return (
     <th style={{
       padding: '6px 8px', fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
@@ -302,7 +392,7 @@ function Th({ children, style = {} }) {
       background: 'var(--color-surface)', borderBottom: '2px solid var(--color-border)',
       position: 'sticky', top: 0, zIndex: 2,
       ...style,
-    }}>
+    }} {...props}>
       {children}
     </th>
   )
@@ -351,6 +441,7 @@ function GammeBadge({ gamme, fullWidth }) {
 
 // Largeur calculée automatiquement après PERF_OPTIONS
 const PERF_CONTROL_WIDTH = {}
+const PERF_LABELS = { rc: 'RC', pb: 'PB', cf: 'CF', blast: 'Blast', belier: 'Bélier', prison: 'Prison', acoustic: 'dB' }
 
 const perfActionButtonStyle = {
   width: 28,
@@ -365,6 +456,38 @@ const perfActionButtonStyle = {
   color: 'var(--color-primary)',
   cursor: 'pointer',
   lineHeight: 1,
+}
+
+function performanceSearchText(row = {}) {
+  return [
+    row.type, row.designation, row.gamme, row.vantail, row.ref_base,
+    row.serrure?.ref, row.serrure?.from, row.ferme_porte?.ref, row.ferme_porte?.from,
+    equipmentText(row.options), equipmentText(row.equip_extra), equipmentText(row.alertes), equipmentText(row.docs),
+    ...(Array.isArray(row._raw) ? row._raw : []),
+  ].filter(Boolean).join(' ')
+}
+
+function inferredPerformanceValue(row = {}, key) {
+  const text = performanceSearchText(row)
+  const upper = text.toUpperCase()
+  if (key === 'rc') return upper.match(/\bCR\s*([3-6])\b/)?.[0]?.replace(/\s+/g, '') || null
+  if (key === 'pb') return upper.match(/\bFB\s*([4-7])\b/)?.[0]?.replace(/\s+/g, '') || null
+  if (key === 'cf') {
+    const match = upper.match(/\bEI\s*[²2]?\s*(30|60|90|120)\b/)
+    return match ? `EI${match[1]}` : null
+  }
+  if (key === 'blast') return blastValue(text) || null
+  if (key === 'belier') return /ANTI.?B[ÉE]LIER|\bB[ÉE]LIER\b/u.test(upper) ? 'Bélier' : null
+  if (key === 'prison') return /\bPRISON\b/u.test(upper) ? 'Prison' : null
+  if (key === 'acoustic') return upper.match(/\b(30|35|40|45)\s*DB\b/)?.[0]?.replace('DB', 'dB').replace(/\s+/g, ' ') || null
+  return null
+}
+
+function performanceValue(row = {}, resolved = {}, key) {
+  const rawIndexByPerf = { rc: 3, pb: 4, cf: 5, blast: 6, belier: 7, prison: 8, acoustic: null }
+  if (key === 'acoustic') return row._overrideAcoustic !== undefined ? row._overrideAcoustic : (resolved._acousticValue || inferredPerformanceValue(row, key))
+  if (key === 'blast') return resolved._blastValue || blastValue(row._raw?.[rawIndexByPerf[key]]) || inferredPerformanceValue(row, key)
+  return row._raw?.[rawIndexByPerf[key]] ?? inferredPerformanceValue(row, key)
 }
 
 const amountHeaderCellStyle = {
@@ -511,6 +634,38 @@ const VERDICT_STYLE = {
   na:        { bg: 'rgba(120,130,140,0.08)', text: 'var(--color-text-3)', label: 'N/A' },
 }
 
+function lineLikeForRuleValidation(row, position = 0) {
+  return {
+    position,
+    designation: row.designation || row.type,
+    localisation: row.localisation,
+    type: row.type,
+    gamme: row.gamme,
+    vantail: row.vantail,
+    haut_mm: row.haut_mm,
+    larg_mm: row.larg_mm,
+    prix_base_ht: row.prix_base_ht,
+    ref_base: row.ref_base,
+    prix_total_min_ht: row.prix_total_min_ht,
+    options: row.options,
+    equip_extra: row.equip_extra,
+    serrure: row.serrure,
+    ferme_porte: row.ferme_porte,
+    alertes: row.alertes,
+  }
+}
+
+function summarizeLineVerdicts(verdicts = []) {
+  return verdicts.reduce((acc, verdict) => {
+    acc[verdict.status] = (acc[verdict.status] || 0) + 1
+    return acc
+  }, { ok: 0, warning: 0, violation: 0, na: 0 })
+}
+
+function blockingVerdicts(row) {
+  return (row?._ruleCheck?.verdicts || []).filter(v => v.status === 'violation' || v.status === 'warning')
+}
+
 function VerifyRulesModal({ row, onClose }) {
   const [loading, setLoading] = useState(true)
   const [result, setResult] = useState(null)
@@ -519,18 +674,7 @@ function VerifyRulesModal({ row, onClose }) {
     const run = async () => {
       setLoading(true); setError('')
       try {
-        const lineLike = {
-          designation: row.designation || row.type,
-          type: row.type,
-          gamme: row.gamme,
-          vantail: row.vantail,
-          haut_mm: row.haut_mm,
-          larg_mm: row.larg_mm,
-          prix_base_ht: row.prix_base_ht,
-          prix_total_min_ht: row.prix_total_min_ht,
-          options: row.options,
-          alertes: row.alertes,
-        }
+        const lineLike = lineLikeForRuleValidation(row, 0)
         const data = await api.post('/devis/validate-lines', { lines: [lineLike] })
         setResult(data)
       } catch (err) {
@@ -598,7 +742,7 @@ function VerifyRulesModal({ row, onClose }) {
                   <div key={vi} style={{ background: s.bg, borderRadius: 7, padding: '9px 12px', borderLeft: `3px solid ${s.text}` }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
                       <span style={{ fontSize: 10, fontWeight: 700, color: s.text, background: `${s.text}18`, padding: '1px 7px', borderRadius: 99 }}>{s.label}</span>
-                      <span style={{ fontSize: 12, fontWeight: 600 }}>{v.rule_title}</span>
+                      <span style={{ fontSize: 12, fontWeight: 600 }}>{v.rule_code ? `${v.rule_code} — ` : ''}{v.rule_title}</span>
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--color-text-2)' }}>{v.reason}</div>
                     {v.fix && <div style={{ fontSize: 11, color: s.text, marginTop: 4 }}>→ {v.fix}</div>}
@@ -614,15 +758,18 @@ function VerifyRulesModal({ row, onClose }) {
 }
 
 // ─── Composant ligne principale ──────────────────────────────────────────────
-function MainRow({ row, index, displayIndex = index, expanded, onToggle, change, tva, multGlobal, editMode, onUpdate, onRecompute, onDelete, onSaveAsRule, onVerifyRules, onSuggestDesignation, suggestingDesignation = false, hiddenCols = new Set() }) {
+function MainRow({ row, index, displayIndex = index, expanded, onToggle, change, tva, multGlobal, editMode, onUpdate, onRecompute, onDelete, onSaveAsRule, onVerifyRules, onSuggestDesignation, suggestingDesignation = false, hiddenCols = new Set(), hiddenDimensionCols = new Set() }) {
   const r = resolveRow(row, change, tva, multGlobal)
   const qty = Number.isFinite(r.qty) ? r.qty : 1
   const isAmountSection = sectionOf(row) !== 'products'
+  const dimensionHiddenStyle = (key) => hiddenDimensionCols.has(key) ? { display: 'none' } : {}
+  const ruleSummary = row._ruleCheck?.summary || null
+  const ruleIssues = blockingVerdicts(row)
   const [showEmptyPerfs, setShowEmptyPerfs] = useState(false)
   const perfKeys = ['rc', 'pb', 'cf', 'blast', 'belier', 'prison', 'acoustic']
   const rawIndexByPerf = { rc: 3, pb: 4, cf: 5, blast: 6, belier: 7, prison: 8, acoustic: null }
-  const visiblePerfKeys = isAmountSection ? [] : (editMode
-    ? perfKeys.filter(key => row._manualBlank || showEmptyPerfs || (key !== 'acoustic' && row._raw?.[rawIndexByPerf[key]] != null) || (key === 'acoustic' && r._acousticValue) || (key === 'blast' && r._blastValue))
+  const visiblePerfKeys = isAmountSection ? [] : (editMode && !showEmptyPerfs && !row._manualBlank
+    ? perfKeys.filter(key => performanceValue(row, r, key) != null)
     : perfKeys)
   const hiddenPerfCount = perfKeys.length - visiblePerfKeys.length
   const canCollapseEmptyPerfs = editMode && !isAmountSection && showEmptyPerfs && !row._manualBlank && hiddenPerfCount === 0
@@ -641,6 +788,10 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
           {expanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
           {rowLetterLabel(displayIndex)}
           {r._recomputing && <RefreshCw size={9} style={{ animation: 'spin 1s linear infinite' }} />}
+          {row._ruleChecking && <ShieldCheck size={9} style={{ animation: 'spin 1s linear infinite', color: 'var(--color-primary)' }} />}
+          {!row._ruleChecking && ruleSummary && (
+            <ShieldCheck size={9} style={{ color: ruleSummary.violation ? '#dc2626' : ruleSummary.warning ? '#b45309' : '#16a34a' }} />
+          )}
         </span>
       </Td>
       {/* Désignation */}
@@ -695,22 +846,43 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
               réf. {r.ref_base}
             </span>
           )}
+          {ruleSummary && (ruleSummary.violation > 0 || ruleSummary.warning > 0) && (
+            <span style={{ fontSize: 9, fontWeight: 800, color: ruleSummary.violation ? '#dc2626' : '#b45309', paddingLeft: 4 }}>
+              {ruleSummary.violation > 0 ? `${ruleSummary.violation} violation${ruleSummary.violation > 1 ? 's' : ''}` : `${ruleSummary.warning} attention${ruleSummary.warning > 1 ? 's' : ''}`}
+            </span>
+          )}
+          {ruleSummary && ruleIssues.length === 0 && (
+            <span style={{ fontSize: 9, fontWeight: 800, color: '#16a34a', paddingLeft: 4 }}>règles OK</span>
+          )}
         </div>
       </Td>
+      {/* Localisation */}
+      <Td style={{ minWidth: 90, width: 110, padding: 0 }}>
+        {editMode && !isAmountSection ? (
+          <EditableText
+            value={row.localisation || ''}
+            onCommit={(value) => onUpdate?.({ localisation: value })}
+            placeholder="localisation…"
+          />
+        ) : (
+          <span style={{ display: 'inline-block', padding: '2px 6px', fontSize: 10, fontWeight: 700, color: row.localisation ? 'var(--color-text)' : 'var(--color-text-3)' }}>
+            {row.localisation || '—'}
+          </span>
+        )}
+      </Td>
       {/* Performances */}
-      <Td style={{ minWidth: 150, fontSize: 10, color: 'var(--color-text-2)' }}>
+      <Td style={{ minWidth: 430, width: 430, fontSize: 10, color: 'var(--color-text-2)' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'stretch' }}>
           {editMode ? (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center', minHeight: 26 }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center', minHeight: 30 }}>
               {visiblePerfKeys.map(key => {
                 const rawIdx = rawIndexByPerf[key]
-                const cur = key === 'acoustic'
-                  ? (row._overrideAcoustic !== undefined ? row._overrideAcoustic : r._acousticValue)
-                  : (key === 'blast' ? (r._blastValue || blastValue(row._raw?.[rawIdx]) || null) : (row._raw?.[rawIdx] ?? null))
+                const cur = performanceValue(row, r, key)
                 const isSet = cur != null
-                const controlWidth = PERF_CONTROL_WIDTH[key] || 58
+                const controlWidth = Math.max(PERF_CONTROL_WIDTH[key] || 58, 64)
                 return (
-                  <div key={key} onClick={e => e.stopPropagation()} style={{ position: 'relative', flex: `0 0 ${controlWidth}px` }}>
+                  <div key={key} onClick={e => e.stopPropagation()} style={{ position: 'relative', flex: `0 0 ${controlWidth}px`, display: 'flex', flexDirection: 'column', gap: 1 }}>
+                    <span style={{ fontSize: 8, lineHeight: 1, color: 'var(--color-text-3)', fontWeight: 900, textTransform: 'uppercase', textAlign: 'center' }}>{PERF_LABELS[key]}</span>
                     <select
                       value={cur ?? ''}
                       onChange={e => {
@@ -731,12 +903,12 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
                         width: controlWidth,
                         height: 26,
                         fontSize: 10,
-                        fontWeight: 700,
+                        fontWeight: 900,
                         padding: '0 20px 0 7px',
                         cursor: 'pointer',
-                        background: isSet ? 'color-mix(in srgb, #fbbf24 18%, var(--color-surface))' : 'var(--color-surface)',
-                        color: 'var(--color-text)',
-                        border: '1px solid var(--color-border)',
+                        background: isSet ? '#fbbf24' : 'var(--color-surface)',
+                        color: isSet ? '#111827' : 'var(--color-text-2)',
+                        border: isSet ? '1px solid #d97706' : '1px solid var(--color-border)',
                         borderRadius: 6,
                         outline: 'none',
                       }}
@@ -770,13 +942,14 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
               )}
             </div>
           ) : (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, fontSize: 9 }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, fontSize: 9, minHeight: 20 }}>
               {(['rc','pb','cf','blast','belier','prison','acoustic']).map(key => {
-                const rawIdx = { rc: 3, pb: 4, cf: 5, blast: 6, belier: 7, prison: 8, acoustic: null }[key]
-                const cur = key === 'acoustic' ? (row._overrideAcoustic !== undefined ? row._overrideAcoustic : r._acousticValue) : (key === 'blast' ? (r._blastValue || blastValue(row._raw?.[rawIdx])) : row._raw?.[rawIdx])
+                const cur = performanceValue(row, r, key)
                 if (!cur) return null
                 return (
-                  <span key={key} style={{ padding: '1px 4px', borderRadius: 3, background: 'color-mix(in srgb, #fbbf24 14%, transparent)', fontWeight: 600 }}>{cur}</span>
+                  <span key={key} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 5px', borderRadius: 4, background: '#fbbf24', color: '#111827', fontWeight: 900 }}>
+                    <span style={{ fontSize: 8, opacity: 0.72 }}>{PERF_LABELS[key]}</span>{cur}
+                  </span>
                 )
               })}
             </div>
@@ -784,40 +957,54 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
         </div>
       </Td>
       {/* H */}
-      <Td palette={editMode ? 'yellow' : 'normal'} style={{ textAlign: 'right', width: 55, padding: 0 }}>
+      <Td palette={editMode ? 'yellow' : 'normal'} style={{ textAlign: 'right', width: 55, padding: 0, ...dimensionHiddenStyle('haut_ht') }}>
         {editMode
           ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableNumber value={r.haut_mm} onCommit={v => onRecompute?.({ haut_mm: v })} step={10} min={100} max={9999} width="100%" textAlign="right" />)
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{r.haut_mm ?? '—'}</span>}
       </Td>
       {/* L */}
-      <Td palette={editMode ? 'yellow' : 'normal'} style={{ textAlign: 'right', width: 55, padding: 0 }}>
+      <Td palette={editMode ? 'yellow' : 'normal'} style={{ textAlign: 'right', width: 55, padding: 0, ...dimensionHiddenStyle('larg_ht') }}>
         {editMode
           ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableNumber value={r.larg_mm} onCommit={v => onRecompute?.({ larg_mm: v })} step={10} min={100} max={9999} width="100%" textAlign="right" />)
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{r.larg_mm ?? '—'}</span>}
       </Td>
+      {/* H PL / CV */}
+      <Td palette={editMode ? 'yellow' : 'normal'} style={{ textAlign: 'right', width: 58, padding: 0, ...dimensionHiddenStyle('haut_pl') }}>
+        {editMode
+          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableNumber value={r.hauteur_pl_mm} onCommit={v => onRecompute?.(htPatchFromPassageDimension(r, 'hauteur_pl_mm', v))} step={10} min={1} max={9999} width="100%" textAlign="right" />)
+          : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{r.hauteur_pl_mm ?? '—'}</span>}
+      </Td>
+      {/* L PL / CV */}
+      <Td palette={editMode ? 'yellow' : 'normal'} style={{ textAlign: 'right', width: 58, padding: 0, ...dimensionHiddenStyle('larg_pl') }}>
+        {editMode
+          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableNumber value={r.largeur_pl_mm} onCommit={v => onRecompute?.(htPatchFromPassageDimension(r, 'largeur_pl_mm', v))} step={10} min={1} max={9999} width="100%" textAlign="right" />)
+          : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{r.largeur_pl_mm ?? '—'}</span>}
+      </Td>
       {/* TL */}
-      <Td style={{ width: 44, textAlign: 'center', padding: 0 }}>
+      <Td style={{ width: 74, textAlign: 'center', padding: 0 }}>
         {isAmountSection ? <span style={{ fontSize: 9, color: 'var(--color-text-3)' }}>—</span> : editMode ? (
-          <button
-            onClick={e => {
-              e.stopPropagation()
-              const raw = Array.isArray(row._raw) ? [...row._raw] : new Array(17).fill(null)
-              while (raw.length < 17) raw.push(null)
-              const cur = String(raw[16] || '')
-              raw[16] = cur.includes('RAL') ? cur.replace(/\bRAL\b[,\s]*/gi, '').trim() || null : (cur ? cur + ', RAL' : 'RAL')
-              onRecompute?.({ _raw_override: raw })
-            }}
-            style={{
-              fontSize: 9, fontWeight: 700, padding: '1px 4px', borderRadius: 3, cursor: 'pointer', border: 'none',
-              background: r.thermolaquage ? '#fbbf24' : 'var(--color-surface)',
-              color: r.thermolaquage ? '#000' : 'var(--color-text-3)',
-            }}
-          >
-            {r.thermolaquage ? 'RAL' : '—'}
-          </button>
+          <div onClick={e => e.stopPropagation()} style={{ display: 'flex', flexDirection: 'column', gap: 1, alignItems: 'center', padding: '2px 3px' }}>
+            <select
+              value={r._thermolaquageType || ''}
+              onChange={e => {
+                const raw = Array.isArray(row._raw) ? [...row._raw] : new Array(17).fill(null)
+                while (raw.length < 17) raw.push(null)
+                raw[16] = setThermolaquageInRawValue(raw[16], e.target.value || null)
+                onRecompute?.({ _raw_override: raw })
+              }}
+              title="Thermolaquage"
+              style={{ width: 62, height: 24, fontSize: 10, fontWeight: 800, borderRadius: 5, border: '1px solid var(--color-border)', background: r.thermolaquage ? '#fbbf24' : 'var(--color-surface)', color: r.thermolaquage ? '#000' : 'var(--color-text-3)', outline: 'none' }}
+            >
+              <option value="">—</option>
+              <option value="RAL">RAL</option>
+              <option value="NCS">NCS</option>
+            </select>
+            {r._thermolaquageRef && <span style={{ fontSize: 8, color: 'var(--color-text-3)', fontWeight: 700 }}>réf.{r._thermolaquageRef}</span>}
+          </div>
         ) : (
-          <span style={{ fontSize: 9, fontWeight: 700, color: r.thermolaquage ? '#fbbf24' : 'var(--color-text-3)' }}>
-            {r.thermolaquage ? 'RAL' : '—'}
+          <span title={r._thermolaquageLabel || ''} style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 1, fontSize: 9, fontWeight: 800, color: r.thermolaquage ? '#b45309' : 'var(--color-text-3)' }}>
+            <span>{r._thermolaquageType || '—'}</span>
+            {r._thermolaquageRef && <span style={{ fontSize: 8, color: 'var(--color-text-3)' }}>réf.{r._thermolaquageRef}</span>}
           </span>
         )}
       </Td>
@@ -842,7 +1029,7 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
       {/* Vitrage */}
       <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 130, ...(hiddenCols.has('vitrage') ? { display: 'none' } : {}) }}>
         {editMode
-          ? (isAmountSection ? <EditableText value={row.notes || row.alertes?.[0] || ''} onCommit={v => onUpdate?.({ notes: v, alertes: v ? [v] : [] })} placeholder="note…" /> : <EditableText value={stripAcousticInfo(row._raw?.[16])} onCommit={v => onRecompute?.({ [`_raw_16`]: v })} placeholder="" />)
+          ? (isAmountSection ? <EditableText value={row.notes || row.alertes?.[0] || ''} onCommit={v => onUpdate?.({ notes: v, alertes: v ? [v] : [] })} placeholder="note…" /> : <EditableText value={stripAcousticInfo(row._raw?.[16]) || mainEquipLabel(r._vitrageLabel) || ''} onCommit={v => onRecompute?.({ [`_raw_16`]: v })} placeholder="" />)
           : (r._vitrageLabel ? (
             <Popover content={r._vitrageNote || r._vitrageLabel}>
               <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', fontWeight: 600 }}>
@@ -964,14 +1151,15 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
   )
 }
 
-function AmountSectionColumns({ section }) {
+function AmountSectionColumns({ section, hiddenDimensionCount = 0 }) {
   const isTransport = section === 'transport'
+  const detailSpan = Math.max(1, 5 - hiddenDimensionCount)
   return (
     <tr>
       <td style={{ ...amountHeaderCellStyle, width: 36 }}>#</td>
-      <td colSpan={4} style={amountHeaderCellStyle}>{isTransport ? 'Poste transport' : 'Libellé calcul'}</td>
-      <td colSpan={4} style={amountHeaderCellStyle}>{isTransport ? 'Destination / note' : 'Détail / condition'}</td>
-      <td colSpan={2} style={amountHeaderCellStyle}>{isTransport ? 'Règle' : 'Référence'}</td>
+      <td colSpan={6} style={amountHeaderCellStyle}>{isTransport ? 'Poste transport' : 'Libellé calcul'}</td>
+      <td colSpan={detailSpan} style={amountHeaderCellStyle}>{isTransport ? 'Destination / note' : 'Détail / condition'}</td>
+      <td colSpan={3} style={amountHeaderCellStyle}>{isTransport ? 'Règle' : 'Référence'}</td>
       <td colSpan={2} style={amountHeaderCellStyle}>{isTransport ? 'Tranches' : 'Source'}</td>
       <td style={{ ...amountHeaderCellStyle, ...CELL.gray, textAlign: 'right' }}>PU HT</td>
       <td style={{ ...amountHeaderCellStyle, ...CELL.yellow, textAlign: 'center' }}>Remise</td>
@@ -982,7 +1170,7 @@ function AmountSectionColumns({ section }) {
   )
 }
 
-function AmountRow({ row, index, displayIndex = index, change, tva, multGlobal, editMode, defaultTransportAddress = '', onUpdate, onTransportAddressCommit, onDelete }) {
+function AmountRow({ row, index, displayIndex = index, change, tva, multGlobal, editMode, defaultTransportAddress = '', onUpdate, onTransportAddressCommit, onDelete, hiddenDimensionCount = 0 }) {
   const r = resolveRow(row, change, tva, multGlobal)
   const section = sectionOf(row)
   const isTransport = section === 'transport'
@@ -992,6 +1180,7 @@ function AmountRow({ row, index, displayIndex = index, change, tva, multGlobal, 
   const source = isTransport
     ? (row.tranche_count ? `${row.tranche_count} tranche${row.tranche_count > 1 ? 's' : ''}` : 'recalcul auto')
     : (row._generatedFrom || '—')
+  const detailSpan = Math.max(1, 5 - hiddenDimensionCount)
 
   return (
     <tr style={{ background: 'color-mix(in srgb, var(--color-primary) 2%, transparent)' }}>
@@ -1001,7 +1190,7 @@ function AmountRow({ row, index, displayIndex = index, change, tva, multGlobal, 
           {rowLetterLabel(displayIndex)}
         </span>
       </Td>
-      <Td colSpan={4} style={{ minWidth: 220, fontWeight: 700, padding: 0 }}>
+      <Td colSpan={6} style={{ minWidth: 220, fontWeight: 700, padding: 0 }}>
         {editMode ? (
           <EditableText
             value={r.designation || r.type || ''}
@@ -1012,7 +1201,7 @@ function AmountRow({ row, index, displayIndex = index, change, tva, multGlobal, 
           <span style={{ display: 'inline-block', padding: '2px 8px' }}>{r.designation || r.type || '—'}</span>
         )}
       </Td>
-      <Td colSpan={4} style={{ minWidth: 260, padding: 0, color: 'var(--color-text-2)' }}>
+      <Td colSpan={detailSpan} style={{ minWidth: 260, padding: 0, color: 'var(--color-text-2)' }}>
         {editMode ? (
           <EditableText
             value={detail}
@@ -1025,7 +1214,7 @@ function AmountRow({ row, index, displayIndex = index, change, tva, multGlobal, 
           <span style={{ display: 'inline-block', padding: '2px 8px' }}>{detail || '—'}</span>
         )}
       </Td>
-      <Td colSpan={2} style={{ minWidth: 130, padding: 0, color: 'var(--color-text-2)' }}>
+      <Td colSpan={3} style={{ minWidth: 130, padding: 0, color: 'var(--color-text-2)' }}>
         {editMode && !isTransport ? (
           <EditableText
             value={row.ref_base || ''}
@@ -1072,7 +1261,7 @@ function AmountRow({ row, index, displayIndex = index, change, tva, multGlobal, 
 }
 
 // ─── Sous-row références ─────────────────────────────────────────────────────
-function SubRowRefs({ row, editMode, onRefCommit, hiddenCols = new Set() }) {
+function SubRowRefs({ row, editMode, onRefCommit, hiddenCols = new Set(), visibleDimensionCount = 4 }) {
   const r = resolveRow(row)
   const cells = [
     r._serrureRef, r._garnIntRef, r._garnExtRef,
@@ -1083,11 +1272,13 @@ function SubRowRefs({ row, editMode, onRefCommit, hiddenCols = new Set() }) {
   const colKeys = [null, null, null, 'vitrage', 'fp', 'cremone', 'autres', 'acoustic']
   return (
     <tr style={{ background: SUBROW_BG }}>
-      <td colSpan={3} style={{ padding: '3px 8px 3px 40px', fontSize: 10, fontWeight: 700, color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }}>
+      <td colSpan={4} style={{ padding: '3px 8px 3px 40px', fontSize: 10, fontWeight: 700, color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }}>
         Références
       </td>
-      <td colSpan={2} style={{ padding: '3px 8px', fontSize: 10, color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }}></td>
-      <td style={{ padding: '3px 8px', fontSize: 10, color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }}></td>
+      {visibleDimensionCount > 0 && <td colSpan={visibleDimensionCount} style={{ padding: '3px 8px', fontSize: 10, color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }}></td>}
+      <td style={{ padding: '3px 8px', fontSize: 10, color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)', fontWeight: 700, textAlign: 'center' }}>
+        {r._thermolaquageRef || '—'}
+      </td>
       {cells.map((ref, i) => (
         <td key={i} style={{ padding: 0, fontSize: 11, fontWeight: 700, ...CELL.yellow, borderBottom: '1px solid var(--color-border)', ...(colKeys[i] && hiddenCols.has(colKeys[i]) ? { display: 'none' } : {}) }}>
           {editMode
@@ -1106,7 +1297,7 @@ function SubRowRefs({ row, editMode, onRefCommit, hiddenCols = new Set() }) {
 }
 
 // ─── Sous-row prix ────────────────────────────────────────────────────────────
-function SubRowPrices({ row, hiddenCols = new Set() }) {
+function SubRowPrices({ row, hiddenCols = new Set(), visibleDimensionCount = 4 }) {
   const r = resolveRow(row)
   const prices = [
     r._optSerrure?.prix, r._garnIntPrix, r._garnExtPrix,
@@ -1117,11 +1308,13 @@ function SubRowPrices({ row, hiddenCols = new Set() }) {
   const visiblePrices = r._unpriced ? prices.map(() => undefined) : prices
   return (
     <tr style={{ background: SUBROW_BG }}>
-      <td colSpan={3} style={{ padding: '3px 8px 3px 40px', fontSize: 10, fontWeight: 700, color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }}>
+      <td colSpan={4} style={{ padding: '3px 8px 3px 40px', fontSize: 10, fontWeight: 700, color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }}>
         Prix unitaires
       </td>
-      <td colSpan={2} style={{ padding: '3px 8px', borderBottom: '1px solid var(--color-border)', ...CELL.gray }}></td>
-      <td style={{ borderBottom: '1px solid var(--color-border)', ...CELL.gray }}></td>
+      {visibleDimensionCount > 0 && <td colSpan={visibleDimensionCount} style={{ padding: '3px 8px', borderBottom: '1px solid var(--color-border)', ...CELL.gray }}></td>}
+      <td style={{ padding: '3px 8px', fontSize: 11, textAlign: 'right', borderBottom: '1px solid var(--color-border)', ...CELL.gray }}>
+        {r._unpriced ? '—' : (r._thermolaquagePrix != null ? r._thermolaquagePrix.toLocaleString('fr-FR') + ' €' : <span style={{ color: 'var(--color-text-3)' }}>—</span>)}
+      </td>
       {visiblePrices.map((p, i) => (
         <td key={i} style={{ padding: '3px 8px', fontSize: 11, ...CELL.gray, borderBottom: '1px solid var(--color-border)', textAlign: 'right', ...(colKeys[i] && hiddenCols.has(colKeys[i]) ? { display: 'none' } : {}) }}>
           {p === undefined ? '—' : (p != null ? p.toLocaleString('fr-FR') + ' €' : <span style={{ color: 'var(--color-text-3)' }}>de série</span>)}
@@ -1154,6 +1347,8 @@ Object.entries(PERF_OPTIONS).forEach(([k, opts]) => {
 const TYPE_OPTIONS = ['BP 1V', 'BP 2V', 'Chassis', 'Guichet'].map(value => ({ value, label: value }))
 
 function createBlankGridRow() {
+  const raw = new Array(17).fill(null)
+  raw[16] = 'RAL'
   return {
     type: '',
     line_section: 'products',
@@ -1170,7 +1365,7 @@ function createBlankGridRow() {
     alertes: [],
     docs: [],
     _manualBlank: true,
-    _raw: new Array(17).fill(null),
+    _raw: raw,
   }
 }
 
@@ -1977,6 +2172,7 @@ export function DevisGridWorkspace({
   startWithBlank = false,
   onRowsChange = null,
   onRowsCommit = null,
+  onRowsBulkCommit = null,
   onRowsDelete = null,
   title = 'Devis Grid',
   subtitle = null,
@@ -1996,6 +2192,8 @@ export function DevisGridWorkspace({
   })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [validatingImport, setValidatingImport] = useState(false)
+  const [importValidationSummary, setImportValidationSummary] = useState(null)
   const [suggestingRowId, setSuggestingRowId] = useState(null)
   const [toast, setToast] = useState(null) // { msg, kind: 'success'|'error', id }
   const toastTimerRef = useRef(null)
@@ -2027,6 +2225,12 @@ export function DevisGridWorkspace({
     try { return localStorage.getItem('devisGridSidebarCollapsed') === '1' } catch { return false }
   })
   const [showAddModal, setShowAddModal] = useState(false)
+  const [hiddenDimensionCols, setHiddenDimensionCols] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('devisGridHiddenDimensionCols') || '[]')
+      return new Set(Array.isArray(saved) ? saved.filter(key => DIMENSION_COLUMNS.includes(key)) : [])
+    } catch { return new Set() }
+  })
   useEffect(() => {
     if (Array.isArray(initialRows)) setRows(initialRows.length > 0 ? applyDefaultTransportAddress(normalizeCalculationRows(splitCalculationOptions(initialRows)), defaultTransportAddress) : (startWithBlank ? [createBlankGridRow()] : []))
   }, [defaultTransportAddress, initialRows, startWithBlank])
@@ -2036,6 +2240,18 @@ export function DevisGridWorkspace({
   useEffect(() => {
     try { localStorage.setItem('devisGridSidebarCollapsed', sidebarCollapsed ? '1' : '0') } catch { /* noop */ }
   }, [sidebarCollapsed])
+  useEffect(() => {
+    try { localStorage.setItem('devisGridHiddenDimensionCols', JSON.stringify([...hiddenDimensionCols])) } catch { /* noop */ }
+  }, [hiddenDimensionCols])
+
+  const toggleDimensionColumn = useCallback((key) => {
+    setHiddenDimensionCols(prev => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }, [])
 
   // Persistance auto des lignes (localStorage) — debounce léger
   useEffect(() => {
@@ -2238,6 +2454,7 @@ export function DevisGridWorkspace({
     if (!file) return
     setLoading(true)
     setError(null)
+    setImportValidationSummary(null)
     try {
       const fd = new FormData()
       fd.append('file', file)
@@ -2250,8 +2467,52 @@ export function DevisGridWorkspace({
       const sectionedRows = applyDefaultTransportAddress(normalizeCalculationRows(splitCalculationOptions(Array.isArray(data) ? data : [])), defaultTransportAddress)
       setRows(sectionedRows)
       onRowsChange?.(sectionedRows)
+      await onRowsBulkCommit?.(sectionedRows)
       setFileName(file.name)
       setExpandedRows(new Set())
+      const productEntries = sectionedRows
+        .map((row, index) => ({ row, index }))
+        .filter(({ row }) => sectionOf(row) === 'products')
+      if (productEntries.length) {
+        setValidatingImport(true)
+        setRows(prev => prev.map((row, index) => productEntries.some(entry => entry.index === index) ? { ...row, _ruleChecking: true, _ruleCheck: null } : row))
+        try {
+          const report = await api.post('/devis/validate-lines', {
+            lines: productEntries.map(({ row, index }) => lineLikeForRuleValidation(row, index)),
+          }, { timeout: 180000 })
+          const byPosition = new Map((report.lines || []).map(line => [Number(line.position), line]))
+          const checkedRows = sectionedRows.map((row, index) => {
+            const result = byPosition.get(index)
+            if (!result || sectionOf(row) !== 'products') return row
+            const verdicts = result.verdicts || []
+            return {
+              ...row,
+              _ruleChecking: false,
+              _ruleCheck: {
+                checked_at: report.generated_at,
+                rules_count: report.rules_count || 0,
+                summary: summarizeLineVerdicts(verdicts),
+                verdicts,
+              },
+            }
+          })
+          setRows(checkedRows)
+          onRowsChange?.(checkedRows)
+          const issueRows = checkedRows.filter(row => blockingVerdicts(row).length > 0)
+          setImportValidationSummary({ ...(report.summary || {}), issueRows: issueRows.length, rules_count: report.rules_count || 0 })
+          if (issueRows.length) {
+            setExpandedRows(new Set(checkedRows.map((row, index) => blockingVerdicts(row).length > 0 ? index : null).filter(index => index != null)))
+            showToast(`${issueRows.length} ligne(s) à vérifier après contrôle règles`, 'error')
+          } else {
+            showToast('Import contrôlé : règles et expériences OK', 'success')
+          }
+        } catch (validationError) {
+          setRows(prev => prev.map(row => ({ ...row, _ruleChecking: false })))
+          showToast(validationError?.error || validationError?.message || 'Contrôle règles impossible', 'error')
+        } finally {
+          setValidatingImport(false)
+        }
+      }
     } catch (e) {
       setError(e?.error || e?.details || e?.message || 'Erreur import')
     } finally {
@@ -2259,19 +2520,33 @@ export function DevisGridWorkspace({
     }
   }
 
-  const clearImportedGrid = useCallback(() => {
+  const clearImportedGrid = useCallback(async () => {
+    const currentCount = rowsRef.current.length
+    if (!currentCount && !fileName) return
+    if (!window.confirm(`Vider définitivement le tableau (${currentCount} ligne${currentCount > 1 ? 's' : ''}) ?`)) return
     const nextRows = []
-    setRows(nextRows)
-    setFileName(null)
+    setLoading(true)
     setError(null)
-    setExpandedRows(new Set())
     try {
-      localStorage.removeItem('devisGridRows')
-      localStorage.removeItem('devisGridFileName')
-    } catch { /* noop */ }
-    onRowsChange?.(nextRows)
-    showToast('Grille vide — vous pouvez réimporter un xlsx', 'success')
-  }, [onRowsChange, showToast])
+      await onRowsBulkCommit?.(nextRows)
+      setRows(nextRows)
+      setFileName(null)
+      setImportValidationSummary(null)
+      setExpandedRows(new Set())
+      try {
+        localStorage.removeItem('devisGridRows')
+        localStorage.removeItem('devisGridFileName')
+      } catch { /* noop */ }
+      onRowsChange?.(nextRows)
+      showToast('Tableau vidé — vous pouvez réimporter un xlsx', 'success')
+    } catch (e) {
+      const msg = e?.error || e?.details || e?.message || 'Vidage du tableau impossible'
+      setError(msg)
+      showToast(msg, 'error')
+    } finally {
+      setLoading(false)
+    }
+  }, [fileName, onRowsBulkCommit, onRowsChange, showToast])
 
   const onDrop = (e) => {
     e.preventDefault()
@@ -2355,6 +2630,16 @@ export function DevisGridWorkspace({
   const hiddenCols = hideEmptyCols
     ? new Set([...(!hasVitrage ? ['vitrage'] : []), ...(!hasFP ? ['fp'] : []), ...(!hasCremone ? ['cremone'] : []), ...(!hasAutres ? ['autres'] : []), ...(!hasAcoustic ? ['acoustic'] : [])])
     : new Set()
+  const visibleDimensionCount = DIMENSION_COLUMNS.length - hiddenDimensionCols.size
+  const dimensionHeader = (key, label, title) => (
+    <Th
+      style={{ width: key.includes('pl') ? 58 : 55, cursor: 'pointer', userSelect: 'none', background: 'color-mix(in srgb, var(--color-primary) 5%, transparent)' }}
+      title={title || `Cliquer pour masquer ${label}`}
+      onClick={() => toggleDimensionColumn(key)}
+    >
+      {label}
+    </Th>
+  )
   let displayIndex = 0
   const sectionEntries = SECTION_ORDER.flatMap(section => {
     const sectionRows = rows.map((row, index) => ({ row, index })).filter(item => sectionOf(item.row) === section)
@@ -2435,7 +2720,7 @@ export function DevisGridWorkspace({
           </div>
         )}
 
-        {!embedded && (rows.length > 0 || fileName) && (
+        {(rows.length > 0 || fileName) && (
           <button
             type="button"
             onClick={clearImportedGrid}
@@ -2537,6 +2822,16 @@ export function DevisGridWorkspace({
             <span style={{ fontSize: 13, fontWeight: 700 }}>
               {subtitle || (rows.length > 0 ? `${rows.length} lignes analysées` : 'Importer un xlsx pour démarrer')}
             </span>
+            {validatingImport && (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, color: 'var(--color-primary)', fontWeight: 800 }}>
+                <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> Contrôle règles ligne par ligne
+              </span>
+            )}
+            {!validatingImport && importValidationSummary && (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, color: importValidationSummary.issueRows ? '#b45309' : '#16a34a', fontWeight: 800 }}>
+                <ShieldCheck size={12} /> {importValidationSummary.issueRows ? `${importValidationSummary.issueRows} ligne(s) à vérifier` : 'Règles OK'}
+              </span>
+            )}
             <button
               type="button"
               onClick={addBlankRow}
@@ -2544,6 +2839,16 @@ export function DevisGridWorkspace({
             >
               <Plus size={12} /> Ligne
             </button>
+            {rows.length > 0 && (
+              <button
+                type="button"
+                onClick={clearImportedGrid}
+                title="Vider toutes les lignes du tableau"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, padding: '3px 8px', background: 'color-mix(in srgb, #a33c3c 10%, var(--color-surface))', border: '1px solid color-mix(in srgb, #a33c3c 45%, var(--color-border))', borderRadius: 4, cursor: 'pointer', color: '#c45c5c', fontWeight: 700 }}
+              >
+                <Trash2 size={12} /> Vider tableau
+              </button>
+            )}
             <button
               type="button"
               onClick={() => addSectionRow('calculations')}
@@ -2558,6 +2863,16 @@ export function DevisGridWorkspace({
             >
               <Truck size={12} /> Transport
             </button>
+            {hiddenDimensionCols.size > 0 && (
+              <button
+                type="button"
+                onClick={() => setHiddenDimensionCols(new Set())}
+                title="Réafficher H/L hors tout et H/L passage libre"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, padding: '3px 8px', background: 'color-mix(in srgb, var(--color-primary) 12%, var(--color-surface))', border: '1px solid var(--color-primary)', borderRadius: 4, cursor: 'pointer', color: 'var(--color-primary)', fontWeight: 700 }}
+              >
+                <Eye size={12} /> Afficher toutes colonnes dimensions
+              </button>
+            )}
             {!embedded && <button
               type="button"
               onClick={openPdfDraftView}
@@ -2610,15 +2925,18 @@ export function DevisGridWorkspace({
           )}
 
           {rows.length > 0 && (
-            <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'auto', minWidth: 1480 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'auto', minWidth: 1990 }}>
               <thead>
                 <tr>
                   <Th style={{ width: 36 }}>#</Th>
                   <Th style={{ minWidth: 140 }}>Désignation</Th>
-                  <Th style={{ minWidth: 150 }}>Perfs</Th>
-                  <Th style={{ width: 55 }}>H (HT)</Th>
-                  <Th style={{ width: 55 }}>L (HT)</Th>
-                  <Th style={{ width: 40 }}>TL</Th>
+                  <Th style={{ minWidth: 90, width: 110 }}>Localisation</Th>
+                  <Th style={{ minWidth: 430, width: 430 }}>Perfs</Th>
+                  {!hiddenDimensionCols.has('haut_ht') && dimensionHeader('haut_ht', 'H (HT)')}
+                  {!hiddenDimensionCols.has('larg_ht') && dimensionHeader('larg_ht', 'L (HT)')}
+                  {!hiddenDimensionCols.has('haut_pl') && dimensionHeader('haut_pl', 'H (PL)', 'Passage libre ou clair de vitrage pour châssis. Cliquer pour masquer.')}
+                  {!hiddenDimensionCols.has('larg_pl') && dimensionHeader('larg_pl', 'L (PL)', 'Passage libre ou clair de vitrage pour châssis. Cliquer pour masquer.')}
+                  <Th style={{ width: 74 }}>TL</Th>
                   <Th>Serrure</Th>
                   <Th>Garniture int.</Th>
                   <Th>Garniture ext.</Th>
@@ -2642,7 +2960,7 @@ export function DevisGridWorkspace({
                     return (
                       <Fragment key={`section-${entry.section}`}>
                         <tr>
-                          <td colSpan={19} style={{ position: 'sticky', top: 31, zIndex: 1, padding: '7px 12px', background: 'color-mix(in srgb, var(--color-primary) 7%, var(--color-surface))', borderTop: '1px solid var(--color-border)', borderBottom: '1px solid var(--color-border)' }}>
+                          <td colSpan={GRID_TOTAL_COLS - hiddenDimensionCols.size} style={{ position: 'sticky', top: 31, zIndex: 1, padding: '7px 12px', background: 'color-mix(in srgb, var(--color-primary) 7%, var(--color-surface))', borderTop: '1px solid var(--color-border)', borderBottom: '1px solid var(--color-border)' }}>
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
                               <span style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 11, fontWeight: 900, letterSpacing: '0.02em', textTransform: 'uppercase' }}>
                                 <Icon size={13} /> {meta.label} <span style={{ color: 'var(--color-text-3)', fontWeight: 700 }}>({entry.count})</span>
@@ -2651,7 +2969,7 @@ export function DevisGridWorkspace({
                             </div>
                           </td>
                         </tr>
-                        {entry.section !== 'products' && <AmountSectionColumns section={entry.section} />}
+                        {entry.section !== 'products' && <AmountSectionColumns section={entry.section} hiddenDimensionCount={hiddenDimensionCols.size} />}
                       </Fragment>
                     )
                   }
@@ -2672,16 +2990,17 @@ export function DevisGridWorkspace({
                         onUpdate={(patch) => updateRow(i, patch)}
                         onTransportAddressCommit={(address) => commitTransportAddress(i, address)}
                         onDelete={() => deleteRow(i)}
+                        hiddenDimensionCount={hiddenDimensionCols.size}
                       />
                     )
                   }
                   return (
                   <Fragment key={`row-${i}-${entryIndex}`}>
-                    <MainRow row={row} index={i} displayIndex={entry.displayIndex} expanded={expandedRows.has(i)} onToggle={() => toggleRow(i)} change={change} tva={tva} multGlobal={multGlobal} editMode={editMode} onUpdate={(patch) => updateRow(i, patch)} onRecompute={(patch) => recomputeRow(i, patch)} onDelete={() => deleteRow(i)} onSaveAsRule={() => handleSaveAsRule(i)} onVerifyRules={() => handleVerifyRules(i)} onSuggestDesignation={() => suggestDesignationForRow(i)} suggestingDesignation={suggestingRowId === i} hiddenCols={hiddenCols} />
+                    <MainRow row={row} index={i} displayIndex={entry.displayIndex} expanded={expandedRows.has(i)} onToggle={() => toggleRow(i)} change={change} tva={tva} multGlobal={multGlobal} editMode={editMode} onUpdate={(patch) => updateRow(i, patch)} onRecompute={(patch) => recomputeRow(i, patch)} onDelete={() => deleteRow(i)} onSaveAsRule={() => handleSaveAsRule(i)} onVerifyRules={() => handleVerifyRules(i)} onSuggestDesignation={() => suggestDesignationForRow(i)} suggestingDesignation={suggestingRowId === i} hiddenCols={hiddenCols} hiddenDimensionCols={hiddenDimensionCols} />
                     {expandedRows.has(i) && (
                       <Fragment>
-                        <SubRowRefs row={row} editMode={editMode} onRefCommit={(colIdx, ref) => handleRefCommit(i, colIdx, ref)} hiddenCols={hiddenCols} />
-                        <SubRowPrices row={row} hiddenCols={hiddenCols} />
+                        <SubRowRefs row={row} editMode={editMode} onRefCommit={(colIdx, ref) => handleRefCommit(i, colIdx, ref)} hiddenCols={hiddenCols} visibleDimensionCount={visibleDimensionCount} />
+                        <SubRowPrices row={row} hiddenCols={hiddenCols} visibleDimensionCount={visibleDimensionCount} />
                         {/* Options supplémentaires */}
                         {(row.options || []).filter(o => !isColumnEquipmentOption(o) && !/acoustique|\b(30|35|40|45)\s*dB\b|remplissage|vitrage|ferme.?porte|garniture|serrure|msl|lss|kel|d[ée]ny/i.test(equipmentText(o))).map((opt, oi) => (
                           <tr key={`opt-${i}-${oi}`} style={{ background: SUBROW_BG }}>
@@ -2700,11 +3019,23 @@ export function DevisGridWorkspace({
                         {/* Alertes */}
                         {(row.alertes || []).filter(a => a.startsWith('❌') || a.startsWith('⚠️')).map((a, ai) => (
                           <tr key={`alerte-${i}-${ai}`} style={{ background: 'rgba(160,106,44,0.06)' }}>
-                            <td colSpan={19} style={{ padding: '2px 8px 2px 52px', fontSize: 10, color: a.startsWith('❌') ? '#a33c3c' : '#a06a2c', borderBottom: '1px solid var(--color-border)' }}>
+                            <td colSpan={GRID_TOTAL_COLS - hiddenDimensionCols.size} style={{ padding: '2px 8px 2px 52px', fontSize: 10, color: a.startsWith('❌') ? '#a33c3c' : '#a06a2c', borderBottom: '1px solid var(--color-border)' }}>
                               {a}
                             </td>
                           </tr>
                         ))}
+                        {blockingVerdicts(row).map((verdict, vi) => {
+                          const style = VERDICT_STYLE[verdict.status] || VERDICT_STYLE.warning
+                          return (
+                            <tr key={`rule-${i}-${vi}`} style={{ background: style.bg }}>
+                              <td colSpan={GRID_TOTAL_COLS - hiddenDimensionCols.size} style={{ padding: '4px 8px 4px 52px', fontSize: 10, color: style.text, borderBottom: '1px solid var(--color-border)' }}>
+                                <strong>{verdict.rule_code ? `${verdict.rule_code} — ` : ''}{verdict.rule_title}</strong>
+                                {verdict.reason ? ` : ${verdict.reason}` : ''}
+                                {verdict.fix ? <span style={{ marginLeft: 8, color: 'var(--color-text-2)' }}>Correctif : {verdict.fix}</span> : null}
+                              </td>
+                            </tr>
+                          )
+                        })}
                       </Fragment>
                     )}
                   </Fragment>
@@ -2713,7 +3044,7 @@ export function DevisGridWorkspace({
               </tbody>
               <tfoot>
                 <tr>
-                  <td colSpan={19} style={{ padding: '8px 12px', borderTop: '1px solid var(--color-border)', background: 'var(--color-surface)' }}>
+                  <td colSpan={GRID_TOTAL_COLS - hiddenDimensionCols.size} style={{ padding: '8px 12px', borderTop: '1px solid var(--color-border)', background: 'var(--color-surface)' }}>
                     <button
                       type="button"
                       onClick={addBlankRow}
@@ -2724,7 +3055,7 @@ export function DevisGridWorkspace({
                   </td>
                 </tr>
                 <tr style={{ background: 'var(--color-surface)' }}>
-                  <td colSpan={13} style={{ padding: '8px 16px', fontWeight: 700, fontSize: 12, borderTop: '2px solid var(--color-border)' }}>
+                  <td colSpan={16 - hiddenDimensionCols.size} style={{ padding: '8px 16px', fontWeight: 700, fontSize: 12, borderTop: '2px solid var(--color-border)' }}>
                     💶 Total général estimé
                   </td>
                   <td style={{ padding: '8px 8px', fontWeight: 700, fontSize: 12, textAlign: 'right', borderTop: '2px solid var(--color-border)', background: CELL.gray.background }}>

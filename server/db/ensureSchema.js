@@ -175,6 +175,7 @@ export async function ensureDbSchema() {
         position          INT NOT NULL DEFAULT 0,
         line_section      ENUM('products','calculations','transport') NOT NULL DEFAULT 'products',
         designation       VARCHAR(500) DEFAULT NULL,
+        localisation      VARCHAR(255) DEFAULT NULL,
         type_porte        VARCHAR(100) DEFAULT NULL,
         gamme             VARCHAR(50) DEFAULT NULL,
         vantail           VARCHAR(5) DEFAULT NULL,
@@ -206,6 +207,16 @@ export async function ensureDbSchema() {
     if (!lineSectionCols.length) {
       await db.query("ALTER TABLE devis_lines ADD COLUMN line_section ENUM('products','calculations','transport') NOT NULL DEFAULT 'products' AFTER position")
       console.log('✅ DB: devis_lines.line_section column added')
+    }
+
+    // ── devis_lines.localisation (idempotent patch) ─────────────────────
+    const [localisationCols] = await db.query(
+      `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'devis_lines' AND COLUMN_NAME = 'localisation'`
+    )
+    if (!localisationCols.length) {
+      await db.query('ALTER TABLE devis_lines ADD COLUMN localisation VARCHAR(255) DEFAULT NULL AFTER designation')
+      console.log('✅ DB: devis_lines.localisation column added')
     }
 
     // ── devis_lines.ref_base (idempotent patch) ─────────────────────────
@@ -287,6 +298,7 @@ export async function ensureDbSchema() {
     await db.query(`
       CREATE TABLE IF NOT EXISTS devis_rules (
         id           INT AUTO_INCREMENT PRIMARY KEY,
+        rule_code    VARCHAR(20) DEFAULT NULL,
         title        VARCHAR(255) NOT NULL,
         content      TEXT NOT NULL,
         category     VARCHAR(100) DEFAULT NULL,
@@ -300,6 +312,7 @@ export async function ensureDbSchema() {
         approved_by  INT DEFAULT NULL,
         created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY idx_dr_rule_code (rule_code),
         INDEX idx_dr_status (status),
         INDEX idx_dr_category (category),
         CONSTRAINT fk_dr_created_user FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
@@ -307,6 +320,23 @@ export async function ensureDbSchema() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `)
     console.log('✅ DB: devis_rules table ready')
+
+    const [ruleCodeCols] = await db.query(
+      `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'devis_rules' AND COLUMN_NAME = 'rule_code'`
+    )
+    if (!ruleCodeCols.length) {
+      await db.query('ALTER TABLE devis_rules ADD COLUMN rule_code VARCHAR(20) DEFAULT NULL AFTER id')
+      console.log('✅ DB: devis_rules.rule_code column added')
+    }
+    const [ruleCodeIndexes] = await db.query(
+      `SELECT INDEX_NAME FROM information_schema.STATISTICS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'devis_rules' AND INDEX_NAME = 'idx_dr_rule_code'`
+    )
+    if (!ruleCodeIndexes.length) {
+      await db.query('CREATE UNIQUE INDEX idx_dr_rule_code ON devis_rules (rule_code)')
+      console.log('✅ DB: devis_rules.rule_code index added')
+    }
 
     // ── devis_rule_checks (persisted validation reports by version) ───────
     await db.query(`

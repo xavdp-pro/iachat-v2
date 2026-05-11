@@ -20,12 +20,15 @@ import multer from 'multer'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { readFile, unlink } from 'fs/promises'
-import { join, basename } from 'path'
+import { join, basename, dirname } from 'path'
+import { fileURLToPath } from 'url'
 import { existsSync } from 'fs'
 import os from 'os'
 import crypto from 'crypto'
 
 const execFileAsync = promisify(execFile)
+const __dirname = dirname(fileURLToPath(import.meta.url))
+
 // Répertoire des markdowns NEXUS
 const XLSX_DIR = '/apps/zeruxcom-v1/app/ressources/XLSX'
 const SCRIPT = join(XLSX_DIR, 'detect_nexus.py')
@@ -76,364 +79,8 @@ function parseMaybeJson(value, fallback = []) {
   try { return JSON.parse(value) } catch { return fallback }
 }
 
-function jsonForDb(value, fallback = null) {
-  if (value === undefined) return fallback == null ? null : JSON.stringify(fallback)
-  return JSON.stringify(value)
-}
-
-const VERSION_STATUSES = new Set(['draft', 'editing', 'prepdf', 'checked', 'pdf_generated', 'sent_hubspot', 'archived'])
-const LOCKED_VERSION_STATUSES = new Set(['pdf_generated', 'sent_hubspot', 'archived'])
-const COMMENT_KINDS = new Set(['comment', 'checkpoint', 'check', 'pdf', 'hubspot'])
-
-function normalizeVersionStatus(value) {
-  return VERSION_STATUSES.has(value) ? value : 'draft'
-}
-
-function normalizeCommentKind(value) {
-  return COMMENT_KINDS.has(value) ? value : 'comment'
-}
-
-function normalizeStepKey(value) {
-  const s = String(value || '').trim().slice(0, 50)
-  return s || null
-}
-
-function isLockedVersion(version) {
-  return Boolean(version?.locked_at) || LOCKED_VERSION_STATUSES.has(version?.status)
-}
-
-function dbLineToGridSnapshot(line) {
-  return {
-    id: line.id,
-    line_section: line.line_section || 'products',
-    position: line.position ?? 0,
-    designation: line.designation || '',
-    type: line.type_porte || line.designation || '',
-    type_porte: line.type_porte || null,
-    gamme: line.gamme || '',
-    vantail: line.vantail || '',
-    haut_mm: line.hauteur_mm ?? null,
-    larg_mm: line.largeur_mm ?? null,
-    hauteur_mm: line.hauteur_mm ?? null,
-    largeur_mm: line.largeur_mm ?? null,
-    prix_base_ht: line.prix_base_ht != null ? Number(line.prix_base_ht) : null,
-    ref_base: line.ref_base || null,
-    options: parseMaybeJson(line.options_json, []),
-    serrure_ref: line.serrure_ref || null,
-    serrure_prix: line.serrure_prix != null ? Number(line.serrure_prix) : null,
-    ferme_porte_ref: line.ferme_porte_ref || null,
-    ferme_porte_prix: line.ferme_porte_prix != null ? Number(line.ferme_porte_prix) : null,
-    equip_extra: parseMaybeJson(line.equipements_json, []),
-    alertes: parseMaybeJson(line.alertes_json, []),
-    docs: parseMaybeJson(line.docs_json, []),
-    total_ligne_ht: line.total_ligne_ht != null ? Number(line.total_ligne_ht) : null,
-  }
-}
-
-async function loadDevisForUser(devisId, user) {
-  const [rows] = await db.query(
-    `SELECT * FROM devis
-      WHERE id = ? AND (created_by = ? OR ? = 'admin')`,
-    [devisId, user.id, user.role]
-  )
-  return rows[0] || null
-}
-
-async function fetchDevisLines(devisId) {
-  const [lines] = await db.query(
-    'SELECT * FROM devis_lines WHERE devis_id = ? ORDER BY FIELD(line_section, "products", "calculations", "transport"), position ASC, id ASC',
-    [devisId]
-  )
-  return lines
-}
-
-async function nextVersionLabel(devisId) {
-  const [rows] = await db.query('SELECT version_label FROM devis_versions WHERE devis_id = ?', [devisId])
-  let max = 0
-  for (const row of rows) {
-    const m = String(row.version_label || '').match(/^V(\d+)/i)
-    if (m) max = Math.max(max, Number(m[1]) || 0)
-  }
-  return `V${max + 1}`
-}
-
-function buildVersionSnapshot({ devis, lines, source = 'current-lines' }) {
-  return {
-    source,
-    devis: {
-      id: devis.id,
-      deal_id: devis.deal_id,
-      company_id: devis.company_id,
-      client_name: devis.client_name,
-      name: devis.name,
-      status: devis.status,
-      source_file: devis.source_file,
-      total_ht: devis.total_ht != null ? Number(devis.total_ht) : null,
-    },
-    lines: lines.map(dbLineToGridSnapshot),
-    captured_at: new Date().toISOString(),
-  }
-}
-
-async function insertVersionLines(conn, versionId, lines) {
-  for (const line of lines) {
-    const grid = dbLineToGridSnapshot(line)
-    await conn.query(
-      `INSERT INTO devis_version_lines
-        (version_id, source_line_id, position, line_section, grid_json, designation_pdf, total_ligne_ht)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [
-        versionId,
-        line.id || null,
-        line.position ?? 0,
-        normalizeLineSection(line.line_section),
-        JSON.stringify(grid),
-        line.designation || null,
-        line.total_ligne_ht ?? null,
-      ]
-    )
-  }
-}
-
-async function createVersionSnapshot({ devis, parentVersionId = null, versionLabel = null, branchLabel = null, title = null, comment = null, stepKey = 'versions', kind = 'checkpoint', userId }) {
-  const lines = await fetchDevisLines(devis.id)
-  const label = String(versionLabel || await nextVersionLabel(devis.id)).trim().slice(0, 50)
-  const total = lines.reduce((sum, line) => sum + (Number(line.total_ligne_ht) || 0), 0)
-  const snapshot = buildVersionSnapshot({ devis, lines })
-  const conn = await db.getConnection()
-  try {
-    await conn.beginTransaction()
-    const [result] = await conn.query(
-      `INSERT INTO devis_versions
-        (devis_id, parent_version_id, version_label, branch_label, title, status, snapshot_json, total_ht, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [devis.id, parentVersionId || null, label, branchLabel || null, title || null, 'draft', JSON.stringify(snapshot), total, userId || null]
-    )
-    const versionId = result.insertId
-    await insertVersionLines(conn, versionId, lines)
-    if (comment?.trim()) {
-      await conn.query(
-        `INSERT INTO devis_version_comments (version_id, step_key, kind, content, created_by)
-         VALUES (?, ?, ?, ?, ?)`,
-        [versionId, normalizeStepKey(stepKey), normalizeCommentKind(kind), comment.trim(), userId || null]
-      )
-    }
-    await conn.query('UPDATE devis SET current_version_id = ? WHERE id = ?', [versionId, devis.id])
-    await conn.commit()
-    const [rows] = await db.query('SELECT * FROM devis_versions WHERE id = ?', [versionId])
-    return rows[0]
-  } catch (err) {
-    await conn.rollback()
-    throw err
-  } finally {
-    conn.release()
-  }
-}
-
-async function ensureInitialVersion(devis, userId) {
-  if (devis.current_version_id) {
-    const [rows] = await db.query('SELECT * FROM devis_versions WHERE id = ? AND devis_id = ?', [devis.current_version_id, devis.id])
-    if (rows[0]) return rows[0]
-  }
-  const [existing] = await db.query('SELECT * FROM devis_versions WHERE devis_id = ? ORDER BY id ASC LIMIT 1', [devis.id])
-  if (existing[0]) {
-    await db.query('UPDATE devis SET current_version_id = ? WHERE id = ?', [existing[0].id, devis.id])
-    return existing[0]
-  }
-  return createVersionSnapshot({
-    devis,
-    versionLabel: 'V1',
-    title: 'Version initiale',
-    comment: 'Version initiale créée automatiquement',
-    stepKey: 'versions',
-    kind: 'checkpoint',
-    userId,
-  })
-}
-
-async function loadVersionForDevis(devisId, versionId) {
-  const [rows] = await db.query('SELECT * FROM devis_versions WHERE id = ? AND devis_id = ?', [versionId, devisId])
-  return rows[0] || null
-}
-
-async function createVersionFromSource({ devis, sourceVersion, versionLabel = null, branchLabel = null, title = null, comment = null, stepKey = 'versions', userId }) {
-  const [sourceLines] = await db.query(
-    'SELECT * FROM devis_version_lines WHERE version_id = ? ORDER BY position ASC, id ASC',
-    [sourceVersion.id]
-  )
-  const label = String(versionLabel || await nextVersionLabel(devis.id)).trim().slice(0, 50)
-  const total = sourceLines.reduce((sum, line) => sum + (Number(line.total_ligne_ht) || 0), 0)
-  const snapshot = {
-    source: 'version-copy',
-    source_version_id: sourceVersion.id,
-    source_version_label: sourceVersion.version_label,
-    copied_at: new Date().toISOString(),
-  }
-  const conn = await db.getConnection()
-  try {
-    await conn.beginTransaction()
-    const [result] = await conn.query(
-      `INSERT INTO devis_versions
-        (devis_id, parent_version_id, version_label, branch_label, title, status, snapshot_json, total_ht, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [devis.id, sourceVersion.id, label, branchLabel || null, title || null, 'draft', JSON.stringify(snapshot), total, userId || null]
-    )
-    const versionId = result.insertId
-    for (const line of sourceLines) {
-      await conn.query(
-        `INSERT INTO devis_version_lines
-          (version_id, source_line_id, position, line_section, grid_json, designation_pdf, total_ligne_ht)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [
-          versionId,
-          line.source_line_id || null,
-          line.position ?? 0,
-          normalizeLineSection(line.line_section),
-          typeof line.grid_json === 'string' ? line.grid_json : JSON.stringify(line.grid_json || {}),
-          line.designation_pdf || null,
-          line.total_ligne_ht ?? null,
-        ]
-      )
-    }
-    if (comment?.trim()) {
-      await conn.query(
-        `INSERT INTO devis_version_comments (version_id, step_key, kind, content, created_by)
-         VALUES (?, ?, ?, ?, ?)`,
-        [versionId, normalizeStepKey(stepKey), 'checkpoint', comment.trim(), userId || null]
-      )
-    }
-    await conn.query('UPDATE devis SET current_version_id = ? WHERE id = ?', [versionId, devis.id])
-    await conn.commit()
-    const [rows] = await db.query('SELECT * FROM devis_versions WHERE id = ?', [versionId])
-    return rows[0]
-  } catch (err) {
-    await conn.rollback()
-    throw err
-  } finally {
-    conn.release()
-  }
-}
-
-async function checkpointVersionFromCurrentLines({ devis, version, comment = null, stepKey = 'grid', kind = 'checkpoint', status = null, userId }) {
-  if (isLockedVersion(version)) {
-    const err = new Error('Version verrouillée : créez une nouvelle branche pour la modifier')
-    err.status = 409
-    throw err
-  }
-  const lines = await fetchDevisLines(devis.id)
-  const total = lines.reduce((sum, line) => sum + (Number(line.total_ligne_ht) || 0), 0)
-  const snapshot = buildVersionSnapshot({ devis, lines, source: 'checkpoint-current-lines' })
-  const nextStatus = status ? normalizeVersionStatus(status) : version.status
-  const conn = await db.getConnection()
-  try {
-    await conn.beginTransaction()
-    await conn.query('DELETE FROM devis_version_lines WHERE version_id = ?', [version.id])
-    await insertVersionLines(conn, version.id, lines)
-    await conn.query(
-      'UPDATE devis_versions SET snapshot_json = ?, total_ht = ?, status = ? WHERE id = ?',
-      [JSON.stringify(snapshot), total, nextStatus, version.id]
-    )
-    if (comment?.trim()) {
-      await conn.query(
-        `INSERT INTO devis_version_comments (version_id, step_key, kind, content, created_by)
-         VALUES (?, ?, ?, ?, ?)`,
-        [version.id, normalizeStepKey(stepKey), normalizeCommentKind(kind), comment.trim(), userId || null]
-      )
-    }
-    await conn.commit()
-    const [rows] = await db.query('SELECT * FROM devis_versions WHERE id = ?', [version.id])
-    return rows[0]
-  } catch (err) {
-    await conn.rollback()
-    throw err
-  } finally {
-    conn.release()
-  }
-}
-
-function versionGridToDbLine(grid = {}, fallback = {}) {
-  const options = grid.options ?? grid.options_json ?? []
-  const equipments = grid.equip_extra ?? grid.equipements_json ?? []
-  const alerts = grid.alertes ?? grid.alertes_json ?? []
-  const docs = grid.docs ?? grid.docs_json ?? []
-  return {
-    position: fallback.position ?? grid.position ?? 0,
-    line_section: normalizeLineSection(fallback.line_section || grid.line_section),
-    designation: fallback.designation_pdf != null ? fallback.designation_pdf : (grid.designation || grid.type || grid.type_porte || null),
-    type_porte: grid.type_porte || grid.type || grid.designation || null,
-    gamme: grid.gamme || null,
-    vantail: grid.vantail || null,
-    hauteur_mm: grid.hauteur_mm ?? grid.haut_mm ?? null,
-    largeur_mm: grid.largeur_mm ?? grid.larg_mm ?? null,
-    prix_base_ht: grid.prix_base_ht ?? null,
-    ref_base: grid.ref_base || null,
-    options_json: Array.isArray(options) ? options : parseMaybeJson(options, []),
-    serrure_ref: grid.serrure_ref || grid.serrure?.ref || null,
-    serrure_prix: grid.serrure_prix ?? grid.serrure?.prix ?? null,
-    ferme_porte_ref: grid.ferme_porte_ref || grid.ferme_porte?.ref || null,
-    ferme_porte_prix: grid.ferme_porte_prix ?? grid.ferme_porte?.prix ?? null,
-    equipements_json: Array.isArray(equipments) ? equipments : parseMaybeJson(equipments, []),
-    total_ligne_ht: grid.total_ligne_ht ?? grid.prix_total_min_ht ?? null,
-    alertes_json: Array.isArray(alerts) ? alerts : parseMaybeJson(alerts, []),
-    docs_json: Array.isArray(docs) ? docs : parseMaybeJson(docs, []),
-  }
-}
-
-async function materializeVersionToDevis({ devisId, versionId }) {
-  const [versionLines] = await db.query(
-    'SELECT * FROM devis_version_lines WHERE version_id = ? ORDER BY position ASC, id ASC',
-    [versionId]
-  )
-  const conn = await db.getConnection()
-  try {
-    await conn.beginTransaction()
-    await conn.query('DELETE FROM devis_lines WHERE devis_id = ?', [devisId])
-    for (const line of versionLines) {
-      const grid = parseMaybeJson(line.grid_json, {})
-      const d = versionGridToDbLine(grid, line)
-      await conn.query(
-        `INSERT INTO devis_lines
-          (devis_id, position, line_section, designation, type_porte, gamme, vantail,
-           hauteur_mm, largeur_mm, prix_base_ht, ref_base, options_json,
-           serrure_ref, serrure_prix, ferme_porte_ref, ferme_porte_prix,
-           equipements_json, total_ligne_ht, alertes_json, docs_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          devisId,
-          d.position,
-          d.line_section,
-          d.designation,
-          d.type_porte,
-          d.gamme,
-          d.vantail,
-          d.hauteur_mm,
-          d.largeur_mm,
-          d.prix_base_ht,
-          d.ref_base,
-          JSON.stringify(d.options_json),
-          d.serrure_ref,
-          d.serrure_prix,
-          d.ferme_porte_ref,
-          d.ferme_porte_prix,
-          JSON.stringify(d.equipements_json),
-          d.total_ligne_ht,
-          JSON.stringify(d.alertes_json),
-          JSON.stringify(d.docs_json),
-        ]
-      )
-    }
-    const [sumRows] = await conn.query('SELECT COALESCE(SUM(total_ligne_ht), 0) AS total FROM devis_lines WHERE devis_id = ?', [devisId])
-    await conn.query('UPDATE devis SET current_version_id = ?, total_ht = ? WHERE id = ?', [versionId, sumRows[0].total, devisId])
-    await conn.commit()
-  } catch (err) {
-    await conn.rollback()
-    throw err
-  } finally {
-    conn.release()
-  }
-}
-
 const VANTAIL_LABELS = { '1V': 'UN VANTAIL', '2V': 'DEUX VANTAUX', 'SFX': 'SEMI-FIXE', '1VSFX': 'UN VANTAIL + SEMI-FIXE', '2VSFX': 'DEUX VANTAUX + SEMI-FIXE' }
+const TYPE_LABELS = { BP: 'BLOC-PORTE', CH: 'CHASSIS FIXE', GI: 'GUICHET', PT: 'PORTE' }
 const VANTAIL_CODE_RE = /\b(1V|2V|SFX|1VSFX|2VSFX)\b/gi
 
 function cleanCodedText(str) {
@@ -453,6 +100,7 @@ function designationSearchText(line = {}) {
   const options = parseMaybeJson(line.options ?? line.options_json, [])
   const equipments = parseMaybeJson(line.equip_extra ?? line.equipements_json, [])
   const alerts = parseMaybeJson(line.alertes ?? line.alertes_json, [])
+  const docs = parseMaybeJson(line.docs ?? line.docs_json, [])
   const vantailLabel = line.vantail ? (VANTAIL_LABELS[String(line.vantail).toUpperCase()] || line.vantail) : null
   const gammeClean = cleanCodedText(line.gamme)
   const typeClean = cleanCodedText(line.type)
@@ -461,10 +109,15 @@ function designationSearchText(line = {}) {
     line.designation,
     typeClean,
     typePorteClean,
+    line.localisation ? `Localisation : ${line.localisation}` : null,
     gammeClean,
     vantailLabel,
     line.haut_mm || line.hauteur_mm ? `H ${line.haut_mm || line.hauteur_mm}` : null,
     line.larg_mm || line.largeur_mm ? `L ${line.larg_mm || line.largeur_mm}` : null,
+    line.hauteur_pl_mm != null ? `${line._dimensionLabel === 'CV' ? 'Clair vitrage CV' : 'Passage libre PL'} H ${line.hauteur_pl_mm}` : null,
+    line.largeur_pl_mm != null ? `${line._dimensionLabel === 'CV' ? 'Clair vitrage CV' : 'Passage libre PL'} L ${line.largeur_pl_mm}` : null,
+    line.hauteur_reservation_mm != null ? `Réservation gros oeuvre H ${line.hauteur_reservation_mm}` : null,
+    line.largeur_reservation_mm != null ? `Réservation gros oeuvre L ${line.largeur_reservation_mm}` : null,
     line.serrure?.from,
     line.serrure?.ref,
     line.serrure_ref,
@@ -478,6 +131,47 @@ function designationSearchText(line = {}) {
     // docs intentionally excluded: they are internal .md knowledge base refs, not commercial info
   ]
   return parts.filter(Boolean).join(' | ').replace(/\s+/g, ' ').trim()
+}
+
+function cleanDesignationFact(value) {
+  return String(value || '')
+    .replace(/\d+(?:[,.]\d+)?\s*€(?:\s*\/\s*m²)?/giu, '')
+    .replace(/\s*[×x]\s*\d+(?:[,.]\d+)?\s*m²/giu, '')
+    .replace(/\s*\([^)]*(?:prix|tarif|€)[^)]*\)/giu, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\s*[—-]\s*$/u, '')
+    .trim()
+}
+
+function designationTargetFacts(line = {}) {
+  const options = parseMaybeJson(line.options ?? line.options_json, [])
+  const equipments = parseMaybeJson(line.equip_extra ?? line.equipements_json, [])
+  const alerts = parseMaybeJson(line.alertes ?? line.alertes_json, [])
+  const optionLabels = Array.isArray(options)
+    ? options.map(option => cleanDesignationFact(option?.label || option?.designation || option?.name || '')).filter(Boolean)
+    : []
+  const equipmentLabels = Array.isArray(equipments)
+    ? equipments.map(item => cleanDesignationFact(item?.label || item?.designation || item?.name || '')).filter(Boolean)
+    : []
+  const vantailLabel = line.vantail ? (VANTAIL_LABELS[String(line.vantail).toUpperCase()] || line.vantail) : null
+  const facts = [
+    line.type || line.type_porte ? `Type produit : ${cleanCodedText(line.type || line.type_porte)}` : null,
+    line.gamme ? `Gamme / performances : ${cleanCodedText(line.gamme)}` : null,
+    vantailLabel ? `Configuration : ${vantailLabel}` : null,
+    line.localisation ? `Localisation : ${line.localisation}` : null,
+    line.haut_mm || line.hauteur_mm ? `Hauteur hors-tout : ${line.haut_mm || line.hauteur_mm} mm` : null,
+    line.larg_mm || line.largeur_mm ? `Largeur hors-tout : ${line.larg_mm || line.largeur_mm} mm` : null,
+    line.hauteur_pl_mm != null ? `${line._dimensionLabel === 'CV' ? 'Hauteur clair de vitrage CV' : 'Hauteur passage libre PL'} : ${line.hauteur_pl_mm} mm` : null,
+    line.largeur_pl_mm != null ? `${line._dimensionLabel === 'CV' ? 'Largeur clair de vitrage CV' : 'Largeur passage libre PL'} : ${line.largeur_pl_mm} mm` : null,
+    line.hauteur_reservation_mm != null ? `Hauteur réservation gros oeuvre : ${line.hauteur_reservation_mm} mm` : null,
+    line.largeur_reservation_mm != null ? `Largeur réservation gros oeuvre : ${line.largeur_reservation_mm} mm` : null,
+    line.serrure?.from || line.serrure?.ref || line.serrure_ref ? `Serrure : ${cleanDesignationFact(line.serrure?.from || line.serrure?.ref || line.serrure_ref)}` : null,
+    line.ferme_porte?.from || line.ferme_porte?.ref || line.ferme_porte_ref ? `Ferme-porte : ${cleanDesignationFact(line.ferme_porte?.from || line.ferme_porte?.ref || line.ferme_porte_ref)}` : null,
+    optionLabels.length ? `Options / remplissages détectés :\n${optionLabels.map(label => `- ${label}`).join('\n')}` : null,
+    equipmentLabels.length ? `Equipements détectés :\n${equipmentLabels.map(label => `- ${label}`).join('\n')}` : null,
+    Array.isArray(alerts) && alerts.length ? `Notes techniques utilisables seulement si commerciales :\n${alerts.map(alert => `- ${cleanDesignationFact(alert)}`).join('\n')}` : null,
+  ]
+  return facts.filter(Boolean).join('\n')
 }
 
 // ── Multer : stockage dans /tmp, fichiers .xlsx uniquement ──────────────────
@@ -521,7 +215,7 @@ router.post('/analyze', (req, res, next) => {
   try {
     await execFileAsync('python3', [SCRIPT, inPath, outPath], {
       cwd: XLSX_DIR,
-      timeout: 60000,
+      timeout: 60_000,
       env: await detectEnv(),
     })
     const raw = await readFile(outPath, 'utf-8')
@@ -651,14 +345,14 @@ Format JSON attendu (toutes les clés présentes, null si absent):
   "garn_int": "<libellé garniture intérieure ou null>",
   "garn_ext": "<libellé garniture extérieure ou null>",
   "fp": "<description du ferme-porte demandé ex: TS-5000 bras glissière, TS-4000 bras compas, ou null si aucun>",
-  "autres": "<autres équipements, thermolaquage/RAL si peinture spécifique, ou null>"
+  "autres": "<autres équipements, thermolaquage RAL/NCS si finition spécifique, ou null>"
 }
 
 Règles:
 - Les dimensions peuvent être données comme "1300x2100", "H=2100 L=1300", "1300 2100" → larg=1300, haut=2100
 - "CR4", "FB4", "EI60" peuvent être dans la description principale
 - Si la gamme est dans le type (ex "BP 1V CR4"), ne la duplique pas dans rc
-- "thermolaquage", "TL", "RAL XXXX" → mettre dans autres
+- "thermolaquage", "TL", "RAL XXXX", "NCS" → mettre dans autres ; RAL est la finition par défaut si rien n'est précisé
 - La performance acoustique (30 dB, 35 dB, 40 dB, 45 dB) → mettre dans autres (ex: "acoustique 40 dB")
 - Le ferme-porte est dans fp ; si la description dit "avec FP", "ferme-porte bras glissière", etc. → mettre dans fp
 - tornade, seisme, aev = toujours null (gérés séparément)
@@ -718,6 +412,7 @@ router.post('/suggest-designation', async (req, res) => {
   const contextLines = Array.isArray(req.body?.context_lines) ? req.body.context_lines : []
   // Exclude existing designation from query: we're regenerating it from scratch
   const query = designationSearchText({ ...line, designation: '' })
+  const targetFacts = designationTargetFacts(line)
   if (!query) return res.status(400).json({ error: 'line requis' })
 
   try {
@@ -729,7 +424,13 @@ router.post('/suggest-designation', async (req, res) => {
     const model = await getGlobalOllamaModel()
     const examplesText = examples.map((example, index) => `EXEMPLE ${index + 1} - score ${Number(example.score || 0).toFixed(3)} - ${example.source_pdf} rep. ${example.repere || '?'}\n${example.designation}`).join('\n\n---\n\n')
     const systemPrompt = `Tu es rédacteur de devis NEXUS.
-Tu dois générer le libellé commercial complet d'une ligne de devis PDF en reprenant exactement le style et la structure des anciens devis DOORTAL/ZERUX fournis en exemples.
+  Tu dois générer le libellé commercial complet d'une ligne de devis PDF en reprenant le style des anciens devis DOORTAL/ZERUX fournis en exemples, mais avec une structure homogène et répétable pour toutes les lignes du devis.
+
+  Règle d'homogénéité stricte :
+  - Chaque ligne de détail doit toujours appartenir au même gabarit ci-dessous et rester dans le même genre de formulation.
+  - Ne varie pas les intitulés d'une ligne à l'autre : utilise les formulations canoniques ci-dessous, pas des synonymes libres.
+  - Les exemples historiques servent au ton commercial uniquement. Ils ne doivent jamais modifier l'ordre, les rubriques ni ajouter des informations absentes.
+  - Les équipements doivent toujours être sous le bloc "Equipement fourni-posé :" avec des puces "- ...". Ne mélange pas les équipements dans les lignes de dimensions, de performances ou de finition.
 
 Structure obligatoire (dans cet ordre, en sautant les informations absentes) :
 1. TITRE EN MAJUSCULES (ex: BLOC-PORTE "NEXUS" DEUX VANTAUX)
@@ -738,23 +439,42 @@ Structure obligatoire (dans cet ordre, en sautant les informations absentes) :
 4. Classement anti-effraction (ex: niveau CR4 selon normes EN 1627 - 1630)
 5. Description vantaux (matériau, épaisseur tôle)
 6. Affaiblissement acoustique Xdb sur attestation (si applicable)
-7. Dimensions sur mesure : L … H … Passage libre à 90° (ou 180°)
+7. Dimensions sur mesure : L … H … Passage libre à 90° (ou clair de vitrage CV pour un châssis fixe)
 8. Décomposition vantaux si deux vantaux (largeurs individuelles, hors-bati)
 9. Soit dimensions hors-tout : L … H …
-10. Réservation gros oeuvre prévoir : L … H …
+10. Réservation gros oeuvre prévoir : L … H … (toujours dimensions hors-tout + 10 mm)
 11. Poids approximatif (vantaux + bâti)
-12. Finition : acier galvanisé + thermolaquage …
+12. Finition : acier galvanisé + thermolaquage RAL/NCS (RAL par défaut)
 13. Equipement fourni-posé : (puis liste avec "- " en début de chaque item)
 14. Localisation (si mentionnée)
+
+Formulations canoniques attendues :
+- Performances coupe-feu EI² XX minutes recto/verso
+- Classement anti-effraction niveau CRX selon normes EN 1627 - 1630
+- Performances pare-balle FBX selon norme EN 1522
+- Affaiblissement acoustique XX dB sur attestation
+- Dimensions sur mesure : L ... x H ... mm
+- Passage libre à 90° : L ... x H ... mm OU Clair de vitrage CV : L ... x H ... mm pour un châssis
+- Dimensions hors-tout : L ... x H ... mm
+- Réservation gros oeuvre prévoir : L ... x H ... mm
+- Finition : acier galvanisé + thermolaquage RAL/NCS
+- Equipement fourni-posé :
+- Localisation : ...
 
 Contraintes absolues :
 - Réponds UNIQUEMENT avec le libellé final brut, une information par ligne, sans markdown ni commentaire.
 - Ne mets jamais de prix, quantité, délai, montant HT ou total.
 - Utilise uniquement les informations présentes dans la ligne cible. Les exemples servent au style et aux formulations, pas à inventer des équipements.
+- La section "DONNEES STRUCTUREES DE LA LIGNE CIBLE" est la source de vérité prioritaire. Si elle contient "Options / remplissages détectés" ou "Equipements détectés", ces éléments doivent apparaître dans le libellé, généralement sous "Equipement fourni-posé :".
+- Anti-hallucination : avant d'écrire une ligne, vérifie que la donnée correspondante existe explicitement dans LIGNE CIBLE ou dans les champs calculés fournis. Si la donnée vient seulement d'un exemple historique, omets la ligne.
+- N'invente jamais Uw, poids, épaisseur de tôle, largeur de vantail, hors-bâti, avis de chantier, attestation, matériau, vitrage, serrure, garniture, ferme-porte, crémone, finition spéciale ou localisation.
+- Si une information est douteuse, absente, contradictoire ou seulement implicite, omets-la au lieu de compléter.
+- La réservation gros oeuvre doit toujours être calculée depuis les dimensions hors-tout : largeur HT + 10 mm et hauteur HT + 10 mm. N'utilise aucune autre formule.
 - Si une information est absente dans la ligne cible, omet cette ligne.
 - Le titre (ligne 1) doit toujours être en MAJUSCULES.
 - N'utilise JAMAIS les codes internes bruts comme "1V", "2V", "BP", "CH", "SFX" dans le libellé. Ils sont déjà traduits : 1V=UN VANTAIL, 2V=DEUX VANTAUX, BP=BLOC-PORTE, CH=CHASSIS FIXE.
 - Pour "Vantail en tôle épaisseur X" : utilise uniquement l'épaisseur si elle est explicitement disponible dans la ligne cible (ex: 20/10°, 25/10°). Si absente, écris uniquement "Vantail en tôle double face" sans épaisseur. NE JAMAIS inventer ni utiliser "1V" ou "2V" comme épaisseur.
+- Si une localisation est présente dans la ligne cible, elle doit apparaître exactement sous la forme "Localisation : ..." en fin de libellé, sans la transformer.
 - Ne mentionne jamais les noms de fichiers internes (ex: BASE.md, CR3.md, SERRURES-GARNITURES.md). Ces références sont strictement internes.`
 
     const contextText = contextLines
@@ -762,7 +482,7 @@ Contraintes absolues :
       .map((ctx, idx) => `CONTEXTE ${idx + 1}: ${designationSearchText(ctx)}`)
       .filter(Boolean)
       .join('\n')
-    const userPrompt = `EXEMPLES HISTORIQUES A IMITER:\n\n${examplesText}\n\nLIGNE CIBLE:\n${query}${contextText ? `\n\nCONTEXTE DU DEVIS (lignes voisines):\n${contextText}` : ''}\n\nLIBELLE A PRODUIRE:`
+    const userPrompt = `EXEMPLES HISTORIQUES A IMITER:\n\n${examplesText}\n\nDONNEES STRUCTUREES DE LA LIGNE CIBLE (SOURCE DE VERITE):\n${targetFacts}\n\nLIGNE CIBLE (texte de recherche complémentaire):\n${query}${contextText ? `\n\nCONTEXTE DU DEVIS (lignes voisines):\n${contextText}` : ''}\n\nLIBELLE A PRODUIRE:`
     const designation = await chatCompletion({
       model,
       messages: [
@@ -810,7 +530,7 @@ Contraintes absolues :
       // Remove lines with Python "None" artifacts (null data from XLSX)
       .filter(l => !/\bNone\b/.test(l))
       // Remove alert/emoji items from KB alerts bleeding into equipment list
-      .filter(l => !/^(?:-?\s*)?(?:ℹ|❌|⚠️|⚠|🔴|🟡|🟢)/u.test(l.trim()))
+      .filter(l => !/^-?\s*[ℹ❌⚠️🔴🟡🟢]/u.test(l.trim()))
       // Remove template placeholder lines Gemma outputs verbatim from system prompt
       .filter(l => !/\bXdb\s+sur\s+attestation\b/i.test(l))
       .filter(l => !/\(si applicable\)/i.test(l))
@@ -826,6 +546,7 @@ Contraintes absolues :
     res.json({
       designation: cleanDesignation,
       query,
+      target_facts: targetFacts,
       context_count: contextLines.length,
       examples: examples.map((example) => ({
         score: example.score,
@@ -854,6 +575,8 @@ router.post('/ask', async (req, res) => {
   const ALWAYS_LOAD = ['GUIDE-DEVIS.md', 'BASE.md', 'EQUIP-COMMUN.md', 'SERRURES-GARNITURES.md', 'TABLEAUX-ADDITIONNELS.md']
   // En mode "all", on prend toutes les lignes pour extraire les gammes/options ; sinon row[0]
   const contextRows = (scope === 'all' || rows.length > 1) ? rows : (rows[0] ? [rows[0]] : [])
+  const row = contextRows[0] || {}
+
   const crossRefs = new Set()
   for (const r of contextRows) {
     const gamme = String(r.gamme || '').toUpperCase()
@@ -883,7 +606,7 @@ router.post('/ask', async (req, res) => {
       crossRefs.add('SEISME-AEV.md')
     }
     if (extraUpper.includes('BLAST')) crossRefs.add('BLAST.md')
-    if (extraUpper.includes('RAL') || extraUpper.includes('THERMOLAQUAGE') || extraUpper.includes('LAQUAGE')) {
+    if (extraUpper.includes('RAL') || extraUpper.includes('NCS') || extraUpper.includes('THERMOLAQUAGE') || extraUpper.includes('LAQUAGE')) {
       crossRefs.add('THERMOLAQUAGE.md')
     }
   }
@@ -1039,314 +762,252 @@ router.get('/', async (req, res) => {
   }
 })
 
-// GET /api/devis/:id/versions — version tree for a devis
-router.get('/:id/versions', async (req, res) => {
+// GET /api/devis/:id — single devis with lines
+router.get('/:id', async (req, res) => {
   try {
-    const devis = await loadDevisForUser(req.params.id, req.user)
-    if (!devis) return res.status(404).json({ error: 'Devis introuvable' })
-    const current = await ensureInitialVersion(devis, req.user.id)
-    const [versions] = await db.query(
-      'SELECT * FROM devis_versions WHERE devis_id = ? ORDER BY created_at ASC, id ASC',
+    const [rows] = await db.query('SELECT * FROM devis WHERE id = ?', [req.params.id])
+    if (!rows.length) return res.status(404).json({ error: 'Devis introuvable' })
+    const devis = rows[0]
+    const [lines] = await db.query(
+      'SELECT * FROM devis_lines WHERE devis_id = ? ORDER BY FIELD(line_section, "products", "calculations", "transport"), position ASC, id ASC',
       [devis.id]
     )
-    const versionIds = versions.map(version => version.id)
-    let comments = []
-    let checks = []
-    if (versionIds.length) {
-      const [commentRows] = await db.query(
-        'SELECT * FROM devis_version_comments WHERE version_id IN (?) ORDER BY created_at ASC, id ASC',
-        [versionIds]
-      )
-      comments = commentRows
-      const [checkRows] = await db.query(
-        'SELECT * FROM devis_rule_checks WHERE version_id IN (?) ORDER BY created_at DESC, id DESC',
-        [versionIds]
-      )
-      checks = checkRows
-    }
-    const commentsByVersion = new Map()
-    for (const comment of comments) {
-      const list = commentsByVersion.get(comment.version_id) || []
-      list.push({
-        ...comment,
-        meta_json: parseMaybeJson(comment.meta_json, null),
-      })
-      commentsByVersion.set(comment.version_id, list)
-    }
-    const latestCheckByVersion = new Map()
-    for (const check of checks) {
-      if (!latestCheckByVersion.has(check.version_id)) {
-        latestCheckByVersion.set(check.version_id, {
-          ...check,
-          report_json: parseMaybeJson(check.report_json, null),
-          summary_json: parseMaybeJson(check.summary_json, null),
-        })
-      }
-    }
-    res.json({
-      devis_id: devis.id,
-      current_version_id: current.id,
-      versions: versions.map(version => ({
-        ...version,
-        snapshot_json: parseMaybeJson(version.snapshot_json, null),
-        comments: commentsByVersion.get(version.id) || [],
-        latest_check: latestCheckByVersion.get(version.id) || null,
-        locked: isLockedVersion(version),
-      })),
-    })
+    res.json({ ...devis, lines })
   } catch (err) {
-    console.error('versions list error:', err)
-    res.status(500).json({ error: err.message })
+    console.error("CRASH:", err); res.status(500).json({ error: err.message })
   }
 })
 
-// GET /api/devis/:id/versions/:versionId — full version detail
-router.get('/:id/versions/:versionId', async (req, res) => {
+// POST /api/devis — create a new devis
+router.post('/', async (req, res) => {
+  const { deal_id, company_id, client_name, name, source_file } = req.body
   try {
-    const devis = await loadDevisForUser(req.params.id, req.user)
-    if (!devis) return res.status(404).json({ error: 'Devis introuvable' })
-    const version = await loadVersionForDevis(devis.id, req.params.versionId)
-    if (!version) return res.status(404).json({ error: 'Version introuvable' })
-    const [lines] = await db.query(
-      'SELECT * FROM devis_version_lines WHERE version_id = ? ORDER BY position ASC, id ASC',
-      [version.id]
-    )
-    const [comments] = await db.query(
-      'SELECT * FROM devis_version_comments WHERE version_id = ? ORDER BY created_at ASC, id ASC',
-      [version.id]
-    )
-    const [checks] = await db.query(
-      'SELECT * FROM devis_rule_checks WHERE version_id = ? ORDER BY created_at DESC, id DESC',
-      [version.id]
-    )
-    res.json({
-      ...version,
-      snapshot_json: parseMaybeJson(version.snapshot_json, null),
-      locked: isLockedVersion(version),
-      lines: lines.map(line => ({
-        ...line,
-        grid_json: parseMaybeJson(line.grid_json, {}),
-      })),
-      comments: comments.map(comment => ({
-        ...comment,
-        meta_json: parseMaybeJson(comment.meta_json, null),
-      })),
-      checks: checks.map(check => ({
-        ...check,
-        report_json: parseMaybeJson(check.report_json, null),
-        summary_json: parseMaybeJson(check.summary_json, null),
-      })),
-    })
-  } catch (err) {
-    console.error('version detail error:', err)
-    res.status(500).json({ error: err.message })
-  }
-})
-
-// POST /api/devis/:id/versions — create a child version/branch
-router.post('/:id/versions', async (req, res) => {
-  const { source_version_id, parent_version_id, version_label, branch_label, title, comment, step_key } = req.body || {}
-  try {
-    const devis = await loadDevisForUser(req.params.id, req.user)
-    if (!devis) return res.status(404).json({ error: 'Devis introuvable' })
-    const current = await ensureInitialVersion(devis, req.user.id)
-    const explicitSourceVersionId = source_version_id || parent_version_id || null
-    const sourceVersionId = explicitSourceVersionId || current.id
-    const sourceVersion = sourceVersionId ? await loadVersionForDevis(devis.id, sourceVersionId) : null
-    if (sourceVersionId && !sourceVersion) return res.status(404).json({ error: 'Version source introuvable' })
-    const version = sourceVersion
-      ? await createVersionFromSource({
-        devis,
-        sourceVersion,
-        versionLabel: version_label,
-        branchLabel: branch_label,
-        title,
-        comment,
-        stepKey: step_key || 'versions',
-        userId: req.user.id,
-      })
-      : await createVersionSnapshot({
-        devis,
-        parentVersionId: parent_version_id || null,
-        versionLabel: version_label,
-        branchLabel: branch_label,
-        title,
-        comment,
-        stepKey: step_key || 'versions',
-        userId: req.user.id,
-      })
-    await materializeVersionToDevis({ devisId: devis.id, versionId: version.id })
-    res.status(201).json(version)
-  } catch (err) {
-    console.error('version create error:', err)
-    res.status(500).json({ error: err.message })
-  }
-})
-
-// POST /api/devis/:id/versions/:versionId/activate — set active version
-router.post('/:id/versions/:versionId/activate', async (req, res) => {
-  try {
-    const devis = await loadDevisForUser(req.params.id, req.user)
-    if (!devis) return res.status(404).json({ error: 'Devis introuvable' })
-    const version = await loadVersionForDevis(devis.id, req.params.versionId)
-    if (!version) return res.status(404).json({ error: 'Version introuvable' })
-    await materializeVersionToDevis({ devisId: devis.id, versionId: version.id })
-    res.json({ success: true, current_version_id: version.id })
-  } catch (err) {
-    console.error('version activate error:', err)
-    res.status(500).json({ error: err.message })
-  }
-})
-
-// POST /api/devis/:id/versions/:versionId/comments — add an internal comment
-router.post('/:id/versions/:versionId/comments', async (req, res) => {
-  const { content, step_key, kind = 'comment', meta } = req.body || {}
-  if (!content?.trim()) return res.status(400).json({ error: 'content requis' })
-  try {
-    const devis = await loadDevisForUser(req.params.id, req.user)
-    if (!devis) return res.status(404).json({ error: 'Devis introuvable' })
-    const version = await loadVersionForDevis(devis.id, req.params.versionId)
-    if (!version) return res.status(404).json({ error: 'Version introuvable' })
     const [result] = await db.query(
-      `INSERT INTO devis_version_comments (version_id, step_key, kind, content, meta_json, created_by)
+      `INSERT INTO devis (deal_id, company_id, client_name, name, source_file, created_by)
        VALUES (?, ?, ?, ?, ?, ?)`,
-      [version.id, normalizeStepKey(step_key), normalizeCommentKind(kind), content.trim(), jsonForDb(meta), req.user.id]
+      [deal_id || null, company_id || null, client_name || null, name || 'Nouveau devis', source_file || null, req.user.id]
     )
-    const [rows] = await db.query('SELECT * FROM devis_version_comments WHERE id = ?', [result.insertId])
+    const [rows] = await db.query('SELECT * FROM devis WHERE id = ?', [result.insertId])
     res.status(201).json(rows[0])
   } catch (err) {
-    console.error('version comment error:', err)
-    res.status(500).json({ error: err.message })
+    console.error("CRASH:", err); res.status(500).json({ error: err.message })
   }
 })
 
-// POST /api/devis/:id/versions/:versionId/checkpoint — snapshot current lines into version
-router.post('/:id/versions/:versionId/checkpoint', async (req, res) => {
-  const { comment, step_key, kind = 'checkpoint', status } = req.body || {}
-  try {
-    const devis = await loadDevisForUser(req.params.id, req.user)
-    if (!devis) return res.status(404).json({ error: 'Devis introuvable' })
-    const version = await loadVersionForDevis(devis.id, req.params.versionId)
-    if (!version) return res.status(404).json({ error: 'Version introuvable' })
-    const updated = await checkpointVersionFromCurrentLines({
-      devis,
-      version,
-      comment,
-      stepKey: step_key || 'grid',
-      kind,
-      status,
-      userId: req.user.id,
-    })
-    res.json(updated)
-  } catch (err) {
-    console.error('version checkpoint error:', err)
-    res.status(err.status || 500).json({ error: err.message })
-  }
-})
-
-// PUT /api/devis/:id/versions/:versionId/pdf-labels — persist commercial PDF labels in the active version
-router.put('/:id/versions/:versionId/pdf-labels', async (req, res) => {
-  const labels = Array.isArray(req.body?.labels) ? req.body.labels : []
-  if (!labels.length) return res.status(400).json({ error: 'labels requis' })
-  try {
-    const devis = await loadDevisForUser(req.params.id, req.user)
-    if (!devis) return res.status(404).json({ error: 'Devis introuvable' })
-    const version = await loadVersionForDevis(devis.id, req.params.versionId)
-    if (!version) return res.status(404).json({ error: 'Version introuvable' })
-    if (isLockedVersion(version)) return res.status(409).json({ error: 'Version verrouillée : créez une nouvelle branche pour modifier les libellés PDF' })
-
-    const conn = await db.getConnection()
-    let updated = 0
-    try {
-      await conn.beginTransaction()
-      for (const item of labels) {
-        const rawDesignationPdf = item.designation_pdf ?? item.designation
-        const designationPdf = rawDesignationPdf == null ? null : String(rawDesignationPdf).trim()
-        const lineId = Number(item.line_id || item.id || 0)
-        const position = Number.isFinite(Number(item.position)) ? Number(item.position) : null
-        const lineSection = normalizeLineSection(item.line_section)
-
-        if (lineId > 0) {
-          await conn.query('UPDATE devis_lines SET designation = ? WHERE devis_id = ? AND id = ?', [designationPdf, devis.id, lineId])
-        }
-
-        let versionRows = []
-        if (lineId > 0) {
-          const [rows] = await conn.query(
-            'SELECT * FROM devis_version_lines WHERE version_id = ? AND source_line_id = ? LIMIT 1',
-            [version.id, lineId]
-          )
-          versionRows = rows
-        }
-        if (!versionRows.length && position != null) {
-          const [rows] = await conn.query(
-            'SELECT * FROM devis_version_lines WHERE version_id = ? AND position = ? AND line_section = ? LIMIT 1',
-            [version.id, position, lineSection]
-          )
-          versionRows = rows
-        }
-        const versionLine = versionRows[0]
-        if (versionLine) {
-          const grid = parseMaybeJson(versionLine.grid_json, {}) || {}
-          grid.designation = designationPdf || ''
-          await conn.query(
-            'UPDATE devis_version_lines SET designation_pdf = ?, grid_json = ? WHERE id = ?',
-            [designationPdf, JSON.stringify(grid), versionLine.id]
-          )
-          updated += 1
-        }
-      }
-      await conn.query('UPDATE devis_versions SET status = ? WHERE id = ?', ['prepdf', version.id])
-      if (req.body?.comment?.trim()) {
-        await conn.query(
-          `INSERT INTO devis_version_comments (version_id, step_key, kind, content, created_by)
-           VALUES (?, ?, ?, ?, ?)`,
-          [version.id, 'prepdf', 'checkpoint', req.body.comment.trim(), req.user.id]
-        )
-      }
-      await conn.commit()
-    } catch (err) {
-      await conn.rollback()
-      throw err
-    } finally {
-      conn.release()
+// PUT /api/devis/:id — update devis header
+router.put('/:id', async (req, res) => {
+  const allowed = ['deal_id', 'company_id', 'client_name', 'name', 'status', 'source_file', 'analysis_json', 'validation_json', 'total_ht', 'pdf_path', 'hubspot_note_id']
+  const sets = []
+  const vals = []
+  for (const key of allowed) {
+    if (req.body[key] !== undefined) {
+      sets.push(`${key} = ?`)
+      vals.push(key.endsWith('_json') ? JSON.stringify(req.body[key]) : req.body[key])
     }
-
-    const lines = await fetchDevisLines(devis.id)
-    res.json({ success: true, updated, version_id: version.id, lines })
-  } catch (err) {
-    console.error('version pdf-labels error:', err)
-    res.status(500).json({ error: err.message })
   }
-})
-
-// POST /api/devis/:id/versions/:versionId/lock — lock a version after final PDF/HubSpot
-router.post('/:id/versions/:versionId/lock', async (req, res) => {
-  const { status = 'pdf_generated', comment = null, step_key = 'pdf' } = req.body || {}
-  const nextStatus = normalizeVersionStatus(status)
-  if (!LOCKED_VERSION_STATUSES.has(nextStatus)) return res.status(400).json({ error: 'status de verrouillage invalide' })
+  if (!sets.length) return res.status(400).json({ error: 'Aucun champ à mettre à jour' })
+  vals.push(req.params.id)
   try {
-    const devis = await loadDevisForUser(req.params.id, req.user)
-    if (!devis) return res.status(404).json({ error: 'Devis introuvable' })
-    const version = await loadVersionForDevis(devis.id, req.params.versionId)
-    if (!version) return res.status(404).json({ error: 'Version introuvable' })
-    await db.query('UPDATE devis_versions SET status = ?, locked_at = COALESCE(locked_at, NOW()) WHERE id = ?', [nextStatus, version.id])
-    if (comment?.trim()) {
-      await db.query(
-        `INSERT INTO devis_version_comments (version_id, step_key, kind, content, created_by)
-         VALUES (?, ?, ?, ?, ?)`,
-        [version.id, normalizeStepKey(step_key), nextStatus === 'sent_hubspot' ? 'hubspot' : 'pdf', comment.trim(), req.user.id]
-      )
-    }
-    const [rows] = await db.query('SELECT * FROM devis_versions WHERE id = ?', [version.id])
+    await db.query(`UPDATE devis SET ${sets.join(', ')} WHERE id = ?`, vals)
+    const [rows] = await db.query('SELECT * FROM devis WHERE id = ?', [req.params.id])
     res.json(rows[0])
   } catch (err) {
-    console.error('version lock error:', err)
-    res.status(500).json({ error: err.message })
+    console.error("CRASH:", err); res.status(500).json({ error: err.message })
   }
 })
 
-// ── GET /api/devis/sample-pdf — preview PDF with demo data ────────────────
+// DELETE /api/devis/:id
+router.delete('/:id', async (req, res) => {
+  try {
+    await db.query('DELETE FROM devis WHERE id = ? AND created_by = ?', [req.params.id, req.user.id])
+    res.json({ success: true })
+  } catch (err) {
+    console.error("CRASH:", err); res.status(500).json({ error: err.message })
+  }
+})
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ── CRUD DEVIS LINES ────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+
+// GET /api/devis/:id/lines
+router.get('/:id/lines', async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT * FROM devis_lines WHERE devis_id = ? ORDER BY FIELD(line_section, "products", "calculations", "transport"), position ASC, id ASC',
+      [req.params.id]
+    )
+    res.json(rows)
+  } catch (err) {
+    console.error("CRASH:", err); res.status(500).json({ error: err.message })
+  }
+})
+
+// POST /api/devis/:id/lines — add a line
+router.post('/:id/lines', async (req, res) => {
+  const d = req.body
+  try {
+    // Auto position = max+1
+    const [maxPos] = await db.query(
+      'SELECT COALESCE(MAX(position), -1) AS mp FROM devis_lines WHERE devis_id = ?',
+      [req.params.id]
+    )
+    const pos = d.position ?? (maxPos[0].mp + 1)
+    const [result] = await db.query(
+      `INSERT INTO devis_lines
+       (devis_id, position, line_section, designation, localisation, type_porte, gamme, vantail,
+        hauteur_mm, largeur_mm, prix_base_ht, ref_base, options_json,
+        serrure_ref, serrure_prix, ferme_porte_ref, ferme_porte_prix,
+        equipements_json, total_ligne_ht, alertes_json, docs_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        req.params.id, pos, normalizeLineSection(d.line_section),
+        d.designation || null, d.localisation || null, d.type_porte || null, d.gamme || null, d.vantail || null,
+        d.hauteur_mm || null, d.largeur_mm || null, d.prix_base_ht || null,
+        d.ref_base || null,
+        d.options_json ? JSON.stringify(d.options_json) : null,
+        d.serrure_ref || null, d.serrure_prix || null,
+        d.ferme_porte_ref || null, d.ferme_porte_prix || null,
+        d.equipements_json ? JSON.stringify(d.equipements_json) : null,
+        d.total_ligne_ht || null,
+        d.alertes_json ? JSON.stringify(d.alertes_json) : null,
+        d.docs_json ? JSON.stringify(d.docs_json) : null,
+      ]
+    )
+    const [rows] = await db.query('SELECT * FROM devis_lines WHERE id = ?', [result.insertId])
+    res.status(201).json(rows[0])
+  } catch (err) {
+    console.error("CRASH:", err); res.status(500).json({ error: err.message })
+  }
+})
+
+// POST /api/devis/:id/lines/bulk — import multiple lines from analysis
+router.post('/:id/lines/bulk', async (req, res) => {
+  const { lines } = req.body
+  if (!Array.isArray(lines)) return res.status(400).json({ error: 'lines array required' })
+  try {
+    // Clear existing lines first
+    await db.query('DELETE FROM devis_lines WHERE devis_id = ?', [req.params.id])
+    if (!lines.length) {
+      await db.query('UPDATE devis SET total_ht = ?, status = ? WHERE id = ?', [0, 'editing', req.params.id])
+      return res.json([])
+    }
+    for (let i = 0; i < lines.length; i++) {
+      const d = lines[i]
+      const totalLigne = (d.prix_base_ht || 0) + (d.options?.reduce((s, o) => s + (o.prix || 0), 0) || 0) + (d.serrure_prix || 0) + (d.ferme_porte_prix || 0)
+      const pricedTotal = d.total_ligne_ht ?? d.prix_total_min_ht ?? totalLigne
+      const storedTotal = isBlockingUnpricedLine(d) ? null : (pricedTotal || null)
+      await db.query(
+        `INSERT INTO devis_lines
+          (devis_id, position, line_section, designation, localisation, type_porte, gamme, vantail,
+          hauteur_mm, largeur_mm, prix_base_ht, ref_base, options_json,
+          serrure_ref, serrure_prix, ferme_porte_ref, ferme_porte_prix,
+          equipements_json, total_ligne_ht, alertes_json, docs_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          req.params.id, i, normalizeLineSection(d.line_section),
+          d.designation || d.type || null, d.localisation || null, d.type || null, d.gamme || null, d.vantail || null,
+          d.haut_mm || d.hauteur_mm || null, d.larg_mm || d.largeur_mm || null,
+          d.prix_base_ht || null,
+          d.ref_base || null,
+          d.options ? JSON.stringify(d.options) : null,
+          d.serrure?.ref || null, null,
+          d.ferme_porte?.ref || null, null,
+          d.equip_extra ? JSON.stringify(d.equip_extra) : null,
+          storedTotal,
+          d.alertes ? JSON.stringify(d.alertes) : null,
+          d.docs ? JSON.stringify(d.docs) : null,
+        ]
+      )
+    }
+    // Update devis total
+    const [sumRows] = await db.query(
+      'SELECT COALESCE(SUM(total_ligne_ht), 0) AS total FROM devis_lines WHERE devis_id = ?',
+      [req.params.id]
+    )
+    await db.query('UPDATE devis SET total_ht = ?, status = ? WHERE id = ?', [sumRows[0].total, 'editing', req.params.id])
+    const [allLines] = await db.query('SELECT * FROM devis_lines WHERE devis_id = ? ORDER BY FIELD(line_section, "products", "calculations", "transport"), position ASC, id ASC', [req.params.id])
+    res.json(allLines)
+  } catch (err) {
+    console.error("CRASH:", err); res.status(500).json({ error: err.message })
+  }
+})
+
+// PUT /api/devis/:id/lines/:lineId — update a line
+router.put('/:id/lines/:lineId', async (req, res) => {
+  const allowed = ['position', 'line_section', 'designation', 'localisation', 'type_porte', 'gamme', 'vantail', 'hauteur_mm', 'largeur_mm', 'prix_base_ht', 'ref_base', 'options_json', 'serrure_ref', 'serrure_prix', 'ferme_porte_ref', 'ferme_porte_prix', 'equipements_json', 'total_ligne_ht', 'alertes_json', 'docs_json']
+  const sets = []
+  const vals = []
+  for (const key of allowed) {
+    if (req.body[key] !== undefined) {
+      sets.push(`${key} = ?`)
+      vals.push(key === 'line_section' ? normalizeLineSection(req.body[key]) : (key.endsWith('_json') ? JSON.stringify(req.body[key]) : req.body[key]))
+    }
+  }
+  if (!sets.length) return res.status(400).json({ error: 'Aucun champ à mettre à jour' })
+  vals.push(req.params.lineId, req.params.id)
+  try {
+    await db.query(`UPDATE devis_lines SET ${sets.join(', ')} WHERE id = ? AND devis_id = ?`, vals)
+    // Recalculate devis total
+    const [sumRows] = await db.query(
+      'SELECT COALESCE(SUM(total_ligne_ht), 0) AS total FROM devis_lines WHERE devis_id = ?',
+      [req.params.id]
+    )
+    await db.query('UPDATE devis SET total_ht = ? WHERE id = ?', [sumRows[0].total, req.params.id])
+    const [rows] = await db.query('SELECT * FROM devis_lines WHERE id = ?', [req.params.lineId])
+    res.json(rows[0])
+  } catch (err) {
+    console.error("CRASH:", err); res.status(500).json({ error: err.message })
+  }
+})
+
+// DELETE /api/devis/:id/lines/:lineId
+router.delete('/:id/lines/:lineId', async (req, res) => {
+  try {
+    await db.query('DELETE FROM devis_lines WHERE id = ? AND devis_id = ?', [req.params.lineId, req.params.id])
+    // Recalculate devis total
+    const [sumRows] = await db.query(
+      'SELECT COALESCE(SUM(total_ligne_ht), 0) AS total FROM devis_lines WHERE devis_id = ?',
+      [req.params.id]
+    )
+    await db.query('UPDATE devis SET total_ht = ? WHERE id = ?', [sumRows[0].total, req.params.id])
+    res.json({ success: true })
+  } catch (err) {
+    console.error("CRASH:", err); res.status(500).json({ error: err.message })
+  }
+})
+
+// ── GET /api/devis/:id/pdf — generate Playwright PDF for a devis ───────────
+router.get('/:id/pdf', async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'ID invalide' })
+  try {
+    const [devisRows] = await db.query('SELECT * FROM devis WHERE id = ?', [id])
+    if (!devisRows.length) return res.status(404).json({ error: 'Devis introuvable' })
+    const devis = devisRows[0]
+
+    const [lines] = await db.query(
+      'SELECT * FROM devis_lines WHERE devis_id = ? ORDER BY FIELD(line_section, "products", "calculations", "transport"), position ASC, id ASC',
+      [id]
+    )
+
+    // Lazy-load PDF builder to avoid Playwright startup on every server boot
+    const { buildDevisNexusPdf } = await import('../devis-pdf.js')
+    const { buffer, filename } = await buildDevisNexusPdf({ devis, lines })
+
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+      'Content-Length': buffer.length,
+    })
+    res.end(buffer)
+  } catch (err) {
+    console.error('devis pdf generation error:', err)
+    res.status(500).json({ error: 'Erreur génération PDF', details: err.message })
+  }
+})
+
+// ── GET /api/devis/sample-pdf — preview PDF with demo data (no auth needed for dev) ──
 router.get('/sample-pdf', async (req, res) => {
   try {
     const { buildDevisNexusPdf } = await import('../devis-pdf.js')
@@ -1395,261 +1056,6 @@ router.get('/sample-pdf', async (req, res) => {
   }
 })
 
-// GET /api/devis/:id — single devis with lines
-router.get('/:id', async (req, res) => {
-  try {
-    const devis = await loadDevisForUser(req.params.id, req.user)
-    if (!devis) return res.status(404).json({ error: 'Devis introuvable' })
-    const currentVersion = await ensureInitialVersion(devis, req.user.id)
-    const [lines] = await db.query(
-      'SELECT * FROM devis_lines WHERE devis_id = ? ORDER BY FIELD(line_section, "products", "calculations", "transport"), position ASC, id ASC',
-      [devis.id]
-    )
-    res.json({ ...devis, current_version_id: currentVersion.id, current_version: currentVersion, lines })
-  } catch (err) {
-    console.error("CRASH:", err); res.status(500).json({ error: err.message })
-  }
-})
-
-// POST /api/devis — create a new devis
-router.post('/', async (req, res) => {
-  const { deal_id, company_id, client_name, name, source_file } = req.body
-  try {
-    const [result] = await db.query(
-      `INSERT INTO devis (deal_id, company_id, client_name, name, source_file, created_by)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [deal_id || null, company_id || null, client_name || null, name || 'Nouveau devis', source_file || null, req.user.id]
-    )
-    const [rows] = await db.query('SELECT * FROM devis WHERE id = ?', [result.insertId])
-    const version = await ensureInitialVersion(rows[0], req.user.id)
-    res.status(201).json({ ...rows[0], current_version_id: version.id, current_version: version })
-  } catch (err) {
-    console.error("CRASH:", err); res.status(500).json({ error: err.message })
-  }
-})
-
-// PUT /api/devis/:id — update devis header
-router.put('/:id', async (req, res) => {
-  const allowed = ['deal_id', 'company_id', 'client_name', 'name', 'status', 'source_file', 'analysis_json', 'validation_json', 'total_ht', 'pdf_path', 'hubspot_note_id']
-  const sets = []
-  const vals = []
-  for (const key of allowed) {
-    if (req.body[key] !== undefined) {
-      sets.push(`${key} = ?`)
-      vals.push(key.endsWith('_json') ? JSON.stringify(req.body[key]) : req.body[key])
-    }
-  }
-  if (!sets.length) return res.status(400).json({ error: 'Aucun champ à mettre à jour' })
-  vals.push(req.params.id)
-  try {
-    const devis = await loadDevisForUser(req.params.id, req.user)
-    if (!devis) return res.status(404).json({ error: 'Devis introuvable' })
-    await db.query(`UPDATE devis SET ${sets.join(', ')} WHERE id = ?`, vals)
-    const [rows] = await db.query('SELECT * FROM devis WHERE id = ?', [req.params.id])
-    res.json(rows[0])
-  } catch (err) {
-    console.error("CRASH:", err); res.status(500).json({ error: err.message })
-  }
-})
-
-// DELETE /api/devis/:id
-router.delete('/:id', async (req, res) => {
-  try {
-    const devis = await loadDevisForUser(req.params.id, req.user)
-    if (!devis) return res.status(404).json({ error: 'Devis introuvable' })
-    await db.query('DELETE FROM devis WHERE id = ?', [devis.id])
-    res.json({ success: true })
-  } catch (err) {
-    console.error("CRASH:", err); res.status(500).json({ error: err.message })
-  }
-})
-
-// ══════════════════════════════════════════════════════════════════════════════
-// ── CRUD DEVIS LINES ────────────────────────────────────────────────────────
-// ══════════════════════════════════════════════════════════════════════════════
-
-// GET /api/devis/:id/lines
-router.get('/:id/lines', async (req, res) => {
-  try {
-    const devis = await loadDevisForUser(req.params.id, req.user)
-    if (!devis) return res.status(404).json({ error: 'Devis introuvable' })
-    const [rows] = await db.query(
-      'SELECT * FROM devis_lines WHERE devis_id = ? ORDER BY FIELD(line_section, "products", "calculations", "transport"), position ASC, id ASC',
-      [devis.id]
-    )
-    res.json(rows)
-  } catch (err) {
-    console.error("CRASH:", err); res.status(500).json({ error: err.message })
-  }
-})
-
-// POST /api/devis/:id/lines — add a line
-router.post('/:id/lines', async (req, res) => {
-  const d = req.body
-  try {
-    const devis = await loadDevisForUser(req.params.id, req.user)
-    if (!devis) return res.status(404).json({ error: 'Devis introuvable' })
-    // Auto position = max+1
-    const [maxPos] = await db.query(
-      'SELECT COALESCE(MAX(position), -1) AS mp FROM devis_lines WHERE devis_id = ?',
-      [devis.id]
-    )
-    const pos = d.position ?? (maxPos[0].mp + 1)
-    const [result] = await db.query(
-      `INSERT INTO devis_lines
-       (devis_id, position, line_section, designation, type_porte, gamme, vantail,
-        hauteur_mm, largeur_mm, prix_base_ht, ref_base, options_json,
-        serrure_ref, serrure_prix, ferme_porte_ref, ferme_porte_prix,
-        equipements_json, total_ligne_ht, alertes_json, docs_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        devis.id, pos, normalizeLineSection(d.line_section),
-        d.designation || null, d.type_porte || null, d.gamme || null, d.vantail || null,
-        d.hauteur_mm || null, d.largeur_mm || null, d.prix_base_ht || null,
-        d.ref_base || null,
-        d.options_json ? JSON.stringify(d.options_json) : null,
-        d.serrure_ref || null, d.serrure_prix || null,
-        d.ferme_porte_ref || null, d.ferme_porte_prix || null,
-        d.equipements_json ? JSON.stringify(d.equipements_json) : null,
-        d.total_ligne_ht || null,
-        d.alertes_json ? JSON.stringify(d.alertes_json) : null,
-        d.docs_json ? JSON.stringify(d.docs_json) : null,
-      ]
-    )
-    const [rows] = await db.query('SELECT * FROM devis_lines WHERE id = ?', [result.insertId])
-    res.status(201).json(rows[0])
-  } catch (err) {
-    console.error("CRASH:", err); res.status(500).json({ error: err.message })
-  }
-})
-
-// POST /api/devis/:id/lines/bulk — import multiple lines from analysis
-router.post('/:id/lines/bulk', async (req, res) => {
-  const { lines } = req.body
-  if (!Array.isArray(lines) || !lines.length) return res.status(400).json({ error: 'lines array required' })
-  try {
-    const devis = await loadDevisForUser(req.params.id, req.user)
-    if (!devis) return res.status(404).json({ error: 'Devis introuvable' })
-    // Clear existing lines first
-    await db.query('DELETE FROM devis_lines WHERE devis_id = ?', [devis.id])
-    for (let i = 0; i < lines.length; i++) {
-      const d = lines[i]
-      const totalLigne = (d.prix_base_ht || 0) + (d.options?.reduce((s, o) => s + (o.prix || 0), 0) || 0) + (d.serrure_prix || 0) + (d.ferme_porte_prix || 0)
-      const pricedTotal = d.total_ligne_ht ?? d.prix_total_min_ht ?? totalLigne
-      const storedTotal = isBlockingUnpricedLine(d) ? null : (pricedTotal || null)
-      await db.query(
-        `INSERT INTO devis_lines
-          (devis_id, position, line_section, designation, type_porte, gamme, vantail,
-          hauteur_mm, largeur_mm, prix_base_ht, ref_base, options_json,
-          serrure_ref, serrure_prix, ferme_porte_ref, ferme_porte_prix,
-          equipements_json, total_ligne_ht, alertes_json, docs_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          devis.id, i, normalizeLineSection(d.line_section),
-          d.designation || d.type || null, d.type || null, d.gamme || null, d.vantail || null,
-          d.haut_mm || d.hauteur_mm || null, d.larg_mm || d.largeur_mm || null,
-          d.prix_base_ht || null,
-          d.ref_base || null,
-          d.options ? JSON.stringify(d.options) : null,
-          d.serrure?.ref || null, null,
-          d.ferme_porte?.ref || null, null,
-          d.equip_extra ? JSON.stringify(d.equip_extra) : null,
-          storedTotal,
-          d.alertes ? JSON.stringify(d.alertes) : null,
-          d.docs ? JSON.stringify(d.docs) : null,
-        ]
-      )
-    }
-    // Update devis total
-    const [sumRows] = await db.query(
-      'SELECT COALESCE(SUM(total_ligne_ht), 0) AS total FROM devis_lines WHERE devis_id = ?',
-      [devis.id]
-    )
-    await db.query('UPDATE devis SET total_ht = ?, status = ? WHERE id = ?', [sumRows[0].total, 'editing', devis.id])
-    const [allLines] = await db.query('SELECT * FROM devis_lines WHERE devis_id = ? ORDER BY FIELD(line_section, "products", "calculations", "transport"), position ASC, id ASC', [devis.id])
-    res.json(allLines)
-  } catch (err) {
-    console.error("CRASH:", err); res.status(500).json({ error: err.message })
-  }
-})
-
-// PUT /api/devis/:id/lines/:lineId — update a line
-router.put('/:id/lines/:lineId', async (req, res) => {
-  const allowed = ['position', 'line_section', 'designation', 'type_porte', 'gamme', 'vantail', 'hauteur_mm', 'largeur_mm', 'prix_base_ht', 'ref_base', 'options_json', 'serrure_ref', 'serrure_prix', 'ferme_porte_ref', 'ferme_porte_prix', 'equipements_json', 'total_ligne_ht', 'alertes_json', 'docs_json']
-  const sets = []
-  const vals = []
-  for (const key of allowed) {
-    if (req.body[key] !== undefined) {
-      sets.push(`${key} = ?`)
-      vals.push(key === 'line_section' ? normalizeLineSection(req.body[key]) : (key.endsWith('_json') ? JSON.stringify(req.body[key]) : req.body[key]))
-    }
-  }
-  if (!sets.length) return res.status(400).json({ error: 'Aucun champ à mettre à jour' })
-  vals.push(req.params.lineId, req.params.id)
-  try {
-    const devis = await loadDevisForUser(req.params.id, req.user)
-    if (!devis) return res.status(404).json({ error: 'Devis introuvable' })
-    await db.query(`UPDATE devis_lines SET ${sets.join(', ')} WHERE id = ? AND devis_id = ?`, vals)
-    // Recalculate devis total
-    const [sumRows] = await db.query(
-      'SELECT COALESCE(SUM(total_ligne_ht), 0) AS total FROM devis_lines WHERE devis_id = ?',
-      [devis.id]
-    )
-    await db.query('UPDATE devis SET total_ht = ? WHERE id = ?', [sumRows[0].total, devis.id])
-    const [rows] = await db.query('SELECT * FROM devis_lines WHERE id = ?', [req.params.lineId])
-    res.json(rows[0])
-  } catch (err) {
-    console.error("CRASH:", err); res.status(500).json({ error: err.message })
-  }
-})
-
-// DELETE /api/devis/:id/lines/:lineId
-router.delete('/:id/lines/:lineId', async (req, res) => {
-  try {
-    const devis = await loadDevisForUser(req.params.id, req.user)
-    if (!devis) return res.status(404).json({ error: 'Devis introuvable' })
-    await db.query('DELETE FROM devis_lines WHERE id = ? AND devis_id = ?', [req.params.lineId, devis.id])
-    // Recalculate devis total
-    const [sumRows] = await db.query(
-      'SELECT COALESCE(SUM(total_ligne_ht), 0) AS total FROM devis_lines WHERE devis_id = ?',
-      [devis.id]
-    )
-    await db.query('UPDATE devis SET total_ht = ? WHERE id = ?', [sumRows[0].total, devis.id])
-    res.json({ success: true })
-  } catch (err) {
-    console.error("CRASH:", err); res.status(500).json({ error: err.message })
-  }
-})
-
-// ── GET /api/devis/:id/pdf — generate Playwright PDF for a devis ───────────
-router.get('/:id/pdf', async (req, res) => {
-  const id = Number(req.params.id)
-  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'ID invalide' })
-  try {
-    const devis = await loadDevisForUser(id, req.user)
-    if (!devis) return res.status(404).json({ error: 'Devis introuvable' })
-
-    const [lines] = await db.query(
-      'SELECT * FROM devis_lines WHERE devis_id = ? ORDER BY FIELD(line_section, "products", "calculations", "transport"), position ASC, id ASC',
-      [id]
-    )
-
-    // Lazy-load PDF builder to avoid Playwright startup on every server boot
-    const { buildDevisNexusPdf } = await import('../devis-pdf.js')
-    const { buffer, filename } = await buildDevisNexusPdf({ devis, lines })
-
-    res.set({
-      'Content-Type': 'application/pdf',
-      'Content-Disposition': `attachment; filename="${filename}"`,
-      'Content-Length': buffer.length,
-    })
-    res.end(buffer)
-  } catch (err) {
-    console.error('devis pdf generation error:', err)
-    res.status(500).json({ error: 'Erreur génération PDF', details: err.message })
-  }
-})
-
 // ── POST /api/devis/:id/validate-rules ──────────────────────────────────────
 // Audite chaque ligne du devis contre TOUTES les règles métier approuvées.
 // Pour chaque (ligne, règle) → verdict { status, reason, fix } via Gemma 4.
@@ -1657,13 +1063,6 @@ router.post('/:id/validate-rules', async (req, res) => {
   const id = Number(req.params.id)
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'ID invalide' })
   try {
-    const devis = await loadDevisForUser(id, req.user)
-    if (!devis) return res.status(404).json({ error: 'Devis introuvable' })
-    const version = req.body?.version_id
-      ? await loadVersionForDevis(devis.id, req.body.version_id)
-      : await ensureInitialVersion(devis, req.user.id)
-    if (!version) return res.status(404).json({ error: 'Version introuvable' })
-
     const { validateDevis } = await import('../services/rules-validator.js')
     const report = await validateDevis({ devisId: id })
 
@@ -1672,28 +1071,7 @@ router.post('/:id/validate-rules', async (req, res) => {
       await db.query('UPDATE devis SET validation_json = ? WHERE id = ?', [JSON.stringify(report), id])
     } catch { /* colonne absente → ignorer, on retourne quand même le rapport */ }
 
-    await db.query(
-      `INSERT INTO devis_rule_checks (version_id, report_json, summary_json, created_by)
-       VALUES (?, ?, ?, ?)`,
-      [version.id, JSON.stringify(report), JSON.stringify(report.summary || {}), req.user.id]
-    )
-    await db.query(
-      `INSERT INTO devis_version_comments (version_id, step_key, kind, content, meta_json, created_by)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [
-        version.id,
-        'check',
-        'check',
-        `Check règles : ${report.summary?.violation || 0} violation(s), ${report.summary?.warning || 0} avertissement(s)`,
-        JSON.stringify({ rules_count: report.rules_count, summary: report.summary }),
-        req.user.id,
-      ]
-    )
-    if (!isLockedVersion(version)) {
-      await db.query('UPDATE devis_versions SET status = ? WHERE id = ?', ['checked', version.id])
-    }
-
-    res.json({ ...report, version_id: version.id })
+    res.json(report)
   } catch (err) {
     console.error('validate-rules error:', err)
     res.status(500).json({ error: 'Erreur validation des règles', details: err.message })
@@ -1725,6 +1103,7 @@ router.post('/validate-lines', async (req, res) => {
         id: l.id ?? null,
         position: l.position ?? i,
         designation: l.designation || l.type || null,
+        localisation: l.localisation || null,
         type_porte: l.type || null,
         gamme: l.gamme || null,
         vantail: l.vantail || null,
@@ -1779,6 +1158,353 @@ router.post('/save-as-rule', async (req, res) => {
     res.json(rows[0])
   } catch (err) {
     res.status(500).json({ error: err.message })
+  }
+})
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ── DEVIS VERSIONS ──────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+
+// GET /api/devis/:id/versions
+// Returns { current_version_id, versions: [...] } each version includes its comments
+router.get('/:id/versions', async (req, res) => {
+  const devisId = Number(req.params.id)
+  if (!Number.isInteger(devisId) || devisId < 1) return res.status(400).json({ error: 'ID invalide' })
+  try {
+    const [[devisRow]] = await db.query('SELECT id, current_version_id FROM devis WHERE id = ?', [devisId])
+    if (!devisRow) return res.status(404).json({ error: 'Devis introuvable' })
+
+    const [versions] = await db.query(
+      `SELECT * FROM devis_versions WHERE devis_id = ? ORDER BY id ASC`,
+      [devisId]
+    )
+    const [comments] = await db.query(
+      `SELECT * FROM devis_version_comments
+       WHERE version_id IN (SELECT id FROM devis_versions WHERE devis_id = ?)
+       ORDER BY created_at ASC`,
+      [devisId]
+    )
+    const commentsByVersion = {}
+    for (const c of comments) {
+      if (!commentsByVersion[c.version_id]) commentsByVersion[c.version_id] = []
+      commentsByVersion[c.version_id].push(c)
+    }
+
+    // Auto-create a default version if none exist
+    if (!versions.length) {
+      const [vResult] = await db.query(
+        `INSERT INTO devis_versions (devis_id, version_label, branch_label, title, status, created_by)
+         VALUES (?, 'v1', 'main', 'Version de travail', 'editing', ?)`,
+        [devisId, req.user.id]
+      )
+      await db.query('UPDATE devis SET current_version_id = ? WHERE id = ?', [vResult.insertId, devisId])
+      const [[newVersion]] = await db.query('SELECT * FROM devis_versions WHERE id = ?', [vResult.insertId])
+      return res.json({ current_version_id: vResult.insertId, versions: [{ ...newVersion, comments: [] }] })
+    }
+
+    const currentVersionId = devisRow.current_version_id || versions[0]?.id || null
+    res.json({
+      current_version_id: currentVersionId,
+      versions: versions.map(v => ({ ...v, comments: commentsByVersion[v.id] || [] })),
+    })
+  } catch (err) {
+    console.error('GET versions error:', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// POST /api/devis/:id/versions
+// Creates a new version (optionally copies lines from source_version_id or devis_lines)
+// Body: { source_version_id?, branch_label?, title?, comment?, step_key? }
+router.post('/:id/versions', async (req, res) => {
+  const devisId = Number(req.params.id)
+  if (!Number.isInteger(devisId) || devisId < 1) return res.status(400).json({ error: 'ID invalide' })
+  const { source_version_id, branch_label, title, comment, step_key } = req.body
+  try {
+    // Compute next version label
+    const [[{ cnt }]] = await db.query(
+      'SELECT COUNT(*) AS cnt FROM devis_versions WHERE devis_id = ?', [devisId]
+    )
+    const versionLabel = `v${cnt + 1}`
+
+    // Determine parent
+    const parentId = source_version_id ? Number(source_version_id) : null
+
+    const [vResult] = await db.query(
+      `INSERT INTO devis_versions (devis_id, parent_version_id, version_label, branch_label, title, status, created_by)
+       VALUES (?, ?, ?, ?, ?, 'editing', ?)`,
+      [devisId, parentId, versionLabel, branch_label || null, title || null, req.user.id]
+    )
+    const newVersionId = vResult.insertId
+
+    // Copy lines from source version or from devis_lines
+    if (source_version_id) {
+      const [sourceLines] = await db.query(
+        'SELECT * FROM devis_version_lines WHERE version_id = ?', [Number(source_version_id)]
+      )
+      for (const line of sourceLines) {
+        await db.query(
+          `INSERT INTO devis_version_lines (version_id, source_line_id, position, line_section, grid_json, designation_pdf, total_ligne_ht)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [newVersionId, line.source_line_id, line.position, line.line_section, line.grid_json, line.designation_pdf, line.total_ligne_ht]
+        )
+      }
+    } else {
+      // Copy from master devis_lines
+      const [masterLines] = await db.query(
+        'SELECT * FROM devis_lines WHERE devis_id = ? ORDER BY position ASC', [devisId]
+      )
+      for (const line of masterLines) {
+        await db.query(
+          `INSERT INTO devis_version_lines (version_id, source_line_id, position, line_section, grid_json, designation_pdf, total_ligne_ht)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [newVersionId, line.id, line.position, line.line_section,
+            JSON.stringify({ ...line, options_json: line.options_json ? JSON.parse(line.options_json) : null }),
+            line.designation, line.total_ligne_ht]
+        )
+      }
+    }
+
+    // Auto-add creation comment/checkpoint
+    if (comment?.trim()) {
+      await db.query(
+        `INSERT INTO devis_version_comments (version_id, step_key, kind, content, created_by) VALUES (?, ?, 'checkpoint', ?, ?)`,
+        [newVersionId, step_key || 'versions', comment.trim(), req.user.id]
+      )
+    }
+
+    const [[newVersion]] = await db.query('SELECT * FROM devis_versions WHERE id = ?', [newVersionId])
+    const [newComments] = await db.query('SELECT * FROM devis_version_comments WHERE version_id = ?', [newVersionId])
+    res.status(201).json({ ...newVersion, comments: newComments })
+  } catch (err) {
+    console.error('POST versions error:', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// POST /api/devis/:id/versions/:vId/activate
+router.post('/:id/versions/:vId/activate', async (req, res) => {
+  const devisId = Number(req.params.id)
+  const vId = Number(req.params.vId)
+  if (!Number.isInteger(devisId) || !Number.isInteger(vId)) return res.status(400).json({ error: 'ID invalide' })
+  try {
+    const [[version]] = await db.query('SELECT id FROM devis_versions WHERE id = ? AND devis_id = ?', [vId, devisId])
+    if (!version) return res.status(404).json({ error: 'Version introuvable' })
+    await db.query('UPDATE devis SET current_version_id = ? WHERE id = ?', [vId, devisId])
+    res.json({ success: true, current_version_id: vId })
+  } catch (err) {
+    console.error('activate version error:', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// PATCH /api/devis/:id/versions/:vId — update title / status
+router.patch('/:id/versions/:vId', async (req, res) => {
+  const devisId = Number(req.params.id)
+  const vId = Number(req.params.vId)
+  if (!Number.isInteger(devisId) || !Number.isInteger(vId)) return res.status(400).json({ error: 'ID invalide' })
+  const allowed = ['title', 'branch_label', 'status']
+  const sets = []
+  const vals = []
+  for (const key of allowed) {
+    if (req.body[key] !== undefined) { sets.push(`${key} = ?`); vals.push(req.body[key]) }
+  }
+  if (!sets.length) return res.status(400).json({ error: 'Aucun champ à mettre à jour' })
+  vals.push(vId, devisId)
+  try {
+    await db.query(`UPDATE devis_versions SET ${sets.join(', ')} WHERE id = ? AND devis_id = ?`, vals)
+    const [[row]] = await db.query('SELECT * FROM devis_versions WHERE id = ?', [vId])
+    res.json(row)
+  } catch (err) {
+    console.error('PATCH version error:', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// POST /api/devis/:id/versions/:vId/comments
+router.post('/:id/versions/:vId/comments', async (req, res) => {
+  const vId = Number(req.params.vId)
+  const { content, step_key, kind } = req.body
+  if (!content?.trim()) return res.status(400).json({ error: 'content requis' })
+  try {
+    const [result] = await db.query(
+      `INSERT INTO devis_version_comments (version_id, step_key, kind, content, created_by) VALUES (?, ?, ?, ?, ?)`,
+      [vId, step_key || null, kind || 'comment', content.trim(), req.user.id]
+    )
+    const [[row]] = await db.query('SELECT * FROM devis_version_comments WHERE id = ?', [result.insertId])
+    res.status(201).json(row)
+  } catch (err) {
+    console.error('POST comment error:', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// PATCH /api/devis/:id/versions/:vId/comments/:cId
+router.patch('/:id/versions/:vId/comments/:cId', async (req, res) => {
+  const { cId } = req.params
+  const { content } = req.body
+  if (!content?.trim()) return res.status(400).json({ error: 'content requis' })
+  try {
+    await db.query('UPDATE devis_version_comments SET content = ? WHERE id = ?', [content.trim(), cId])
+    const [[row]] = await db.query('SELECT * FROM devis_version_comments WHERE id = ?', [cId])
+    res.json(row)
+  } catch (err) {
+    console.error('PATCH comment error:', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// POST /api/devis/:id/versions/:vId/checkpoint
+// Body: { comment?, step_key?, status? }
+router.post('/:id/versions/:vId/checkpoint', async (req, res) => {
+  const devisId = Number(req.params.id)
+  const vId = Number(req.params.vId)
+  const { comment, step_key, status } = req.body
+  try {
+    // Optionally update version status
+    if (status) {
+      await db.query('UPDATE devis_versions SET status = ? WHERE id = ? AND devis_id = ?', [status, vId, devisId])
+    }
+    const content = comment?.trim() || `Checkpoint — ${new Date().toLocaleString('fr-FR')}`
+    const [result] = await db.query(
+      `INSERT INTO devis_version_comments (version_id, step_key, kind, content, created_by) VALUES (?, ?, 'checkpoint', ?, ?)`,
+      [vId, step_key || null, content, req.user.id]
+    )
+    const [[row]] = await db.query('SELECT * FROM devis_version_comments WHERE id = ?', [result.insertId])
+    res.status(201).json(row)
+  } catch (err) {
+    console.error('checkpoint error:', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// PUT /api/devis/:id/versions/:vId/pdf-labels
+// Body: { labels: [{ line_id, position, line_section, designation_pdf }], comment? }
+router.put('/:id/versions/:vId/pdf-labels', async (req, res) => {
+  const devisId = Number(req.params.id)
+  const vId = Number(req.params.vId)
+  const { labels, comment } = req.body
+  if (!Array.isArray(labels)) return res.status(400).json({ error: 'labels array requis' })
+  try {
+    for (const label of labels) {
+      if (!label.line_id) continue
+      // Upsert into devis_version_lines
+      const [existing] = await db.query(
+        'SELECT id FROM devis_version_lines WHERE version_id = ? AND source_line_id = ?',
+        [vId, label.line_id]
+      )
+      if (existing.length) {
+        await db.query(
+          'UPDATE devis_version_lines SET designation_pdf = ? WHERE version_id = ? AND source_line_id = ?',
+          [label.designation_pdf || null, vId, label.line_id]
+        )
+      } else {
+        await db.query(
+          `INSERT INTO devis_version_lines (version_id, source_line_id, position, line_section, grid_json, designation_pdf)
+           VALUES (?, ?, ?, ?, '{}', ?)`,
+          [vId, label.line_id, label.position ?? 0, label.line_section || 'products', label.designation_pdf || null]
+        )
+      }
+      // Also update master devis_lines.designation for immediate reflect
+      await db.query(
+        'UPDATE devis_lines SET designation = ? WHERE id = ? AND devis_id = ?',
+        [label.designation_pdf || null, label.line_id, devisId]
+      )
+    }
+    if (comment?.trim()) {
+      await db.query(
+        `INSERT INTO devis_version_comments (version_id, step_key, kind, content, created_by) VALUES (?, 'pdf', 'pdf', ?, ?)`,
+        [vId, comment.trim(), req.user.id]
+      )
+    }
+    // Return updated lines
+    const [lines] = await db.query(
+      'SELECT * FROM devis_lines WHERE devis_id = ? ORDER BY FIELD(line_section, "products", "calculations", "transport"), position ASC, id ASC',
+      [devisId]
+    )
+    res.json({ success: true, lines })
+  } catch (err) {
+    console.error('pdf-labels error:', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ── POST /api/devis/:id/send-hubspot — génère le PDF et l'envoie sur l'affaire HubSpot ──
+router.post('/:id/send-hubspot', async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'ID invalide' })
+  const { deal_id, note_body, version_id } = req.body || {}
+  try {
+    const [rows] = await db.query('SELECT * FROM devis WHERE id = ?', [id])
+    if (!rows.length) return res.status(404).json({ error: 'Devis introuvable' })
+    const devis = rows[0]
+    const targetDealId = deal_id || devis.deal_id
+    if (!targetDealId) return res.status(400).json({ error: 'deal_id requis (aucun deal lié à ce devis)' })
+
+    // Resolve active version info for filename enrichment
+    const targetVersionId = version_id || devis.current_version_id || null
+    let versionRow = null
+    let versionComment = null
+    if (targetVersionId) {
+      const [[v]] = await db.query('SELECT * FROM devis_versions WHERE id = ? AND devis_id = ?', [targetVersionId, id])
+      versionRow = v || null
+      if (versionRow) {
+        const [[commentRow]] = await db.query(
+          `SELECT content FROM devis_version_comments
+           WHERE version_id = ? AND kind = 'comment' AND TRIM(content) <> ''
+           ORDER BY created_at DESC, id DESC LIMIT 1`,
+          [versionRow.id]
+        )
+        versionComment = commentRow?.content?.trim() || null
+      }
+    }
+
+    const [lines] = await db.query(
+      'SELECT * FROM devis_lines WHERE devis_id = ? ORDER BY FIELD(line_section,"products","calculations","transport"), position ASC, id ASC',
+      [id]
+    )
+
+    const { buildDevisNexusPdf } = await import('../devis-pdf.js')
+    // Enrich devis.name with version label for a more meaningful filename
+    const versionLabel = versionRow
+      ? (versionRow.title || versionRow.branch_label || versionRow.version_label)
+      : null
+    const enrichedDevis = versionLabel
+      ? { ...devis, name: `${devis.name || `D${devis.id}`} — ${versionLabel}` }
+      : devis
+    const { buffer, filename } = await buildDevisNexusPdf({ devis: enrichedDevis, lines })
+
+    const { uploadPdfToDeal, isHubspotConfigured } = await import('../services/hubspot.js')
+    if (!isHubspotConfigured()) {
+      return res.status(503).json({ error: 'HubSpot non configuré (HUBSPOT_PRIVATE_APP_TOKEN manquant)' })
+    }
+
+    const body = note_body
+      || [
+        `Devis NEXUS — ${devis.client_name || ''} — ${devis.name || ''}${versionLabel ? ` — ${versionLabel}` : ''}`,
+        versionComment ? `Commentaire version : ${versionComment}` : null,
+      ].filter(Boolean).join('\n')
+    const result = await uploadPdfToDeal({ buffer, filename, dealId: targetDealId, noteBody: body })
+
+    // Update version row if available
+    if (versionRow) {
+      await db.query(
+        'UPDATE devis_versions SET hubspot_note_id = ?, hubspot_file_id = ?, status = ? WHERE id = ?',
+        [result.noteId, result.fileId, 'sent_hubspot', versionRow.id]
+      )
+    }
+    await db.query(
+      'UPDATE devis SET hubspot_note_id = ?, status = ? WHERE id = ?',
+      [result.noteId, 'sent_hubspot', id]
+    )
+
+    res.json({ ...result, filename, version_id: versionRow?.id || null, version_label: versionLabel, version_comment: versionComment })
+  } catch (err) {
+    if (err.code === 'NO_TOKEN') return res.status(503).json({ error: err.message })
+    console.error('[devis] send-hubspot error:', err)
+    res.status(err.status >= 400 && err.status < 600 ? err.status : 500).json({
+      error: err.message || 'Erreur envoi HubSpot',
+    })
   }
 })
 

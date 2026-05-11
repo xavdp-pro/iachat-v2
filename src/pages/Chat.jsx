@@ -5,8 +5,8 @@ import {
   Send, Bot, Sparkles, Settings,
   MoreVertical, Archive, ArchiveRestore,
   Menu, X, Paperclip, Mic, MicOff, FileText, ZoomIn,
-  Volume2, VolumeX, Copy, Check, RotateCcw,
-  Users, UserPlus, ChevronRight, BookOpen, FileSpreadsheet, Building2, Database, LayoutGrid,
+  Users, UserPlus, Database, BookOpen, FileSpreadsheet, LayoutGrid,
+  Building2, Shield, Truck,
 } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/useAuthStore.js'
@@ -14,7 +14,6 @@ import { useThemeStore } from '../store/useThemeStore.js'
 import { useProjectStore } from '../store/useProjectStore.js'
 import { useTranslation } from 'react-i18next'
 import { motion, AnimatePresence } from 'framer-motion'
-import { MarkdownRenderer } from '../components/MarkdownRenderer.jsx'
 
 export default function Chat() {
   const { t } = useTranslation()
@@ -26,8 +25,7 @@ export default function Chat() {
     discussions, activeDiscussion, setActiveDiscussion,
     createProject, createDiscussion, updateDiscussion, deleteDiscussion,
     updateProject, deleteProject,
-    messages, sendMessage, updateMessage, deleteMessage, pruneMessagesFrom, loading,
-    streaming, streamingContent,
+    messages, sendMessage, updateMessage, deleteMessage, loading,
     ollamaError, clearOllamaError,
     projectMembers, fetchProjectMembers, addProjectMember, removeProjectMember,
   } = useProjectStore()
@@ -45,15 +43,10 @@ export default function Chat() {
   const [inputMessage, setInputMessage] = useState('')
   const [pendingAttachments, setPendingAttachments] = useState([])
   const [isRecording, setIsRecording] = useState(false)
-  const [sttLoading, setSttLoading] = useState(false)
-  const [ttsEnabled, setTtsEnabled] = useState(() => localStorage.getItem('tts_enabled') !== 'false')
-  const [ttsPlaying, setTtsPlaying] = useState(false)
-  const [copiedId, setCopiedId] = useState(null)
   const [lightboxSrc, setLightboxSrc] = useState(null)
   const [editingMessageId, setEditingMessageId] = useState(null)
   const [editingMessageContent, setEditingMessageContent] = useState('')
   const [confirmDeleteMessage, setConfirmDeleteMessage] = useState(null)
-  const [confirmRelaunchMessage, setConfirmRelaunchMessage] = useState(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [layoutDesktop, setLayoutDesktop] = useState(
     () => typeof window !== 'undefined' && window.matchMedia('(min-width: 1024px)').matches
@@ -66,15 +59,6 @@ export default function Chat() {
   const textareaRef = useRef(null)
   const fileInputRef = useRef(null)
   const speechRef = useRef(null)
-  const mediaRecorderRef = useRef(null)
-  const audioChunksRef = useRef([])
-  const vadIntervalRef = useRef(null)
-  const isRecordingRef = useRef(false)
-  const ttsAudioRef = useRef(null)
-  const prevStreamingRef = useRef(false)
-  const ttsQueueRef = useRef([])
-  const isProcessingQueueRef = useRef(false)
-  const lastSentIndexRef = useRef(0)
 
   const closeMobileSidebar = () => {
     if (typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches) {
@@ -115,70 +99,6 @@ export default function Chat() {
     }
   }, [sidebarOpen])
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
-  useEffect(() => {
-    if (streaming) messagesEndRef.current?.scrollIntoView({ behavior: 'instant' })
-  }, [streamingContent, streaming])
-
-  // Streaming TTS: buffer and play sentences as they arrive
-  useEffect(() => {
-    if (!streaming || !ttsEnabled) {
-      if (!streaming) lastSentIndexRef.current = 0
-      return
-    }
-
-    const text = streamingContent
-    const sentenceEndings = /[.!?\n]/
-    const newText = text.slice(lastSentIndexRef.current)
-    
-    // Find if there's a sentence ending in the new text
-    const match = newText.match(sentenceEndings)
-    if (match) {
-      const endIdx = lastSentIndexRef.current + match.index + 1
-      const sentence = text.slice(lastSentIndexRef.current, endIdx).trim()
-      
-      if (sentence.length >= 1) { // Accept even short sentences
-        enqueueTts(sentence)
-        lastSentIndexRef.current = endIdx
-      }
-    }
-  }, [streamingContent, streaming, ttsEnabled])
-
-  const enqueueTts = (text) => {
-    ttsQueueRef.current.push(text)
-    processTtsQueue()
-  }
-
-  const processTtsQueue = async () => {
-    if (isProcessingQueueRef.current || ttsQueueRef.current.length === 0) return
-    
-    isProcessingQueueRef.current = true
-    const text = ttsQueueRef.current.shift()
-    
-    try {
-      await synthesizeAndPlay(text, true) // true = append mode/don't clear
-    } finally {
-      isProcessingQueueRef.current = false
-      processTtsQueue()
-    }
-  }
-
-  // Lecture TTS automatique quand le streaming se termine (pour le reste du texte)
-  useEffect(() => {
-    const wasStreaming = prevStreamingRef.current
-    prevStreamingRef.current = streaming
-    if (!wasStreaming || streaming) return
-    if (!ttsEnabled) return
-    
-    // Play anything remaining in the buffer
-    const remainingText = streamingContent.slice(lastSentIndexRef.current).trim()
-    if (remainingText) {
-      enqueueTts(remainingText)
-    }
-    
-    // Re-verify the last message just in case (fallback)
-    // const lastMsg = [...messages].reverse().find((m) => m.role === 'assistant')
-    // if (lastMsg?.content) synthesizeAndPlay(lastMsg.content)
-  }, [streaming, streamingContent])
 
   useEffect(() => {
     if (projectMenuId == null && discussionMenuId == null) return
@@ -204,12 +124,11 @@ export default function Chat() {
       if (discussionRenameTarget) { closeRenameDiscussionModal(); return }
       if (confirmDeleteDiscussion) { setConfirmDeleteDiscussion(null); return }
       if (confirmDeleteMessage) { setConfirmDeleteMessage(null); return }
-      if (confirmRelaunchMessage) { setConfirmRelaunchMessage(null); return }
       if (editingMessageId) { cancelEditMessage(); return }
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [isProjectModalOpen, confirmDeleteProject, discussionRenameTarget, confirmDeleteDiscussion, confirmDeleteMessage, confirmRelaunchMessage, editingMessageId, membersProjectTarget])
+  }, [isProjectModalOpen, confirmDeleteProject, discussionRenameTarget, confirmDeleteDiscussion, confirmDeleteMessage, editingMessageId, membersProjectTarget])
 
   const isProjectArchived = (p) => Number(p?.archived) === 1
   const activeProjects = projects.filter((p) => !isProjectArchived(p))
@@ -359,15 +278,6 @@ export default function Chat() {
     } catch { /* api error */ }
   }
 
-  const relaunchEditMessage = useCallback(async (m) => {
-    const newContent = editingMessageContent.trim()
-    if (!newContent || loading) return
-    const attachments = m.attachments || []
-    cancelEditMessage()
-    await pruneMessagesFrom(m.id)
-    await sendMessage(newContent, attachments)
-  }, [editingMessageContent, loading, pruneMessagesFrom, sendMessage, cancelEditMessage])
-
   const handleConfirmDeleteMessage = async () => {
     if (!confirmDeleteMessage) return
     try {
@@ -377,23 +287,12 @@ export default function Chat() {
     }
   }
 
-  const handleConfirmRelaunch = useCallback(async () => {
-    if (!confirmRelaunchMessage) return
-    const m = confirmRelaunchMessage
-    setConfirmRelaunchMessage(null)
-    await relaunchEditMessage(m)
-  }, [confirmRelaunchMessage, relaunchEditMessage])
-
-  const autoResizeTextarea = useCallback(() => {
+  const autoResizeTextarea = () => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
       textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`
     }
-  }, [])
-
-  useEffect(() => {
-    autoResizeTextarea()
-  }, [inputMessage, autoResizeTextarea])
+  }
 
   // ── File attachment helpers ────────────────────────────────────────────────
 
@@ -445,241 +344,37 @@ export default function Chat() {
     addFilesAsAttachments(imageItems.map((it) => it.getAsFile()))
   }, [addFilesAsAttachments])
 
-  // ── Microphone / STT Gemma 4 (VAD temps réel) ────────────────────────────
-  //
-  // Principe :
-  //  1. AnalyserNode surveille le niveau sonore toutes les 80ms
-  //  2. Dès qu'un silence ≥ VAD_SILENCE_MS est détecté APRÈS une phrase,
-  //     on coupe le MediaRecorder → onstop envoie le segment à Gemma 4
-  //     → texte ajouté progressivement dans l'input
-  //  3. Un nouveau MediaRecorder repart immédiatement pour la phrase suivante
-  //  4. Cliquer à nouveau sur le bouton arrête tout proprement
+  // ── Microphone / Speech-to-text ────────────────────────────────────────────
 
-  const VAD_SILENCE_MS  = 350   // silence (ms) déclenchant la segmentation
-  const VAD_MIN_SPEECH_MS = 180 // durée min de parole pour envoyer le segment
-  const VAD_MAX_SPEECH_MS = 1200 // durée max d'un segment (quasi-streaming HTTP)
-  const VAD_THRESHOLD   = 6     // niveau RMS (0-255) sous lequel = silence (sensibilité accrue)
-
-  /** Envoie un Blob audio à /api/tts/stt (Whisper) et appende le résultat */
-  const sendSegment = useCallback(async (blob) => {
-    if (!blob || blob.size < 500) {
-      console.debug('[STT] segment ignoré (trop court)', blob?.size)
-      return
-    }
-    setSttLoading(true)
-    const formData = new FormData()
-    formData.append('audio', blob, 'segment.webm')
-    try {
-      const token = localStorage.getItem('token') || ''
-      const resp = await fetch('/api/tts/stt', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-        body: formData,
-      })
-      if (!resp.ok) {
-        console.warn('[STT] HTTP', resp.status, await resp.text().catch(() => ''))
-        return
-      }
-      const data = await resp.json()
-      console.debug('[STT] reçu:', data.text)
-      if (data.text?.trim()) {
-        setInputMessage((prev) => {
-          const sep = prev && !prev.endsWith(' ') ? ' ' : ''
-          return prev ? `${prev}${sep}${data.text}` : data.text
-        })
-        setTimeout(autoResizeTextarea, 0)
-      }
-    } catch (err) {
-      console.warn('[STT] erreur réseau', err)
-    } finally {
-      setSttLoading(false)
-    }
-  }, [autoResizeTextarea])
-
-  const toggleMic = useCallback(async () => {
-    // ── STOP ──
-    if (isRecording) {
-      clearInterval(vadIntervalRef.current)
-      vadIntervalRef.current = null
-      isRecordingRef.current = false
-      mediaRecorderRef.current?.stop()   // déclenchera onstop → dernier segment
-      setIsRecording(false)
+  const toggleMic = useCallback(() => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (!SR) {
+      alert('La reconnaissance vocale n\'est pas supportée par ce navigateur.')
       return
     }
 
-    // Arrêter la lecture TTS en cours avant d'enregistrer
-    if (ttsAudioRef.current) {
-      ttsAudioRef.current.pause()
-      ttsAudioRef.current = null
-      setTtsPlaying(false)
-    }
-
-    let stream
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-    } catch {
-      alert(t('chat.ttsMicNoAccess'))
+    if (isRecording && speechRef.current) {
+      speechRef.current.stop()
       return
     }
 
-    setIsRecording(true)
-    isRecordingRef.current = true
+    const recognition = new SR()
+    recognition.lang = 'fr-FR'
+    recognition.continuous = false
+    recognition.interimResults = true
 
-    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-      ? 'audio/webm;codecs=opus'
-      : MediaRecorder.isTypeSupported('audio/webm')
-      ? 'audio/webm'
-      : ''
-
-    // ── AudioContext pour le VAD ──
-    const audioCtx   = new (window.AudioContext || window.webkitAudioContext)()
-    const source     = audioCtx.createMediaStreamSource(stream)
-    const analyser   = audioCtx.createAnalyser()
-    analyser.fftSize = 256
-    source.connect(analyser)
-    const buf = new Uint8Array(analyser.frequencyBinCount)
-
-    let silenceStart   = null   // timestamp début du silence courant
-    let speechStart    = null   // timestamp début de la phrase courante
-    let segmentStart   = null   // timestamp début du recorder courant
-    let currentChunks  = []     // chunks du segment courant
-
-    /** Démarre un nouveau MediaRecorder pour capter la prochaine phrase */
-    function startSegmentRecorder() {
-      const mr = new MediaRecorder(stream, mimeType ? { mimeType } : {})
-      currentChunks = []
-      segmentStart = Date.now()
-
-      mr.ondataavailable = (e) => {
-        if (e.data.size > 0) currentChunks.push(e.data)
-      }
-
-      mr.onstop = () => {
-        const blob = new Blob(currentChunks, { type: mr.mimeType || 'audio/webm' })
-        const speechDuration = speechStart ? (Date.now() - speechStart) : 0
-        // Envoie si parole détectée OU si segment > 0.8s (Whisper filtrera le bruit)
-        if (speechDuration >= VAD_MIN_SPEECH_MS || (segmentStart && Date.now() - segmentStart >= 800)) {
-          sendSegment(blob)
-        }
-        speechStart  = null
-        silenceStart = null
-        segmentStart = null
-      }
-
-      mr.start(100)
-      mediaRecorderRef.current = mr
+    recognition.onstart = () => setIsRecording(true)
+    recognition.onend = () => { setIsRecording(false); speechRef.current = null }
+    recognition.onerror = () => { setIsRecording(false); speechRef.current = null }
+    recognition.onresult = (ev) => {
+      const transcript = Array.from(ev.results).map((r) => r[0].transcript).join('')
+      setInputMessage(transcript)
+      setTimeout(autoResizeTextarea, 0)
     }
 
-    startSegmentRecorder()
-
-    // ── Boucle VAD ──
-    vadIntervalRef.current = setInterval(() => {
-      analyser.getByteFrequencyData(buf)
-      const rms = buf.reduce((s, v) => s + v, 0) / buf.length
-
-      if (rms > VAD_THRESHOLD) {
-        // Voix détectée
-        if (!speechStart) speechStart = Date.now()
-        silenceStart = null
-      } else {
-        // Silence
-        if (!silenceStart) silenceStart = Date.now()
-      }
-
-      // Conditions de coupe : silence prolongé OU segment trop long (en absolu)
-      const silenceDuration = silenceStart ? (Date.now() - silenceStart) : 0
-      const segmentDuration = segmentStart ? (Date.now() - segmentStart) : 0
-      const shouldCutSilence = speechStart && silenceDuration >= VAD_SILENCE_MS
-      const shouldCutMaxLen  = segmentDuration >= VAD_MAX_SPEECH_MS
-
-      if (shouldCutSilence || shouldCutMaxLen) {
-        const mr = mediaRecorderRef.current
-        if (mr && mr.state === 'recording') {
-          mr.stop()             // déclenche onstop → sendSegment
-          // Redémarre immédiatement pour la prochaine phrase
-          setTimeout(() => {
-            if (isRecordingRef.current) {
-              startSegmentRecorder()
-            }
-          }, 80)
-        }
-      }
-    }, 80)
-
-    // Nettoyage quand le stream s'arrête (ex. navigateur coupe le micro)
-    stream.getAudioTracks()[0].addEventListener('ended', () => {
-      clearInterval(vadIntervalRef.current)
-      vadIntervalRef.current = null
-      isRecordingRef.current = false
-      audioCtx.close().catch(() => {})
-      stream.getTracks().forEach((t) => t.stop())
-      setIsRecording(false)
-    })
-
-  }, [isRecording, sendSegment, t])
-
-  // ── TTS (Kokoro) ───────────────────────────────────────────────────────────
-
-  const synthesizeAndPlay = useCallback(async (text, append = false) => {
-    if (!text?.trim()) return
-    
-    if (!append && ttsAudioRef.current) {
-      ttsAudioRef.current.pause()
-      ttsAudioRef.current = null
-      ttsQueueRef.current = [] // Clear queue if manually playing something else
-    }
-    
-    setTtsPlaying(true)
-    try {
-      const token = localStorage.getItem('token') || ''
-      const voice = localStorage.getItem('tts_voice') || 'Ana Florence'
-      const resp = await fetch('/api/tts/synthesize', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ text: text.slice(0, 3000), voice }),
-      })
-      if (!resp.ok) { 
-        if (!append) setTtsPlaying(false)
-        return 
-      }
-      const blob = await resp.blob()
-      const url = URL.createObjectURL(blob)
-      const audio = new Audio(url)
-      
-      if (!append) ttsAudioRef.current = audio
-
-      return new Promise((resolve) => {
-        const cleanup = () => {
-          if (!append) setTtsPlaying(false)
-          URL.revokeObjectURL(url)
-          if (!append) ttsAudioRef.current = null
-          resolve()
-        }
-        audio.onended = cleanup
-        audio.onerror = cleanup
-        audio.play().catch(resolve)
-      })
-    } catch {
-      if (!append) setTtsPlaying(false)
-    }
-  }, [])
-
-  const toggleTts = useCallback(() => {
-    if (ttsEnabled && ttsAudioRef.current) {
-      ttsAudioRef.current.pause()
-      ttsAudioRef.current = null
-      ttsQueueRef.current = []
-      setTtsPlaying(false)
-    }
-    setTtsEnabled((prev) => {
-      const next = !prev
-      localStorage.setItem('tts_enabled', String(next))
-      return next
-    })
-  }, [ttsEnabled])
+    speechRef.current = recognition
+    recognition.start()
+  }, [isRecording])
 
   // ── Message submit ─────────────────────────────────────────────────────────
 
@@ -991,32 +686,40 @@ export default function Chat() {
         </nav>
 
         <div className="chat-sidebar-footer">
-          <Link to="/knowledge" className="chat-footer-link">
+          <Link to="/knowledge" className="chat-footer-link" onClick={closeMobileSidebar}>
             <Database size={16} strokeWidth={2} />
             Connaissance IA
           </Link>
-          <Link to="/experiences" className="chat-footer-link">
+          <Link to="/experiences" className="chat-footer-link" onClick={closeMobileSidebar}>
             <BookOpen size={16} strokeWidth={2} />
             Expériences
           </Link>
-          <Link to="/devis" className="chat-footer-link">
+          <Link to="/devis" className="chat-footer-link" onClick={closeMobileSidebar}>
             <FileSpreadsheet size={16} strokeWidth={2} />
             Devis NEXUS
           </Link>
-          <Link to="/devis/grid" className="chat-footer-link">
+          <Link to="/devis/grid" className="chat-footer-link" onClick={closeMobileSidebar}>
             <LayoutGrid size={16} strokeWidth={2} />
-            Devis tableur
+            Grid devis
           </Link>
-          <Link to="/devis/legacy" className="chat-footer-link">
+          <Link to="/devis/legacy" className="chat-footer-link" onClick={closeMobileSidebar}>
             <FileText size={16} strokeWidth={2} />
-            Devis (classique)
+            Devis classique
           </Link>
-          <Link to="/prospects" className="chat-footer-link">
+          <Link to="/devis/transport" className="chat-footer-link" onClick={closeMobileSidebar}>
+            <Truck size={16} strokeWidth={2} />
+            Tarifs transport
+          </Link>
+          <Link to="/prospects" className="chat-footer-link" onClick={closeMobileSidebar}>
             <Building2 size={16} strokeWidth={2} />
             Prospects
           </Link>
+          <Link to="/rules" className="chat-footer-link" onClick={closeMobileSidebar}>
+            <Shield size={16} strokeWidth={2} />
+            Règles
+          </Link>
           {user?.role === 'admin' && (
-            <Link to="/admin" className="chat-footer-link">
+            <Link to="/admin" className="chat-footer-link" onClick={closeMobileSidebar}>
               <Settings size={16} strokeWidth={2} />
               {t('chat.admin')}
             </Link>
@@ -1129,14 +832,10 @@ export default function Chat() {
                   autoResizeTextarea={autoResizeTextarea}
                   canSend={canSend}
                   loading={loading}
-                  disabled={false}
+                  disabled={!activeProject}
                   placeholder={composerPlaceholder}
                   isRecording={isRecording}
                   toggleMic={toggleMic}
-                  sttLoading={sttLoading}
-                  ttsEnabled={ttsEnabled}
-                  ttsPlaying={ttsPlaying}
-                  toggleTts={toggleTts}
                   t={t}
                   setLightboxSrc={setLightboxSrc}
                 />
@@ -1218,6 +917,7 @@ export default function Chat() {
                                   autoFocus
                                   rows={3}
                                   onKeyDown={(e) => {
+                                    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveEditMessage(m.id) }
                                     if (e.key === 'Escape') cancelEditMessage()
                                   }}
                                 />
@@ -1225,23 +925,14 @@ export default function Chat() {
                                   <button type="button" className="chat-modal-btn chat-modal-btn--secondary" onClick={cancelEditMessage}>
                                     {t('common.cancel')}
                                   </button>
-                                  <button
-                                    type="button"
-                                    className="chat-modal-btn chat-modal-btn--primary"
-                                    onClick={() => setConfirmRelaunchMessage(m)}
-                                    disabled={loading}
-                                  >
-                                    <RotateCcw size={14} strokeWidth={2} />
-                                    {t('chat.relaunch')}
+                                  <button type="button" className="chat-modal-btn chat-modal-btn--primary" onClick={() => saveEditMessage(m.id)}>
+                                    {t('common.save')}
                                   </button>
                                 </div>
                               </div>
                             ) : (
                               <div className={m.role === 'user' ? 'chat-bubble-user' : 'chat-bubble-ai'}>
-                                {m.role === 'assistant'
-                                  ? <MarkdownRenderer content={m.content} />
-                                  : m.content
-                                }
+                                {m.content}
                                 {m.attachments?.length > 0 && (
                                   <div className="chat-msg-attachments">
                                     {m.attachments.map((att, ai) =>
@@ -1283,71 +974,30 @@ export default function Chat() {
                             </div>
                           </div>
 
-                          {/* Action toolbar — visible on hover */}
-                          {!isEditing && (isOwner || m.role === 'assistant') && (
+                          {/* Action toolbar — visible on hover, owner only */}
+                          {isOwner && !isEditing && (
                             <div className="chat-msg-toolbar">
-                              {m.role === 'assistant' && (
-                                <button
-                                  type="button"
-                                  className={`chat-msg-toolbar-btn ${copiedId === m.id ? 'chat-msg-toolbar-btn--success' : ''}`}
-                                  aria-label={copiedId === m.id ? t('chat.copied') : t('chat.copy')}
-                                  title={copiedId === m.id ? t('chat.copied') : t('chat.copy')}
-                                  onClick={() => {
-                                    navigator.clipboard.writeText(m.content || '')
-                                    setCopiedId(m.id)
-                                    setTimeout(() => setCopiedId(null), 1500)
-                                  }}
-                                >
-                                  {copiedId === m.id ? <Check size={14} strokeWidth={2.5} /> : <Copy size={14} strokeWidth={2} />}
-                                </button>
-                              )}
-                              {isOwner && (
-                                <>
-                                  <button
-                                    type="button"
-                                    className="chat-msg-toolbar-btn"
-                                    aria-label={t('common.edit')}
-                                    onClick={() => startEditMessage(m)}
-                                  >
-                                    <Edit2 size={14} strokeWidth={2} />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="chat-msg-toolbar-btn chat-msg-toolbar-btn--danger"
-                                    aria-label={t('common.delete')}
-                                    onClick={() => setConfirmDeleteMessage(m)}
-                                  >
-                                    <Trash2 size={14} strokeWidth={2} />
-                                  </button>
-                                </>
-                              )}
+                              <button
+                                type="button"
+                                className="chat-msg-toolbar-btn"
+                                aria-label={t('common.edit')}
+                                onClick={() => startEditMessage(m)}
+                              >
+                                <Edit2 size={14} strokeWidth={2} />
+                              </button>
+                              <button
+                                type="button"
+                                className="chat-msg-toolbar-btn chat-msg-toolbar-btn--danger"
+                                aria-label={t('common.delete')}
+                                onClick={() => setConfirmDeleteMessage(m)}
+                              >
+                                <Trash2 size={14} strokeWidth={2} />
+                              </button>
                             </div>
                           )}
                         </motion.div>
                       )
                     })
-                  )}
-                  {streaming && (
-                    <motion.div
-                      className="chat-msg-row chat-msg-row--ai"
-                      initial={{ opacity: 0, y: 8 }}
-                      animate={{ opacity: 1, y: 0 }}
-                    >
-                      <div
-                        className="chat-msg-avatar"
-                        style={{ background: 'var(--color-avatar-ai-bg)', border: '1px solid var(--color-border)', color: 'var(--color-avatar-ai-text)' }}
-                      >
-                        <Bot size={16} />
-                      </div>
-                      <div className="chat-msg-body">
-                        <div className="chat-bubble-ai">
-                          <MarkdownRenderer content={streamingContent} streaming={true} />
-                        </div>
-                        <div className="chat-msg-meta text-left">
-                          {t('chat.assistant')}
-                        </div>
-                      </div>
-                    </motion.div>
                   )}
                   <div ref={messagesEndRef} />
                 </div>
@@ -1372,10 +1022,6 @@ export default function Chat() {
                   placeholder={t('chat.messagePlaceholder')}
                   isRecording={isRecording}
                   toggleMic={toggleMic}
-                  sttLoading={sttLoading}
-                  ttsEnabled={ttsEnabled}
-                  ttsPlaying={ttsPlaying}
-                  toggleTts={toggleTts}
                   t={t}
                   setLightboxSrc={setLightboxSrc}
                 />
@@ -1602,40 +1248,6 @@ export default function Chat() {
             </motion.div>
           </motion.div>
         )}
-        {confirmRelaunchMessage && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="chat-modal-backdrop"
-            onClick={() => setConfirmRelaunchMessage(null)}
-          >
-            <motion.div
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 8 }}
-              className="chat-modal"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="chat-modal-header">
-                <h2 className="chat-modal-title">{t('chat.relaunchConfirmTitle')}</h2>
-                <button type="button" className="chat-modal-close" onClick={() => setConfirmRelaunchMessage(null)} aria-label={t('common.close')}>
-                  <X size={18} strokeWidth={2} />
-                </button>
-              </div>
-              <p className="chat-modal-message">{t('chat.relaunchConfirmMessage')}</p>
-              <div className="chat-modal-actions">
-                <button type="button" className="chat-modal-btn chat-modal-btn--secondary" onClick={() => setConfirmRelaunchMessage(null)}>
-                  {t('common.cancel')}
-                </button>
-                <button type="button" className="chat-modal-btn chat-modal-btn--primary" onClick={handleConfirmRelaunch}>
-                  <RotateCcw size={14} strokeWidth={2} />
-                  {t('chat.relaunch')}
-                </button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
         {membersProjectTarget && (
           <motion.div
             initial={{ opacity: 0 }}
@@ -1787,24 +1399,8 @@ function ComposerField({
   onComposerPaste, onFileInputChange, onComposerKeyDown,
   handleSendMessage, autoResizeTextarea,
   canSend, loading, disabled, placeholder,
-  isRecording, toggleMic, sttLoading,
-  ttsEnabled, ttsPlaying, toggleTts,
-  t, setLightboxSrc,
+  isRecording, toggleMic, t, setLightboxSrc,
 }) {
-  const [toolsOpen, setToolsOpen] = React.useState(false)
-  const toolsRef = React.useRef(null)
-
-  React.useEffect(() => {
-    if (!toolsOpen) return
-    const handler = (e) => {
-      if (toolsRef.current && !toolsRef.current.contains(e.target)) {
-        setToolsOpen(false)
-      }
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [toolsOpen])
-
   return (
     <form className="chat-composer-inner" onSubmit={handleSendMessage}>
       {/* Attachment preview chips */}
@@ -1844,50 +1440,26 @@ function ComposerField({
         className={`chat-composer-field ${disabled ? 'chat-composer-field--disabled' : ''}`}
         onPaste={onComposerPaste}
       >
-        {/* Mobile toggle button for tools */}
-        <div ref={toolsRef} style={{ display: 'contents' }}>
-        <button
-          type="button"
-          className={`chat-composer-tool-btn chat-composer-tools-toggle ${toolsOpen ? 'chat-composer-tools-toggle--open' : ''}`}
-          disabled={disabled}
-          aria-label="Ouvrir les outils"
-          onClick={() => setToolsOpen((v) => !v)}
-        >
-          <Plus size={17} strokeWidth={2} />
-        </button>
-
-        {/* Tools: always visible on desktop, hidden behind toggle on mobile */}
-        <div className={`chat-composer-tools ${toolsOpen ? 'chat-composer-tools--open' : ''}`}>
+        {/* Left tools: paperclip + mic */}
+        <div className="chat-composer-tools">
           <button
             type="button"
             className="chat-composer-tool-btn"
             disabled={disabled}
             aria-label={t('chat.attachFile')}
-            onClick={() => { fileInputRef.current?.click(); setToolsOpen(false) }}
+            onClick={() => fileInputRef.current?.click()}
           >
             <Paperclip size={17} strokeWidth={2} />
           </button>
           <button
             type="button"
-            className={`chat-composer-tool-btn ${isRecording ? 'chat-composer-tool-btn--recording' : ''} ${sttLoading ? 'chat-composer-tool-btn--stt-loading' : ''}`}
+            className={`chat-composer-tool-btn ${isRecording ? 'chat-composer-tool-btn--recording' : ''}`}
             disabled={disabled}
             aria-label={isRecording ? t('chat.stopRecording') : t('chat.startRecording')}
-            onClick={() => { toggleMic(); }}
+            onClick={toggleMic}
           >
-            {isRecording ? <MicOff size={17} strokeWidth={2} /> : sttLoading
-              ? <span className="chat-composer-tool-spinner" aria-hidden="true" />
-              : <Mic size={17} strokeWidth={2} />}
+            {isRecording ? <MicOff size={17} strokeWidth={2} /> : <Mic size={17} strokeWidth={2} />}
           </button>
-          <button
-            type="button"
-            className={`chat-composer-tool-btn ${ttsEnabled ? 'chat-composer-tool-btn--tts-on' : ''} ${ttsPlaying ? 'chat-composer-tool-btn--recording' : ''}`}
-            aria-label={ttsEnabled ? t('chat.ttsToggleOff') : t('chat.ttsToggleOn')}
-            onClick={() => { toggleTts(); }}
-            title={ttsEnabled ? t('chat.ttsToggleOff') : t('chat.ttsToggleOn')}
-          >
-            {ttsEnabled ? <Volume2 size={17} strokeWidth={2} /> : <VolumeX size={17} strokeWidth={2} />}
-          </button>
-        </div>
         </div>
 
         <textarea

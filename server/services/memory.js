@@ -251,9 +251,9 @@ async function ensureDevisRulesCollection() {
   }
 }
 
-export async function storeDevisRule({ ruleId, title, content, category, severity, sourceType, sourceRef, tags = [] }) {
+export async function storeDevisRule({ ruleId, ruleCode, title, content, category, severity, sourceType, sourceRef, tags = [] }) {
   if (!ruleId || !title?.trim() || !content?.trim()) return null
-  const text = [title, content, category, severity, sourceRef, ...tags].filter(Boolean).join('\n').slice(0, 2500)
+  const text = [ruleCode, title, content, category, severity, sourceRef, ...tags].filter(Boolean).join('\n').slice(0, 2500)
   try {
     await ensureDevisRulesCollection()
     const vector = await embed(text)
@@ -265,6 +265,7 @@ export async function storeDevisRule({ ruleId, title, content, category, severit
           payload: {
             type: 'devis_rule',
             rule_id: Number(ruleId),
+            rule_code: ruleCode ?? null,
             title,
             excerpt: content.slice(0, 700),
             category: category ?? null,
@@ -307,6 +308,7 @@ export async function searchDevisRules({ text, topK = 8, minScore = 0.35 }) {
     return result.map((r) => ({
       score: r.score,
       rule_id: r.payload.rule_id,
+      rule_code: r.payload.rule_code,
       title: r.payload.title,
       excerpt: r.payload.excerpt,
       category: r.payload.category,

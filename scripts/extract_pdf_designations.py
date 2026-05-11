@@ -24,9 +24,10 @@ QTY_RE = re.compile(r"^\d{1,3}$")
 REP_RE = re.compile(r"^[A-Z]{1,4}\d?$", re.I)
 DIM_RE = re.compile(r"\b(?:dimensions?|hors[- ]tout|sur mesure|passage libre|\bL\s*\d{3,4}\s*H\s*\d{3,4})\b", re.I)
 PERF_RE = re.compile(r"\b(?:classement|performance|anti[- ]effraction|coupe[- ]feu|EI\s*[²2]?\s*\d+|CR\s*\d|RC\s*\d|FB\s*\d|acoustique|pression|Uw\s*=)\b", re.I)
-EQUIP_RE = re.compile(r"\b(?:serrure|ferme[- ]porte|garniture|cr[eé]mone|barre|b[eé]quille|ventouse|contact|vitrage|remplissage|seuil|joint|finitions?|thermolaquage|RAL|habillage|oculus|imposte|vantail|t[oô]le|dormant|paumelle|pose)\b", re.I)
-STOP_RE = re.compile(r"\b(?:FORFAIT PORT|MONTANT TOTAL|Total [eé]co|Cliquez ici|Bon pour accord|Conditions de r[eè]glement|Validit[eé] du devis|ZERUX FRANCE|Page \d+/\d+)\b", re.I)
+EQUIP_RE = re.compile(r"\b(?:serrure|cylindre|ferme[- ]porte|garniture|cr[eé]mone|barre|b[eé]quille|ventouse|contact|vitrage|remplissage|seuil|joint|finitions?|thermolaquage|RAL|habillage|oculus|imposte|vantail|t[oô]le|dormant|paumelle|pose|passe[- ]cable|radar|ouvre[- ]porte)\b", re.I)
+STOP_RE = re.compile(r"\b(?:OFFRE DE PRIX|SUITE PAGE SUIVANTE|FORFAIT PORT|MONTANT TOTAL|Total [eé]co|Cliquez ici|Bon pour accord|Conditions de r[eè]glement|Validit[eé] du devis|ZERUX FRANCE|SAS au capital|Page \d+/\d+)\b", re.I)
 SKIP_RE = re.compile(r"^(?:OFFRE DE PRIX|REP\.|Q\.|P\.U HT|MONTANT HT|D[ÉE]LAIS|D[ÉE]SIGNATION|gris|d[eé]lai)$", re.I)
+LOCALISATION_RE = re.compile(r"^Localisation\s*:", re.I)
 
 
 def clean_line(line: str) -> str:
@@ -94,6 +95,33 @@ def classify_details(detail_lines: Iterable[str]) -> dict[str, list[str]]:
     }
 
 
+def should_join_continuation(previous: str, line: str) -> bool:
+    if not previous.startswith("-"):
+        return False
+    if line.startswith("-") or LOCALISATION_RE.search(line):
+        return False
+    if DIM_RE.search(line) or PERF_RE.search(line) or TITLE_RE.search(line) or STOP_RE.search(line):
+        return False
+    if line.lower().startswith("equipement fourni"):
+        return False
+    return True
+
+
+def normalize_detail_lines(raw_lines: Iterable[str]) -> list[str]:
+    normalized: list[str] = []
+    for text in raw_lines:
+        if not text or is_noise(text) or STOP_RE.search(text):
+            continue
+        if normalized and should_join_continuation(normalized[-1], text):
+            normalized[-1] = clean_line(f"{normalized[-1]} {text}")
+        else:
+            normalized.append(text)
+        # In historical PDFs, free notes/footers after Localisation are not part of the product libelle.
+        if LOCALISATION_RE.search(text):
+            break
+    return normalized
+
+
 def build_config_text(title: str, classified: dict[str, list[str]]) -> str:
     chunks = [title]
     for key in ("dimensions", "performances", "equipments"):
@@ -113,7 +141,7 @@ def extract_records(pdf_path: Path) -> list[dict]:
 
         end = next_title_index(lines, index)
         raw_details = [text for _, text in lines[index + 1:end]]
-        detail_lines = [text for text in raw_details if not is_noise(text) and not STOP_RE.search(text)]
+        detail_lines = normalize_detail_lines(raw_details)
         # Strip trailing repère codes of the next product that bleed in (e.g. "P", "Po", "K1")
         while detail_lines and REP_RE.match(detail_lines[-1]) and len(detail_lines[-1]) <= 4:
             detail_lines.pop()

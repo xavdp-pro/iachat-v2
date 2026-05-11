@@ -1,6 +1,7 @@
 /**
  * HubSpot CRM helpers (server-side only; token from env).
  * Scopes: crm.objects.companies.read, crm.objects.contacts.read, crm.objects.deals.read
+ *         files (upload), crm.objects.notes.write (send PDF as note on deal)
  */
 
 const BASE = 'https://api.hubapi.com'
@@ -41,6 +42,7 @@ const DEAL_PROPS = [
   'pipeline',
   'closedate',
   'createdate',
+  'hs_lastmodifieddate',
   'hs_priority',
 ]
 
@@ -196,6 +198,76 @@ async function batchReadObjects(objectType, ids, properties) {
   return { results: all }
 }
 
+async function getDefaultDealPlacement() {
+  const pipelines = await hubspotFetch('/crm/v3/pipelines/deals')
+  const firstPipeline = pipelines?.results?.[0]
+  const firstStage = firstPipeline?.stages?.[0]
+  return {
+    pipeline: firstPipeline?.id || null,
+    dealstage: firstStage?.id || null,
+  }
+}
+
+export async function createDealForCompany({ companyId, dealname, amount = null, pipeline = null, dealstage = null }) {
+  const name = String(dealname || '').trim()
+  if (!name) {
+    const err = new Error('dealname is required')
+    err.status = 400
+    throw err
+  }
+
+  let resolvedPipeline = pipeline || null
+  let resolvedDealstage = dealstage || null
+  if (!resolvedPipeline || !resolvedDealstage) {
+    try {
+      const defaults = await getDefaultDealPlacement()
+      resolvedPipeline = resolvedPipeline || defaults.pipeline
+      resolvedDealstage = resolvedDealstage || defaults.dealstage
+    } catch (err) {
+      console.warn('[hubspot] default deal placement unavailable:', err.message)
+    }
+  }
+
+  const properties = { dealname: name }
+  if (amount != null && amount !== '') properties.amount = Number(amount)
+  if (resolvedPipeline) properties.pipeline = resolvedPipeline
+  if (resolvedDealstage) properties.dealstage = resolvedDealstage
+
+  const deal = await hubspotFetch('/crm/v3/objects/deals', {
+    method: 'POST',
+    body: { properties },
+  })
+
+  if (companyId) {
+    await hubspotFetch(`/crm/objects/2026-03/deal/${deal.id}/associations/default/company/${companyId}`, {
+      method: 'PUT',
+    })
+  }
+
+  return deal
+}
+
+export async function updateDeal(dealId, { dealname = null, amount = null, pipeline = null, dealstage = null } = {}) {
+  const properties = {}
+  if (dealname != null) properties.dealname = String(dealname).trim()
+  if (amount != null) properties.amount = Number(amount)
+  if (pipeline != null) properties.pipeline = pipeline
+  if (dealstage != null) properties.dealstage = dealstage
+
+  if (Object.keys(properties).length === 0) {
+    const err = new Error('At least one property must be provided for update')
+    err.status = 400
+    throw err
+  }
+
+  const deal = await hubspotFetch(`/crm/v3/objects/deals/${dealId}`, {
+    method: 'PATCH',
+    body: { properties },
+  })
+
+  return deal
+}
+
 function associationIds(company, type) {
   const block = company?.associations?.[type]
   const results = block?.results
@@ -329,4 +401,63 @@ export async function getCompanyDetail(companyId) {
 
 export function isHubspotConfigured() {
   return Boolean(getToken())
+}
+
+/**
+ * Upload a PDF buffer to HubSpot Files API, then create a Note on the deal
+ * with the file attached.
+ * Required scopes: files, crm.objects.notes.write
+ */
+export async function uploadPdfToDeal({ buffer, filename, dealId, noteBody }) {
+  const token = getToken()
+  if (!token) {
+    const err = new Error('HUBSPOT_PRIVATE_APP_TOKEN is not configured')
+    err.code = 'NO_TOKEN'
+    throw err
+  }
+
+  // 1. Upload file to HubSpot Files API (multipart/form-data)
+  const formData = new FormData()
+  formData.append('file', new Blob([buffer], { type: 'application/pdf' }), filename)
+  formData.append('options', JSON.stringify({ access: 'PUBLIC_INDEXABLE', overwrite: false }))
+  formData.append('folderPath', '/devis-nexus')
+
+  const uploadRes = await fetch(`${BASE}/files/v3/files`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: formData,
+  })
+  const uploadText = await uploadRes.text()
+  let fileData
+  try { fileData = JSON.parse(uploadText) } catch { fileData = { _raw: uploadText } }
+  if (!uploadRes.ok) {
+    const msg = fileData.message || fileData.error || `HubSpot upload HTTP ${uploadRes.status}`
+    const err = new Error(msg)
+    err.status = uploadRes.status
+    err.body = fileData
+    throw err
+  }
+
+  const fileId = String(fileData.id)
+  const fileUrl = fileData.url || null
+
+  // 2. Create a Note on the deal with the attachment
+  const note = await hubspotFetch('/crm/v3/objects/notes', {
+    method: 'POST',
+    body: {
+      properties: {
+        hs_note_body: noteBody || filename,
+        hs_attachment_ids: fileId,
+        hs_timestamp: new Date().toISOString(),
+      },
+      associations: [
+        {
+          to: { id: String(dealId) },
+          types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 214 }],
+        },
+      ],
+    },
+  })
+
+  return { fileId, fileUrl, noteId: note.id }
 }

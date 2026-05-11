@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Sun, Moon, Eye, EyeOff } from 'lucide-react'
+import { Loader2, Sun, Moon, Eye, EyeOff } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useTranslation } from 'react-i18next'
 import { useAuthStore } from '../store/useAuthStore.js'
@@ -52,15 +52,25 @@ export default function Login() {
         transition={{ duration: 0.45, ease: [0.23, 1, 0.32, 1] }}
       >
         <div className="login-card">
-          <div className="login-card-header">
-            <img
-              src={`${import.meta.env.BASE_URL}zerux-logo.png`}
-              alt="Zerux"
-              className="login-logo-img"
-              decoding="async"
-            />
-          </div>
+          <div className="login-card-accent" aria-hidden />
           <div className="login-card-body">
+            <div className="login-brand">
+              <div className="login-logo">
+                <img
+                  src={`${import.meta.env.BASE_URL}zerux-logo.png`}
+                  alt="Zerux"
+                  className="login-logo-img"
+                  width={112}
+                  height={112}
+                  decoding="async"
+                />
+              </div>
+              <div>
+                <p className="login-brand-mark">{t('login.brandMark')}</p>
+                <h1 className="login-title">{t('common.appName')}</h1>
+                <p className="login-subtitle">{t('login.subtitle')}</p>
+              </div>
+            </div>
 
             <form className="login-form" onSubmit={handleSubmit} noValidate>
               <div>
@@ -122,7 +132,11 @@ export default function Login() {
               </AnimatePresence>
 
               <button type="submit" className="login-submit" disabled={loading}>
-                {t('login.submit')}
+                {loading ? (
+                  <Loader2 className="animate-spin" size={20} style={{ display: 'inline-block' }} />
+                ) : (
+                  t('login.submit')
+                )}
               </button>
             </form>
           </div>

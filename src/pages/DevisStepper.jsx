@@ -1,6 +1,6 @@
 /**
  * DevisStepper.jsx — Stepper-based NEXUS quote workflow
- * 4 steps: Client → Analysis → Line Editor → PDF/HubSpot
+ * Stepper-based quote workflow: Client → Versions → Grid → PDF → HubSpot
  */
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -12,10 +12,12 @@ import {
   Wrench, Package, Sparkles, RefreshCw, Plus,
   MessageCircleReply, Clock, FolderOpen, LayoutGrid,
   Briefcase, User, Hash, ExternalLink, Download, Columns3, Columns2, Columns,
+  Pencil, Trash2, Moon, Sun, BookOpen,
 } from 'lucide-react'
 import { MarkdownRenderer } from '../components/MarkdownRenderer.jsx'
 import api from '../api/index.js'
-import { DevisGridWorkspace, resolveRow } from './DevisGrid.jsx'
+import { useThemeStore } from '../store/useThemeStore.js'
+import { DevisGridWorkspace, resolveRow, computePassageDimensions } from './DevisGrid.jsx'
 
 // ── Palette by gamme ─────────────────────────────────────────────────────────
 const GAMME_COLORS = {
@@ -24,7 +26,7 @@ const GAMME_COLORS = {
   FB7: '#7f1d1d', ANTI: '#374151', PRISON: '#111827',
 }
 const gammeColor = (g = '') => {
-  const upper = g.toUpperCase()
+  const upper = String(g ?? '').toUpperCase()
   return GAMME_COLORS[Object.keys(GAMME_COLORS).find(k => upper.includes(k))] ?? '#354346'
 }
 
@@ -83,10 +85,11 @@ function parseJsonArray(value) {
 }
 
 function dbLineToGridRow(line) {
-  return {
+  const row = {
     _lineId: line.id,
     _dbPosition: line.position,
     line_section: line.line_section || 'products',
+    localisation: line.localisation || '',
     type: line.type_porte || line.designation || '',
     designation: line.designation || line.type_porte || '',
     gamme: line.gamme || '',
@@ -105,16 +108,20 @@ function dbLineToGridRow(line) {
     qty: line.qty != null ? Number(line.qty) : 1,
     total_ligne_ht: line.total_ligne_ht != null ? Number(line.total_ligne_ht) : null,
   }
+  return { ...row, ...computePassageDimensions(row) }
 }
 
 function gridRowToLinePayload(row, position) {
   const resolved = typeof resolveRow === 'function' ? resolveRow(row) : row
   const lineTotal = resolved?._unpriced
     ? null
-    : (row.total_ligne_ht ?? row.prix_total_min_ht ?? resolved?._pu ?? null)
+    : (row.line_section === 'products' || !row.line_section
+      ? (resolved?._pu ?? row.total_ligne_ht ?? row.prix_total_min_ht ?? null)
+      : (row.total_ligne_ht ?? row.prix_total_min_ht ?? resolved?._pu ?? null))
   return {
     position,
     line_section: row.line_section || 'products',
+    localisation: row.localisation || null,
     designation: row.designation || row.type || null,
     type_porte: row.type || row.designation || null,
     gamme: row.gamme || null,
@@ -260,9 +267,9 @@ function normalizeCalculationRows(rows) {
 const STEP_LABELS = [
   { num: 1, label: 'Client', icon: Building2 },
   { num: 2, label: 'Versions', icon: FolderOpen },
-  { num: 3, label: 'Analyse IA', icon: Bot },
-  { num: 4, label: 'Grid devis', icon: LayoutGrid },
-  { num: 5, label: 'PDF / HubSpot', icon: Download },
+  { num: 3, label: 'Grid devis', icon: LayoutGrid },
+  { num: 4, label: 'Préparer PDF', icon: Download },
+  { num: 5, label: 'HubSpot', icon: Send },
 ]
 
 // ── Style helpers ────────────────────────────────────────────────────────────
@@ -309,6 +316,7 @@ function StepperBar({ step, maxReached, onStep }) {
               }} />
             )}
             <button
+
               onClick={() => reachable && onStep(s.num)}
               disabled={!reachable}
               style={{
@@ -337,16 +345,73 @@ function StepperBar({ step, maxReached, onStep }) {
   )
 }
 
+function WorkflowContextBar({ selectedCompany, selectedDeal, currentDevis, currentVersionId }) {
+  const itemStyle = {
+    display: 'flex', alignItems: 'center', gap: 8, minWidth: 0,
+    padding: '8px 10px', borderRadius: 8,
+    background: 'var(--color-surface)', border: '1px solid var(--color-border)',
+  }
+  const labelStyle = { fontSize: 9, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--color-text-3)', fontWeight: 800 }
+  const valueStyle = { fontSize: 12, color: 'var(--color-text)', fontWeight: 800, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
+  const emptyStyle = { ...valueStyle, color: 'var(--color-text-3)', fontWeight: 600 }
+
+  return (
+    <div style={{ flexShrink: 0, padding: '10px 24px', borderBottom: '1px solid var(--color-border)', background: 'color-mix(in srgb, var(--color-surface) 72%, var(--color-bg))' }}>
+      <div style={{ maxWidth: 1180, margin: '0 auto', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8 }}>
+        <div style={itemStyle} title={selectedCompany?.name || 'Aucun client sélectionné'}>
+          <Building2 size={15} color={selectedCompany ? 'var(--color-primary)' : 'var(--color-text-3)'} />
+          <div style={{ minWidth: 0 }}>
+            <div style={labelStyle}>Client</div>
+            <div style={selectedCompany ? valueStyle : emptyStyle}>{selectedCompany?.name || 'À sélectionner'}</div>
+          </div>
+        </div>
+        <div style={itemStyle} title={selectedDeal?.name || 'Aucun projet sélectionné'}>
+          <Briefcase size={15} color={selectedDeal ? 'var(--color-primary)' : 'var(--color-text-3)'} />
+          <div style={{ minWidth: 0 }}>
+            <div style={labelStyle}>Projet / deal</div>
+            <div style={selectedDeal ? valueStyle : emptyStyle}>{selectedDeal?.name || 'À sélectionner'}</div>
+          </div>
+        </div>
+        <div style={itemStyle} title={currentDevis?.name || 'Aucun devis ouvert'}>
+          <FileText size={15} color={currentDevis ? 'var(--color-primary)' : 'var(--color-text-3)'} />
+          <div style={{ minWidth: 0 }}>
+            <div style={labelStyle}>Devis</div>
+            <div style={currentDevis ? valueStyle : emptyStyle}>{currentDevis?.name || 'Aucun devis ouvert'}</div>
+          </div>
+        </div>
+        <div style={itemStyle} title={currentVersionId ? `Version #${currentVersionId}` : 'Aucune version active'}>
+          <FolderOpen size={15} color={currentVersionId ? 'var(--color-primary)' : 'var(--color-text-3)'} />
+          <div style={{ minWidth: 0 }}>
+            <div style={labelStyle}>Version</div>
+            <div style={currentVersionId ? valueStyle : emptyStyle}>{currentVersionId ? `Version #${currentVersionId}` : 'À choisir / créer'}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // ── STEP 1: CLIENT & DEAL SELECTION ─────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════════════════
-function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, onSelectDeal, onNewDevis, onOpenDevis }) {
+function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, onSelectDeal, onCreateDeal, onNewDevis, onOpenDevis, detailRefreshKey = 0, onUpdateDeal }) {
   const [query, setQuery] = useState('')
   const [companies, setCompanies] = useState([])
   const [loading, setLoading] = useState(false)
   const [searchDone, setSearchDone] = useState(false)
   const [companyDetail, setCompanyDetail] = useState(null)
   const [detailLoading, setDetailLoading] = useState(false)
+  const [creatingDeal, setCreatingDeal] = useState(false)
+  const [editingDealId, setEditingDealId] = useState(null)
+  const [editingDealName, setEditingDealName] = useState('')
+  const [savingDealId, setSavingDealId] = useState(null)
+  const [toast, setToast] = useState(null)
+  const toastTimerRef = useRef(null)
+  const showToast = (msg, type = 'success') => {
+    clearTimeout(toastTimerRef.current)
+    setToast({ msg, type })
+    toastTimerRef.current = setTimeout(() => setToast(null), 2800)
+  }
   const timerRef = useRef(null)
   const selectedCompanyId = selectedCompany?.id
 
@@ -396,7 +461,7 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
       }
     })
     return () => { active = false }
-  }, [selectedCompanyId])
+  }, [selectedCompanyId, detailRefreshKey])
 
   const selectCompany = (c) => {
     onSelect({
@@ -410,14 +475,104 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
   }
 
   const deals = companyDetail?.deals || []
+  const dealDevisCount = useMemo(() => {
+    const map = new Map()
+    for (const d of existingDevis || []) {
+      if (!d?.deal_id) continue
+      const key = String(d.deal_id)
+      map.set(key, (map.get(key) || 0) + 1)
+    }
+    return map
+  }, [existingDevis])
+  const devisForSelectedDeal = useMemo(() => {
+    if (!selectedDeal?.id) return []
+    const key = String(selectedDeal.id)
+    return (existingDevis || []).filter(d => String(d.deal_id) === key)
+  }, [existingDevis, selectedDeal?.id])
+
+  const createDeal = async () => {
+    if (!selectedCompany || creatingDeal) return
+    setCreatingDeal(true)
+    try {
+      const createdDeal = await onCreateDeal?.({
+        companyId: selectedCompany.id,
+        dealname: `Nouveau projet — ${selectedCompany.name}`,
+      })
+      if (createdDeal?.id) {
+        onSelectDeal?.({
+          id: createdDeal.id,
+          name: createdDeal.properties?.dealname || createdDeal.dealname || `Deal #${createdDeal.id}`,
+          amount: createdDeal.properties?.amount || createdDeal.amount,
+        })
+      }
+    } finally {
+      setCreatingDeal(false)
+    }
+  }
+
+  const startEditingDeal = (dealId, currentName) => {
+    setEditingDealId(dealId)
+    setEditingDealName(currentName || '')
+  }
+
+  const saveDealName = async (dealId) => {
+    if (!editingDealName.trim() || savingDealId) return
+    setSavingDealId(dealId)
+    const newName = editingDealName.trim()
+    try {
+      await onUpdateDeal?.({ dealId, dealname: newName })
+      showToast(`Deal renommé\u00a0: ${newName}`)
+      // Mise à jour locale sans recharger depuis HubSpot
+      setCompanyDetail((prev) => {
+        if (!prev) return prev
+        return {
+          ...prev,
+          deals: (prev.deals || []).map((d) =>
+            String(d.id) === String(dealId)
+              ? { ...d, properties: { ...d.properties, dealname: newName } }
+              : d
+          ),
+        }
+      })
+      setEditingDealId(null)
+      setEditingDealName('')
+    } catch (err) {
+      console.error('Rename deal error:', err)
+    } finally {
+      setSavingDealId(null)
+    }
+  }
+
+  const cancelEditingDeal = () => {
+    setEditingDealId(null)
+    setEditingDealName('')
+  }
 
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', overflow: 'auto', padding: '30px 20px' }}>
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', overflow: 'auto', padding: '30px 20px', position: 'relative' }}>
+      {toast && (
+        <div style={{
+          position: 'fixed', bottom: 28, left: '50%', transform: 'translateX(-50%)',
+          background: toast.type === 'success' ? '#22c55e' : '#e53e3e',
+          color: '#fff', padding: '10px 20px', borderRadius: '10px',
+          fontSize: '13px', fontWeight: 600, boxShadow: '0 4px 16px rgba(0,0,0,0.18)',
+          zIndex: 9999, pointerEvents: 'none', whiteSpace: 'nowrap',
+          animation: 'fadeInUp 0.2s ease',
+        }}>
+          <Check size={14} style={{ display: 'inline', marginRight: 6, verticalAlign: 'middle' }} />
+          {toast.msg}
+        </div>
+      )}
       <div style={{ width: '100%', maxWidth: 680 }}>
         <h2 style={{ fontSize: '18px', fontWeight: 700, marginBottom: 4 }}>Sélection du client</h2>
         <p style={{ fontSize: '13px', color: 'var(--color-text-2)', marginBottom: 20 }}>
-          Recherchez un client HubSpot, sélectionnez le deal, puis créez un nouveau devis ou reprenez un existant.
+          Parcours: choisissez le client, sélectionnez le projet HubSpot, puis reprenez un devis existant ou créez-en un nouveau.
         </p>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <span style={{ width: 22, height: 22, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 6, background: 'var(--color-primary)', color: '#fff', fontSize: 11, fontWeight: 800 }}>1</span>
+          <div style={{ fontSize: 12, fontWeight: 800 }}>Rechercher et choisir le client</div>
+        </div>
 
         {/* Search bar */}
         <div style={{ position: 'relative', marginBottom: 16 }}>
@@ -487,9 +642,30 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
                 <div style={{ fontWeight: 700, fontSize: '15px' }}>{selectedCompany.name}</div>
                 <div style={{ fontSize: '11px', color: 'var(--color-text-3)' }}>ID: {selectedCompany.id}</div>
               </div>
-              <button onClick={() => onSelect(null)} style={{ ...iconBtn(), marginLeft: 'auto' }} title="Changer de client">
-                <X size={16} />
-              </button>
+              <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <button
+                  type="button"
+                  onClick={createDeal}
+                  disabled={!onCreateDeal || creatingDeal}
+                  title="Créer un deal HubSpot pour ce client"
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 6,
+                    padding: '7px 10px', borderRadius: '8px',
+                    border: '1px solid var(--color-border)',
+                    background: creatingDeal ? 'var(--color-border)' : 'var(--color-primary)',
+                    color: creatingDeal ? 'var(--color-text-3)' : '#fff',
+                    fontSize: '12px', fontWeight: 700,
+                    cursor: !onCreateDeal || creatingDeal ? 'not-allowed' : 'pointer',
+                    opacity: !onCreateDeal ? 0.6 : 1,
+                  }}
+                >
+                  {creatingDeal ? <Loader2 size={13} style={{ animation: 'spin 0.8s linear infinite' }} /> : <Plus size={13} />}
+                  Créer un deal
+                </button>
+                <button onClick={() => onSelect(null)} style={{ ...iconBtn() }} title="Changer de client">
+                  <X size={16} />
+                </button>
+              </div>
             </div>
 
             {detailLoading ? (
@@ -497,22 +673,55 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
                 <Loader2 size={14} style={{ animation: 'spin 0.8s linear infinite' }} /> Chargement des deals…
               </div>
             ) : deals.length === 0 ? (
-              <div style={{ fontSize: '12px', color: 'var(--color-text-3)', padding: '8px 0' }}>
-                Aucun deal associé à ce client.
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div style={{ fontSize: '12px', color: 'var(--color-text-3)', padding: '8px 0', lineHeight: 1.5 }}>
+                  Aucun projet HubSpot n'est encore associé à ce client. Créez un deal pour démarrer un devis.
+                </div>
+                <button
+                  type="button"
+                  onClick={createDeal}
+                  disabled={!onCreateDeal || creatingDeal}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                    width: '100%', padding: '10px 12px', borderRadius: '8px',
+                    border: '1px solid var(--color-border)',
+                    background: creatingDeal ? 'var(--color-border)' : 'var(--color-primary)',
+                    color: creatingDeal ? 'var(--color-text-3)' : '#fff',
+                    fontWeight: 700, fontSize: '12px',
+                    cursor: !onCreateDeal || creatingDeal ? 'not-allowed' : 'pointer',
+                    opacity: !onCreateDeal ? 0.55 : 1,
+                  }}
+                >
+                  {creatingDeal ? <Loader2 size={14} style={{ animation: 'spin 0.8s linear infinite' }} /> : <Plus size={14} />}
+                  Créer le deal puis continuer
+                </button>
               </div>
             ) : (
               <>
-                <div style={{ fontSize: '12px', fontWeight: 600, marginBottom: 8, color: 'var(--color-text-2)' }}>
-                  Deals ({deals.length})
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                  <span style={{ width: 22, height: 22, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 6, background: 'var(--color-primary)', color: '#fff', fontSize: 11, fontWeight: 800 }}>2</span>
+                  <div>
+                    <div style={{ fontSize: '12px', fontWeight: 800 }}>Choisir le projet / deal HubSpot ({deals.length})</div>
+                    <div style={{ fontSize: '10px', color: 'var(--color-text-3)' }}>Le devis sera attaché au projet sélectionné.</div>
+                  </div>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   {deals.map((d) => {
                     const dId = d.id || d.hs_object_id
                     const active = selectedDeal?.id === dId
+                    const isEditing = editingDealId === dId
+                    const dealName = d.properties?.dealname || `Deal #${dId}`
+                    const devisCount = dealDevisCount.get(String(dId)) || 0
+                    const createdDate = d.properties?.createdate
+                      ? new Date(d.properties.createdate).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })
+                      : 'n/d'
+                    const modifiedDate = d.properties?.hs_lastmodifieddate
+                      ? new Date(d.properties.hs_lastmodifieddate).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })
+                      : 'n/d'
                     return (
                       <div
                         key={dId}
-                        onClick={() => onSelectDeal({ id: dId, name: d.properties?.dealname || `Deal #${dId}`, amount: d.properties?.amount })}
+                        onClick={() => onSelectDeal({ id: dId, name: dealName, amount: d.properties?.amount })}
                         style={{
                           display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px',
                           borderRadius: '8px', cursor: 'pointer',
@@ -523,14 +732,84 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
                       >
                         <Briefcase size={14} color={active ? 'var(--color-primary)' : 'var(--color-text-3)'} />
                         <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontWeight: 600, fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {d.properties?.dealname || `Deal #${dId}`}
-                          </div>
-                          <div style={{ fontSize: '10px', color: 'var(--color-text-3)' }}>
+                          {isEditing ? (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }} onClick={(event) => event.stopPropagation()}>
+                              <input
+                                value={editingDealName}
+                                onChange={(event) => setEditingDealName(event.target.value)}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Enter') {
+                                    event.preventDefault()
+                                    saveDealName(dId)
+                                  }
+                                  if (event.key === 'Escape') {
+                                    event.preventDefault()
+                                    cancelEditingDeal()
+                                  }
+                                }}
+                                autoFocus
+                                style={{
+                                  flex: 1,
+                                  minWidth: 0,
+                                  padding: '5px 8px',
+                                  borderRadius: '6px',
+                                  border: '1px solid var(--color-border)',
+                                  background: 'var(--color-input-bg, var(--color-surface))',
+                                  color: 'var(--color-text)',
+                                  fontSize: '12px',
+                                  fontFamily: 'var(--font-body)',
+                                }}
+                              />
+                              <button
+                                type="button"
+                                onClick={(event) => { event.stopPropagation(); saveDealName(dId) }}
+                                disabled={savingDealId === dId || !editingDealName.trim()}
+                                style={{ ...iconBtn(), color: 'var(--color-primary)' }}
+                                title="Valider"
+                              >
+                                {savingDealId === dId ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Check size={13} />}
+                              </button>
+                              <button type="button" onClick={(event) => { event.stopPropagation(); cancelEditingDeal() }} style={iconBtn()} title="Annuler">
+                                <X size={13} />
+                              </button>
+                            </div>
+                          ) : (
+                            <div style={{ fontWeight: 600, fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {dealName}
+                            </div>
+                          )}
+                          <div style={{ fontSize: '10px', color: 'var(--color-text-3)', marginTop: 2 }}>
                             {d.properties?.dealstage || '—'} {d.properties?.amount ? `· ${Number(d.properties.amount).toLocaleString('fr-FR')} €` : ''}
+                            {` · ${devisCount} devis`}
+                            {` · créé ${createdDate}`}
+                            {` · modifié ${modifiedDate}`}
                           </div>
                         </div>
-                        {active && <Check size={14} color="var(--color-primary)" />}
+                        {!isEditing && active && (
+                          <span style={{ flexShrink: 0, padding: '3px 7px', borderRadius: 999, background: 'color-mix(in srgb, var(--color-primary) 12%, transparent)', color: 'var(--color-primary)', fontSize: 10, fontWeight: 800 }}>
+                            sélectionné
+                          </span>
+                        )}
+                        {!isEditing && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
+                            <button
+                              type="button"
+                              onClick={(event) => { event.stopPropagation(); startEditingDeal(dId, dealName) }}
+                              style={iconBtn()}
+                              title="Renommer ce deal"
+                            >
+                              <Pencil size={13} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(event) => { event.stopPropagation(); /* TODO: delete */ }}
+                              style={{ ...iconBtn(), color: 'var(--color-danger, #e53e3e)' }}
+                              title="Supprimer ce deal"
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          </div>
+                        )}
                       </div>
                     )
                   })}
@@ -540,14 +819,23 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
           </div>
         )}
 
-        {/* Existing devis for this company */}
-        {selectedCompany && existingDevis.length > 0 && (
+        {/* Existing devis for selected deal */}
+        {selectedCompany && selectedDeal && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '0 0 8px' }}>
+            <span style={{ width: 22, height: 22, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 6, background: 'var(--color-primary)', color: '#fff', fontSize: 11, fontWeight: 800 }}>3</span>
+            <div>
+              <div style={{ fontSize: '12px', fontWeight: 800 }}>Reprendre un devis ou en créer un nouveau</div>
+              <div style={{ fontSize: '10px', color: 'var(--color-text-3)' }}>Les versions se trouvent dans chaque devis existant.</div>
+            </div>
+          </div>
+        )}
+        {selectedCompany && selectedDeal && devisForSelectedDeal.length > 0 && (
           <div style={{ marginBottom: 20 }}>
             <div style={{ fontSize: '12px', fontWeight: 600, marginBottom: 8, color: 'var(--color-text-2)' }}>
-              Devis existants
+              Devis existants pour ce deal ({devisForSelectedDeal.length})
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {existingDevis.map((d) => (
+              {devisForSelectedDeal.map((d) => (
                 <div
                   key={d.id}
                   onClick={() => onOpenDevis(d)}
@@ -560,17 +848,35 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
                   onMouseEnter={e => e.currentTarget.style.background = 'var(--color-input-bg)'}
                   onMouseLeave={e => e.currentTarget.style.background = 'var(--color-surface)'}
                 >
-                  <FileText size={14} color="var(--color-primary)" />
+                  <FileText size={16} color="var(--color-primary)" />
                   <div style={{ flex: 1 }}>
                     <div style={{ fontWeight: 600, fontSize: '12px' }}>{d.name}</div>
                     <div style={{ fontSize: '10px', color: 'var(--color-text-3)' }}>
                       {d.status} · {new Date(d.updated_at).toLocaleDateString('fr-FR')}
+                      {` · ${Number(d.versions_count || 0)} version${Number(d.versions_count || 0) > 1 ? 's' : ''}`}
                       {d.total_ht ? ` · ${Number(d.total_ht).toLocaleString('fr-FR')} €` : ''}
                     </div>
                   </div>
-                  <ArrowRight size={14} color="var(--color-text-3)" />
+                  <button
+                    type="button"
+                    onClick={(event) => { event.stopPropagation(); onOpenDevis(d) }}
+                    style={{ ...ghostBtn(), color: 'var(--color-primary)', borderColor: 'var(--color-primary)' }}
+                    title="Ouvrir les versions de ce devis"
+                  >
+                    <FolderOpen size={12} />
+                    Ouvrir versions
+                  </button>
                 </div>
               ))}
+            </div>
+          </div>
+        )}
+        {selectedCompany && selectedDeal && devisForSelectedDeal.length === 0 && (
+          <div style={{ marginBottom: 20, padding: 14, border: '1px dashed var(--color-border)', borderRadius: 10, background: 'var(--color-surface)', display: 'flex', alignItems: 'center', gap: 10 }}>
+            <FileText size={18} color="var(--color-text-3)" />
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 800 }}>Aucun devis pour ce projet</div>
+              <div style={{ fontSize: 11, color: 'var(--color-text-3)', marginTop: 2 }}>Créez le premier devis ci-dessous. La version V1 sera créée automatiquement.</div>
             </div>
           </div>
         )}
@@ -583,13 +889,16 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
             style={{
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
               width: '100%', padding: '12px', borderRadius: '10px',
-              border: 'none', background: 'var(--color-primary)', color: '#fff',
-              fontWeight: 700, fontSize: '13px', cursor: selectedDeal ? 'pointer' : 'default',
-              opacity: selectedDeal ? 1 : 0.5,
+              border: '1px solid transparent',
+              background: selectedDeal ? 'var(--color-primary)' : 'var(--color-border)',
+              color: selectedDeal ? '#fff' : 'var(--color-text-3)',
+              fontWeight: 700, fontSize: '13px',
+              cursor: selectedDeal ? 'pointer' : 'not-allowed',
+              opacity: selectedDeal ? 1 : 0.72,
             }}
           >
             <Plus size={16} />
-            Nouveau devis {selectedDeal ? `pour ${selectedDeal.name}` : '(sélectionnez un deal)'}
+            {selectedDeal ? `Créer un nouveau devis pour ${selectedDeal.name}` : 'Sélectionnez un projet pour créer un devis'}
           </button>
         )}
       </div>
@@ -710,6 +1019,11 @@ function StepVersions({ devisId, currentVersionId, onVersionSelected, onContinue
   const [data, setData] = useState(null)
   const [comment, setComment] = useState('')
   const [busyId, setBusyId] = useState(null)
+  const [editingVersionId, setEditingVersionId] = useState(null)
+  const [editingVersionTitle, setEditingVersionTitle] = useState('')
+  const [savingVersionId, setSavingVersionId] = useState(null)
+  const [draftSavedAt, setDraftSavedAt] = useState(null)
+  const [commentSavedAt, setCommentSavedAt] = useState(null)
 
   const loadVersions = useCallback(async () => {
     if (!devisId) return
@@ -731,6 +1045,61 @@ function StepVersions({ devisId, currentVersionId, onVersionSelected, onContinue
   const versions = useMemo(() => Array.isArray(data?.versions) ? data.versions : [], [data?.versions])
   const activeVersionId = currentVersionId || data?.current_version_id || null
   const activeVersion = versions.find(v => v.id === activeVersionId) || versions[0] || null
+  const activeSavedComment = useMemo(() => {
+    const comments = (activeVersion?.comments || []).filter(item => item.kind === 'comment')
+    return comments.length ? comments[comments.length - 1] : null
+  }, [activeVersion?.comments])
+  const commentDraftKey = useMemo(() => (
+    devisId && activeVersionId ? `devis_version_comment_draft_${devisId}_${activeVersionId}` : null
+  ), [activeVersionId, devisId])
+
+  useEffect(() => {
+    if (!commentDraftKey) {
+      setComment('')
+      setDraftSavedAt(null)
+      setCommentSavedAt(null)
+      return
+    }
+    try {
+      const savedDraft = localStorage.getItem(commentDraftKey)
+      setComment(savedDraft || activeSavedComment?.content || '')
+      setDraftSavedAt(savedDraft ? 'restauré' : null)
+      setCommentSavedAt(null)
+    } catch {
+      setDraftSavedAt(null)
+    }
+  }, [activeSavedComment?.content, commentDraftKey])
+
+  const handleCommentChange = (nextComment) => {
+    setComment(nextComment)
+    setCommentSavedAt(null)
+    if (!commentDraftKey) return
+    try {
+      if (nextComment.trim()) {
+        localStorage.setItem(commentDraftKey, nextComment)
+        setDraftSavedAt(new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }))
+      } else {
+        localStorage.removeItem(commentDraftKey)
+        setDraftSavedAt(null)
+      }
+    } catch {
+      setError('Impossible d’enregistrer le brouillon localement')
+    }
+  }
+
+  const clearCommentDraft = () => {
+    if (!commentDraftKey) return
+    try { localStorage.removeItem(commentDraftKey) } catch {}
+    setDraftSavedAt(null)
+  }
+  const versionById = useMemo(() => {
+    const map = new Map()
+    for (const version of versions) map.set(version.id, version)
+    return map
+  }, [versions])
+  const versionDisplayName = useCallback((version) => (
+    version?.title || version?.branch_label || version?.version_label || 'Version de travail'
+  ), [])
   const childrenByParent = useMemo(() => {
     const map = new Map()
     for (const version of versions) {
@@ -755,6 +1124,7 @@ function StepVersions({ devisId, currentVersionId, onVersionSelected, onContinue
 
   const activateVersion = async (version) => {
     if (!version || !devisId) return
+    if (String(version.id) === String(activeVersionId)) return
     setBusyId(version.id)
     try {
       await api.post(`/devis/${devisId}/versions/${version.id}/activate`)
@@ -767,18 +1137,46 @@ function StepVersions({ devisId, currentVersionId, onVersionSelected, onContinue
     }
   }
 
+  const startEditingVersion = (version) => {
+    setEditingVersionId(version.id)
+    setEditingVersionTitle(versionDisplayName(version))
+  }
+
+  const cancelEditingVersion = () => {
+    setEditingVersionId(null)
+    setEditingVersionTitle('')
+  }
+
+  const saveVersionTitle = async (version) => {
+    const title = editingVersionTitle.trim()
+    if (!version || !title || savingVersionId) return
+    setSavingVersionId(version.id)
+    try {
+      await api.patch(`/devis/${devisId}/versions/${version.id}`, { title })
+      setEditingVersionId(null)
+      setEditingVersionTitle('')
+      await loadVersions()
+    } catch (err) {
+      setError(err?.error || err?.message || 'Erreur renommage version')
+    } finally {
+      setSavingVersionId(null)
+    }
+  }
+
   const duplicateVersion = async (version) => {
     if (!version || !devisId) return
     setBusyId(`dup-${version.id}`)
+    const sourceName = versionDisplayName(version)
     try {
       const created = await api.post(`/devis/${devisId}/versions`, {
         source_version_id: version.id,
         branch_label: version.branch_label || null,
-        title: `Copie de ${version.version_label}`,
-        comment: comment.trim() || `Nouvelle version depuis ${version.version_label}`,
+        title: `Copie de ${sourceName}`,
+        comment: comment.trim() || `Nouvelle version depuis ${sourceName}`,
         step_key: 'versions',
       })
       onVersionSelected?.(created.id)
+      clearCommentDraft()
       setComment('')
       await loadVersions()
     } catch (err) {
@@ -788,19 +1186,26 @@ function StepVersions({ devisId, currentVersionId, onVersionSelected, onContinue
     }
   }
 
-  const addComment = async () => {
+  const saveComment = async () => {
     if (!activeVersion || !comment.trim()) return
     setBusyId(`comment-${activeVersion.id}`)
     try {
-      await api.post(`/devis/${devisId}/versions/${activeVersion.id}/comments`, {
-        content: comment.trim(),
-        step_key: 'versions',
-        kind: 'comment',
-      })
-      setComment('')
+      if (activeSavedComment?.id) {
+        await api.patch(`/devis/${devisId}/versions/${activeVersion.id}/comments/${activeSavedComment.id}`, {
+          content: comment.trim(),
+        })
+      } else {
+        await api.post(`/devis/${devisId}/versions/${activeVersion.id}/comments`, {
+          content: comment.trim(),
+          step_key: 'versions',
+          kind: 'comment',
+        })
+      }
+      clearCommentDraft()
+      setCommentSavedAt(new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }))
       await loadVersions()
     } catch (err) {
-      setError(err?.error || err?.message || 'Erreur commentaire')
+      setError(err?.error || err?.message || 'Erreur enregistrement commentaire')
     } finally {
       setBusyId(null)
     }
@@ -823,7 +1228,7 @@ function StepVersions({ devisId, currentVersionId, onVersionSelected, onContinue
           <div>
             <h2 style={{ margin: '0 0 4px', fontSize: 20 }}>Versions du devis</h2>
             <p style={{ margin: 0, color: 'var(--color-text-2)', fontSize: 13 }}>
-              Choisissez la version de travail, ajoutez un commentaire, ou créez une branche avant d'entrer dans l'analyse ou la grille.
+              Ouvrez une version existante, créez une nouvelle version depuis celle-ci, puis continuez vers la grille.
             </p>
           </div>
           <button type="button" onClick={loadVersions} style={ghostBtn()} disabled={loading}>
@@ -838,40 +1243,96 @@ function StepVersions({ devisId, currentVersionId, onVersionSelected, onContinue
           </div>
         )}
 
+        <div style={{ marginBottom: 14, padding: 12, border: '1px solid var(--color-border)', borderRadius: 8, background: 'var(--color-surface)', display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+          <div style={{ fontSize: 11, color: 'var(--color-text-2)' }}><strong style={{ color: 'var(--color-text)' }}>1. Ouvrir</strong><br />Sélectionnez la version à modifier.</div>
+          <div style={{ fontSize: 11, color: 'var(--color-text-2)' }}><strong style={{ color: 'var(--color-text)' }}>2. Nouvelle version</strong><br />Créez une copie avant de changer le devis.</div>
+          <div style={{ fontSize: 11, color: 'var(--color-text-2)' }}><strong style={{ color: 'var(--color-text)' }}>3. Continuer</strong><br />Passez à la grille.</div>
+        </div>
+
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(360px, 1fr) minmax(280px, 0.8fr)', gap: 16 }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {orderedVersions.map(version => {
               const active = version.id === activeVersionId
+              const isEditingVersion = editingVersionId === version.id
+              const parentVersion = version.parent_version_id ? versionById.get(version.parent_version_id) : null
+              const sourceLabel = parentVersion ? `Nouvelle version depuis ${versionDisplayName(parentVersion)}` : null
+              const latestComment = version.comments?.[version.comments.length - 1]?.content || ''
+              const showLatestComment = latestComment && latestComment !== sourceLabel && !latestComment.startsWith('Nouvelle version depuis ')
               return (
                 <div key={version.id} style={{ marginLeft: version._depth * 22 }}>
-                  <div style={{ border: active ? '1.5px solid var(--color-primary)' : '1px solid var(--color-border)', borderRadius: 8, background: active ? 'color-mix(in srgb, var(--color-primary) 6%, var(--color-surface))' : 'var(--color-surface)', padding: 12 }}>
+                  <div
+                    onClick={() => activateVersion(version)}
+                    style={{ border: active ? '1.5px solid var(--color-primary)' : '1px solid var(--color-border)', borderRadius: 8, background: active ? 'color-mix(in srgb, var(--color-primary) 6%, var(--color-surface))' : 'var(--color-surface)', padding: 12, cursor: active ? 'default' : 'pointer' }}
+                    title={active ? 'Version active' : 'Cliquer pour ouvrir cette version'}
+                  >
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <span style={{ width: 34, height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 6, background: active ? 'var(--color-primary)' : 'var(--color-surface-2, var(--color-input-bg))', color: active ? '#fff' : 'var(--color-text)', fontWeight: 800, fontSize: 11 }}>
                         {version.version_label}
                       </span>
                       <div style={{ minWidth: 0, flex: 1 }}>
-                        <div style={{ fontWeight: 800, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                          {version.title || version.branch_label || 'Version de travail'}
-                        </div>
+                        {isEditingVersion ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }} onClick={(event) => event.stopPropagation()}>
+                            <input
+                              value={editingVersionTitle}
+                              onChange={(event) => setEditingVersionTitle(event.target.value)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                  event.preventDefault()
+                                  saveVersionTitle(version)
+                                }
+                                if (event.key === 'Escape') {
+                                  event.preventDefault()
+                                  cancelEditingVersion()
+                                }
+                              }}
+                              autoFocus
+                              style={{
+                                flex: 1, minWidth: 0, padding: '5px 8px', borderRadius: 6,
+                                border: '1px solid var(--color-border)', background: 'var(--color-input-bg, var(--color-bg))',
+                                color: 'var(--color-text)', fontSize: 12, fontWeight: 700, fontFamily: 'var(--font-body)',
+                              }}
+                            />
+                            <button type="button" onClick={(event) => { event.stopPropagation(); saveVersionTitle(version) }} disabled={savingVersionId === version.id || !editingVersionTitle.trim()} style={{ ...iconBtn(), color: 'var(--color-primary)' }} title="Valider le titre">
+                              {savingVersionId === version.id ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Check size={13} />}
+                            </button>
+                            <button type="button" onClick={(event) => { event.stopPropagation(); cancelEditingVersion() }} style={iconBtn()} title="Annuler">
+                              <X size={13} />
+                            </button>
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <div style={{ fontWeight: 800, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {versionDisplayName(version)}
+                            </div>
+                            <button type="button" onClick={(event) => { event.stopPropagation(); startEditingVersion(version) }} style={iconBtn()} title="Renommer cette version">
+                              <Pencil size={12} />
+                            </button>
+                          </div>
+                        )}
                         <div style={{ fontSize: 10, color: 'var(--color-text-3)' }}>
                           {statusLabel(version.status)} · {Number(version.total_ht || 0).toLocaleString('fr-FR')} € HT · {version.comments?.length || 0} commentaire{(version.comments?.length || 0) > 1 ? 's' : ''}
                         </div>
                       </div>
                       {version.locked && <span style={{ fontSize: 10, color: '#f59e0b', fontWeight: 700 }}>verrouillée</span>}
                     </div>
-                    {version.comments?.length > 0 && (
+                    {sourceLabel && (
                       <div style={{ marginTop: 8, fontSize: 11, color: 'var(--color-text-2)', borderLeft: '2px solid var(--color-border)', paddingLeft: 8 }}>
-                        {version.comments[version.comments.length - 1].content}
+                        {sourceLabel}
+                      </div>
+                    )}
+                    {showLatestComment && (
+                      <div style={{ marginTop: 8, fontSize: 11, color: 'var(--color-text-2)', borderLeft: '2px solid var(--color-border)', paddingLeft: 8 }}>
+                        {latestComment}
                       </div>
                     )}
                     <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
-                      <button type="button" onClick={() => activateVersion(version)} style={ghostBtn()} disabled={busyId === version.id || active}>
+                      <button type="button" onClick={(event) => { event.stopPropagation(); activateVersion(version) }} style={ghostBtn()} disabled={busyId === version.id || active}>
                         {busyId === version.id ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Check size={12} />}
                         {active ? 'Active' : 'Ouvrir'}
                       </button>
-                      <button type="button" onClick={() => duplicateVersion(version)} style={ghostBtn()} disabled={busyId === `dup-${version.id}`}>
+                      <button type="button" onClick={(event) => { event.stopPropagation(); duplicateVersion(version) }} style={ghostBtn()} disabled={busyId === `dup-${version.id}`}>
                         {busyId === `dup-${version.id}` ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Copy size={12} />}
-                        Dupliquer
+                        Nouvelle version
                       </button>
                     </div>
                   </div>
@@ -892,18 +1353,22 @@ function StepVersions({ devisId, currentVersionId, onVersionSelected, onContinue
             </div>
             <textarea
               value={comment}
-              onChange={e => setComment(e.target.value)}
+              onChange={e => handleCommentChange(e.target.value)}
               rows={4}
               placeholder="Commentaire interne / raison de la branche…"
               style={{ width: '100%', boxSizing: 'border-box', border: '1px solid var(--color-border)', borderRadius: 8, background: 'var(--color-input-bg, var(--color-bg))', color: 'var(--color-text)', padding: 10, fontSize: 12, resize: 'vertical', outline: 'none', fontFamily: 'var(--font-body)' }}
             />
+            <div style={{ marginTop: 6, minHeight: 14, fontSize: 10, color: 'var(--color-text-3)' }}>
+              {commentSavedAt
+                ? `Commentaire enregistré à ${commentSavedAt}`
+                : draftSavedAt
+                  ? `Brouillon ${draftSavedAt === 'restauré' ? 'restauré' : `auto-enregistré à ${draftSavedAt}`}`
+                  : 'Le texte est gardé en brouillon local pendant la saisie.'}
+            </div>
             <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
-              <button type="button" onClick={addComment} style={ghostBtn()} disabled={!activeVersion || !comment.trim() || busyId === `comment-${activeVersion?.id}`}>
-                {busyId === `comment-${activeVersion?.id}` ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <MessageCircleReply size={12} />}
-                Commenter
-              </button>
-              <button type="button" onClick={() => activeVersion && duplicateVersion(activeVersion)} style={ghostBtn()} disabled={!activeVersion}>
-                <Copy size={12} /> Nouvelle branche
+              <button type="button" onClick={saveComment} style={{ ...ghostBtn(), color: 'var(--color-primary)', borderColor: 'var(--color-primary)' }} disabled={!activeVersion || !comment.trim() || busyId === `comment-${activeVersion?.id}`}>
+                {busyId === `comment-${activeVersion?.id}` ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Check size={12} />}
+                Enregistrer
               </button>
             </div>
             <button
@@ -1138,13 +1603,18 @@ function StepAnalysis({
 // ── STEP 3: LINE EDITOR ─────────────────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════════════════
 function StepEditor({
-  devisId, versionId, lines, onRefresh,
+  devisId, versionId, lines, setLines, onRefresh,
+  onContinuePdf,
   defaultTransportAddress = '',
   askAIEditor,
 }) {
   const [saving, setSaving] = useState(null)
+  const [visibleGridRows, setVisibleGridRows] = useState([])
 
   const gridRows = useMemo(() => lines.map(dbLineToGridRow), [lines])
+  useEffect(() => { setVisibleGridRows(gridRows) }, [gridRows])
+
+  const canContinuePdf = visibleGridRows.some(row => row && !row._manualBlank)
 
   const commitGridRow = useCallback(async (row, index) => {
     if (!devisId) return
@@ -1192,6 +1662,22 @@ function StepEditor({
     }
   }, [devisId, onRefresh, versionId])
 
+  const bulkCommitGridRows = useCallback(async (rows) => {
+    if (!devisId || !Array.isArray(rows)) return []
+    setSaving('bulk-import')
+    try {
+      const savedLines = await api.post(`/devis/${devisId}/lines/bulk`, { lines: rows })
+      setLines?.(savedLines)
+      setVisibleGridRows(savedLines.map(dbLineToGridRow))
+      return savedLines
+    } catch (err) {
+      console.error('Grid bulk import commit error:', err)
+      throw err
+    } finally {
+      setSaving(null)
+    }
+  }, [devisId, setLines])
+
   return (
     <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <div style={{ padding: '8px 14px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0, background: 'var(--color-surface)' }}>
@@ -1209,6 +1695,9 @@ function StepEditor({
         <button onClick={() => askAIEditor('Contrôle les lignes du devis et liste les incohérences bloquantes.')} style={ghostBtn()}>
           <Bot size={13} /> Audit IA
         </button>
+        <button onClick={onContinuePdf} disabled={!canContinuePdf || saving === 'bulk-import'} className="admin-btn-primary" style={{ fontSize: 11, padding: '6px 12px' }}>
+          Continuer vers pré-édition PDF <ArrowRight size={13} />
+        </button>
       </div>
       <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
         <DevisGridWorkspace
@@ -1216,7 +1705,9 @@ function StepEditor({
           initialRows={gridRows}
           defaultTransportAddress={defaultTransportAddress}
           startWithBlank
+          onRowsChange={setVisibleGridRows}
           onRowsCommit={commitGridRow}
+          onRowsBulkCommit={bulkCommitGridRows}
           onRowsDelete={deleteGridRow}
           title="Sheet devis"
           subtitle={saving ? 'Enregistrement en cours…' : `${lines.length} lignes synchronisées`}
@@ -1238,8 +1729,29 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
   const [checking, setChecking] = useState(false)
   const [checkReport, setCheckReport] = useState(null)
   const [statusMsg, setStatusMsg] = useState('')
+  const [activePreviewKey, setActivePreviewKey] = useState(null)
+  const previewRefs = useRef(new Map())
 
   useEffect(() => { setDraftLines(lines) }, [lines])
+
+  const getLineKey = useCallback((line, index) => String(line?.id ?? `line-${index}`), [])
+
+  useEffect(() => {
+    if (!draftLines.length) {
+      setActivePreviewKey(null)
+      return
+    }
+    const activeExists = draftLines.some((line, index) => getLineKey(line, index) === activePreviewKey)
+    if (!activeExists) setActivePreviewKey(getLineKey(draftLines[0], 0))
+  }, [activePreviewKey, draftLines, getLineKey])
+
+  const scrollPreviewToLine = useCallback((line, index) => {
+    const key = getLineKey(line, index)
+    setActivePreviewKey(key)
+    requestAnimationFrame(() => {
+      previewRefs.current.get(key)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+  }, [getLineKey])
 
   const grandTotal = draftLines.reduce((s, l) => s + (Number(l.total_ligne_ht) || 0), 0)
 
@@ -1251,6 +1763,7 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
     line_id: line.id,
     position: line.position ?? 0,
     line_section: line.line_section || 'products',
+    localisation: line.localisation || null,
     designation_pdf: line.designation || null,
   })
 
@@ -1302,32 +1815,65 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
     }
   }
 
-  const suggestDesignation = async (line) => {
+  const suggestDesignation = async (line, index = 0, hideStatus = false) => {
     if (!line?.id) return
-    setSuggestingId(line.id); setStatusMsg('')
+    setSuggestingId(line.id);
+    if (!hideStatus) setStatusMsg('')
     try {
-      const data = await api.post('/devis/suggest-designation', { line: dbLineToGridRow(line) }, { timeout: 90000 })
+      const contextLines = draftLines
+        .map((item, itemIndex) => ({ item, itemIndex }))
+        .filter(({ item }) => (item.line_section || 'products') === 'products')
+        .filter(({ itemIndex }) => Math.abs(itemIndex - index) <= 3)
+        .map(({ item }) => dbLineToGridRow(item))
+      const data = await api.post('/devis/suggest-designation', { line: dbLineToGridRow(line), context_lines: contextLines }, { timeout: 90000 })
       if (data?.designation) updateDraftDesignation(line.id, data.designation)
-      setStatusMsg(data?.examples?.length ? `Suggestion IA prête (${data.examples.length} exemples)` : 'Suggestion IA prête')
+      if (!hideStatus) setStatusMsg(data?.examples?.length ? `Suggestion IA prête (${data.examples.length} exemples)` : 'Suggestion IA prête')
     } catch (err) {
-      setStatusMsg(err?.error || err?.message || 'Erreur suggestion IA')
+      if (!hideStatus) setStatusMsg(err?.error || err?.message || 'Erreur suggestion IA')
     } finally {
       setSuggestingId(null)
     }
   }
 
-  const runFinalCheck = async () => {
-    if (!devisId) return
-    setChecking(true); setStatusMsg('')
+  const [isSuggestingAll, setIsSuggestingAll] = useState(false)
+  const runFinalCheck = async ({ silent = false } = {}) => {
+    if (!devisId) return null
+    setChecking(true)
+    if (!silent) setStatusMsg('')
     try {
       const report = await api.post(`/devis/${devisId}/validate-rules`, { version_id: versionId })
       setCheckReport(report)
       const summary = report?.summary || {}
-      setStatusMsg(`Check enregistré : ${summary.violation || 0} violation(s), ${summary.warning || 0} avertissement(s)`)
+      setStatusMsg(`Check règles + expériences : ${summary.violation || 0} violation(s), ${summary.warning || 0} avertissement(s)`)
+      return report
     } catch (err) {
-      setStatusMsg(err?.error || err?.message || 'Erreur check règles')
+      setStatusMsg(err?.error || err?.message || 'Erreur check règles + expériences')
+      return null
     } finally {
       setChecking(false)
+    }
+  }
+
+  const suggestAllDesignations = async () => {
+    setIsSuggestingAll(true)
+    setStatusMsg('Auto-génération IA en cours pour toutes les lignes...')
+    try {
+      const productLines = draftLines
+        .map((line, index) => ({ line, index }))
+        .filter(({ line }) => (line.line_section || 'products') === 'products')
+
+      let count = 0
+      for (const { line, index } of productLines) {
+        setStatusMsg(`Génération IA ${count + 1} / ${productLines.length}...`)
+        await suggestDesignation(line, index, true)
+        count++
+      }
+      setStatusMsg(`Génération IA terminée pour ${count} ligne(s). Contrôle règles + expériences...`)
+      await runFinalCheck({ silent: true })
+    } catch (err) {
+      setStatusMsg('Erreur lors de la génération IA globale.')
+    } finally {
+      setIsSuggestingAll(false)
     }
   }
 
@@ -1336,6 +1882,7 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
     setDownloading(true); setStatusMsg('')
     try {
       await saveAllDesignations()
+      await runFinalCheck({ silent: true })
       const res = await fetch(`/api/devis/${devisId}/pdf`, {
         headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
       })
@@ -1357,17 +1904,43 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
     }
   }
 
+  const date = new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' })
+  const fmt = (v) => v != null ? Number(v).toLocaleString('fr-FR') + ' €' : '—'
+  const checkLineById = useMemo(() => {
+    const map = new Map()
+    for (const item of checkReport?.lines || []) {
+      if (item.line_id != null) map.set(Number(item.line_id), item)
+    }
+    return map
+  }, [checkReport])
+  const getLineOptions = (line) => {
+    try { return JSON.parse(line.options_json || '[]') } catch { return [] }
+  }
+  const getLinePassageDimensions = (line) => computePassageDimensions(dbLineToGridRow(line))
+  const passageDimensionLabel = (dims) => dims?._dimensionLabel === 'CV' ? 'Clair vitrage CV' : 'Passage libre PL'
+  const passageDimensionText = (line) => {
+    const dims = getLinePassageDimensions(line)
+    return `${passageDimensionLabel(dims)} H ${dims.hauteur_pl_mm || '?'} × L ${dims.largeur_pl_mm || '?'} mm`
+  }
+  const reservationDimensionText = (line) => {
+    const dims = getLinePassageDimensions(line)
+    return `Réservation GO H ${dims.hauteur_reservation_mm || '?'} × L ${dims.largeur_reservation_mm || '?'} mm`
+  }
+
   const buildMarkdown = () => {
-    const date = new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' })
     const fmt = (v) => v != null ? Number(v).toLocaleString('fr-FR') + ' €' : '—'
     const linesStr = draftLines.map((l, i) => {
-      const opts = (() => { try { return JSON.parse(l.options_json || '[]') } catch { return [] } })()
+      const opts = getLineOptions(l)
+      const passageDims = getLinePassageDimensions(l)
       const optsStr = opts.map(o => `  - ${o.label} : +${(o.prix || 0).toLocaleString('fr-FR')} €`).join('\n')
       return [
         `### Ligne ${i + 1} — ${l.gamme || '?'} ${l.vantail || ''}`,
         `| Champ | Valeur |`, `|---|---|`,
         `| Désignation | ${l.designation || '—'} |`,
+        l.localisation ? `| Localisation | **${l.localisation}** |` : null,
         `| Dimensions HT | H **${l.hauteur_mm || '?'}** × L **${l.largeur_mm || '?'}** mm |`,
+        `| ${passageDimensionLabel(passageDims)} | H **${passageDims.hauteur_pl_mm || '?'}** × L **${passageDims.largeur_pl_mm || '?'}** mm |`,
+        `| Réservation GO | H **${passageDims.hauteur_reservation_mm || '?'}** × L **${passageDims.largeur_reservation_mm || '?'}** mm |`,
         `| Prix base TG | **${fmt(l.prix_base_ht)}** HT |`,
         l.serrure_ref ? `| Serrure | ${l.serrure_ref} |` : null,
         l.ferme_porte_ref ? `| Ferme-porte | ${l.ferme_porte_ref} |` : null,
@@ -1407,17 +1980,14 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           {statusMsg && <span style={{ alignSelf: 'center', fontSize: 11, color: statusMsg.toLowerCase().includes('erreur') ? '#dc2626' : 'var(--color-text-2)' }}>{statusMsg}</span>}
-          <button onClick={copyText} style={ghostBtn()}>
-            {copied ? <><Check size={13} /> Copié !</> : <><Copy size={13} /> Copier</>}
+          <button onClick={suggestAllDesignations} disabled={isSuggestingAll} style={ghostBtn()}>
+            {isSuggestingAll ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Sparkles size={13} />} Auto-Générer Tout (IA)
           </button>
           <button onClick={saveAllDesignations} style={ghostBtn()} disabled={!!savingId}>
             {savingId ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Check size={13} />} Enregistrer textes
           </button>
           <button onClick={runFinalCheck} style={ghostBtn()} disabled={checking || !versionId}>
             {checking ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Shield size={13} />} Check règles
-          </button>
-          <button onClick={() => window.print()} style={ghostBtn()}>
-            <Printer size={13} /> Imprimer
           </button>
           <button onClick={downloadFinalPdf} disabled={downloading} style={ghostBtn()}>
             {downloading ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Download size={13} />} PDF final
@@ -1427,7 +1997,7 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
             borderRadius: '8px', border: 'none', background: 'var(--color-primary)', color: '#fff',
             fontWeight: 700, fontSize: '12px', cursor: 'pointer',
           }}>
-            <ExternalLink size={13} /> Envoyer dans HubSpot
+            <Send size={13} /> Envoyer vers HubSpot →
           </button>
         </div>
       </div>
@@ -1437,24 +2007,48 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
           <span style={{ color: '#228b54' }}>OK {checkReport.summary?.ok || 0}</span>
           <span style={{ color: '#a06a2c' }}>Attention {checkReport.summary?.warning || 0}</span>
           <span style={{ color: '#a33c3c' }}>Violation {checkReport.summary?.violation || 0}</span>
-          <span style={{ color: 'var(--color-text-3)' }}>{checkReport.rules_count || 0} règle(s)</span>
+          <span style={{ color: 'var(--color-text-3)' }}>{checkReport.rules_count || 0} règle(s) + expériences</span>
         </div>
       )}
       <div style={{ flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: 'minmax(360px, 0.95fr) minmax(420px, 1.05fr)', overflow: 'hidden' }}>
-        <div style={{ overflowY: 'auto', borderRight: '1px solid var(--color-border)', padding: '14px', background: 'var(--color-surface)' }}>
+        <div style={{ minHeight: 0, overflowY: 'auto', borderRight: '1px solid var(--color-border)', padding: '14px', background: 'var(--color-surface)', scrollbarGutter: 'stable' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {draftLines.map((line, index) => {
               const isProduct = (line.line_section || 'products') === 'products'
+              const lineKey = getLineKey(line, index)
+              const isActive = activePreviewKey === lineKey
+              const auditLine = line.id != null ? checkLineById.get(Number(line.id)) : null
+              const auditIssues = (auditLine?.verdicts || []).filter(v => v.status === 'warning' || v.status === 'violation')
               return (
-                <div key={line.id || index} style={{ border: '1px solid var(--color-border)', borderRadius: 8, background: 'var(--color-bg)', overflow: 'hidden' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderBottom: '1px solid var(--color-border)' }}>
+                <div key={lineKey} style={{ border: `1px solid ${isActive ? 'var(--color-primary)' : 'var(--color-border)'}`, borderRadius: 8, background: 'var(--color-bg)', overflow: 'hidden', boxShadow: isActive ? '0 0 0 1px color-mix(in srgb, var(--color-primary) 35%, transparent)' : 'none' }}>
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => scrollPreviewToLine(line, index)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        scrollPreviewToLine(line, index)
+                      }
+                    }}
+                    title="Afficher cette ligne dans l'aperçu"
+                    style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderBottom: '1px solid var(--color-border)', cursor: 'pointer', background: isActive ? 'color-mix(in srgb, var(--color-primary) 7%, transparent)' : 'transparent' }}
+                  >
                     <span style={{ minWidth: 22, height: 22, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 4, background: gammeColor(line.gamme), color: '#fff', fontSize: 11, fontWeight: 800 }}>{repLetter(index)}</span>
                     <div style={{ minWidth: 0, flex: 1 }}>
                       <div style={{ fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{line.gamme || line.type_porte || line.line_section || 'Ligne'}</div>
-                      <div style={{ fontSize: 10, color: 'var(--color-text-3)' }}>H {line.hauteur_mm || '?'} × L {line.largeur_mm || '?'} mm</div>
+                      <div style={{ fontSize: 10, color: 'var(--color-text-3)' }}>HT H {line.hauteur_mm || '?'} × L {line.largeur_mm || '?'} mm</div>
+                      {line.localisation && <div style={{ fontSize: 10, color: 'var(--color-primary)', fontWeight: 800 }}>Localisation : {line.localisation}</div>}
+                      <div style={{ fontSize: 10, color: 'var(--color-text-3)' }}>{passageDimensionText(line)}</div>
+                      <div style={{ fontSize: 10, color: 'var(--color-text-3)' }}>{reservationDimensionText(line)}</div>
                     </div>
+                    {auditLine && (
+                      <span style={{ fontSize: 10, fontWeight: 800, color: auditIssues.some(v => v.status === 'violation') ? '#a33c3c' : auditIssues.length ? '#a06a2c' : '#228b54' }}>
+                        {auditIssues.length ? `${auditIssues.length} règle(s)` : 'Règles OK'}
+                      </span>
+                    )}
                     {isProduct && (
-                      <button type="button" onClick={() => suggestDesignation(line)} disabled={suggestingId === line.id} style={ghostBtn()}>
+                      <button type="button" onClick={() => suggestDesignation(line, index)} disabled={suggestingId === line.id} style={ghostBtn()}>
                         {suggestingId === line.id ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Sparkles size={12} />} IA
                       </button>
                     )}
@@ -1469,17 +2063,416 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
                     style={{ width: '100%', boxSizing: 'border-box', border: 'none', resize: 'vertical', padding: 10, background: 'transparent', color: 'var(--color-text)', fontSize: 12, lineHeight: 1.45, fontFamily: 'var(--font-body)', outline: 'none' }}
                     placeholder="Libellé imprimé sur le PDF…"
                   />
+                  {auditIssues.length > 0 && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '0 10px 10px' }}>
+                      {auditIssues.slice(0, 6).map((issue, issueIndex) => {
+                        const isViolation = issue.status === 'violation'
+                        return (
+                          <div key={`${issue.rule_id || issue.rule_code || issueIndex}`} style={{ fontSize: 10, lineHeight: 1.35, color: isViolation ? '#a33c3c' : '#a06a2c', background: isViolation ? 'rgba(239,68,68,0.08)' : 'rgba(245,158,11,0.09)', borderRadius: 6, padding: '5px 7px' }}>
+                            <strong>{issue.rule_code ? `${issue.rule_code} — ` : ''}{issue.rule_title || 'Règle / expérience'}</strong>
+                            {issue.reason ? ` : ${issue.reason}` : ''}
+                            {issue.fix ? <span style={{ display: 'block', color: 'var(--color-text-2)', marginTop: 2 }}>Correctif : {issue.fix}</span> : null}
+                          </div>
+                        )
+                      })}
+                      {auditIssues.length > 6 && (
+                        <div style={{ fontSize: 10, color: 'var(--color-text-3)' }}>+ {auditIssues.length - 6} autre(s) alerte(s)</div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )
             })}
           </div>
         </div>
-        <div style={{ overflowY: 'auto', padding: '20px 24px' }}>
-          <div style={{ maxWidth: 760, margin: '0 auto' }}>
-          <MarkdownRenderer content={mdText} />
+        <div style={{ minHeight: 0, overflowY: 'auto', padding: '20px 24px', scrollBehavior: 'smooth', background: 'var(--color-bg)' }}>
+          <div style={{ maxWidth: 760, margin: '0 auto', color: 'var(--color-text)' }}>
+            <div style={{ marginBottom: 18, paddingBottom: 14, borderBottom: '1px solid var(--color-border)' }}>
+              <h1 style={{ margin: 0, fontSize: 22, lineHeight: 1.15 }}>Devis NEXUS — {clientName || 'Client'}</h1>
+              <div style={{ marginTop: 6, fontSize: 12, color: 'var(--color-text-3)' }}>{date} — {dealName || 'Affaire'} — Estimatif tarif NEXUS 2026-01</div>
+              <div style={{ marginTop: 12, fontSize: 16, fontWeight: 800, color: 'var(--color-primary)' }}>Total général : {grandTotal.toLocaleString('fr-FR')} € HT TG</div>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+              {draftLines.map((line, index) => {
+                const lineKey = getLineKey(line, index)
+                const isActive = activePreviewKey === lineKey
+                const opts = getLineOptions(line)
+                return (
+                  <section
+                    key={lineKey}
+                    ref={(node) => {
+                      if (node) previewRefs.current.set(lineKey, node)
+                      else previewRefs.current.delete(lineKey)
+                    }}
+                    style={{ scrollMarginTop: 18, border: `1px solid ${isActive ? 'var(--color-primary)' : 'var(--color-border)'}`, borderRadius: 8, background: 'var(--color-surface)', overflow: 'hidden', boxShadow: isActive ? '0 0 0 1px color-mix(in srgb, var(--color-primary) 35%, transparent)' : 'none' }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderBottom: '1px solid var(--color-border)', background: isActive ? 'color-mix(in srgb, var(--color-primary) 7%, transparent)' : 'transparent' }}>
+                      <span style={{ minWidth: 24, height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 4, background: gammeColor(line.gamme), color: '#fff', fontSize: 11, fontWeight: 800 }}>{repLetter(index)}</span>
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <h2 style={{ margin: 0, fontSize: 15, lineHeight: 1.2 }}>Ligne {index + 1} — {line.gamme || line.type_porte || line.line_section || 'Ligne'} {line.vantail || ''}</h2>
+                        <div style={{ marginTop: 2, fontSize: 11, color: 'var(--color-text-3)' }}>{line.localisation ? `Localisation : ${line.localisation} · ` : ''}HT H {line.hauteur_mm || '?'} × L {line.largeur_mm || '?'} mm · {passageDimensionText(line)} · {reservationDimensionText(line)}</div>
+                      </div>
+                      <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--color-primary)' }}>{fmt(line.total_ligne_ht)} HT</div>
+                    </div>
+                    <div style={{ padding: '12px' }}>
+                      <div style={{ whiteSpace: 'pre-wrap', fontSize: 12, lineHeight: 1.55, color: 'var(--color-text)', marginBottom: 12 }}>{line.designation || '—'}</div>
+                      <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 10, display: 'grid', gridTemplateColumns: 'minmax(120px, 0.35fr) minmax(0, 0.65fr)', gap: '7px 12px', fontSize: 11 }}>
+                        <span style={{ color: 'var(--color-text-3)' }}>Dimensions HT</span><strong>H {line.hauteur_mm || '?'} × L {line.largeur_mm || '?'} mm</strong>
+                        {line.localisation && <><span style={{ color: 'var(--color-text-3)' }}>Localisation</span><strong>{line.localisation}</strong></>}
+                        <span style={{ color: 'var(--color-text-3)' }}>{passageDimensionLabel(getLinePassageDimensions(line))}</span><strong>H {getLinePassageDimensions(line).hauteur_pl_mm || '?'} × L {getLinePassageDimensions(line).largeur_pl_mm || '?'} mm</strong>
+                        <span style={{ color: 'var(--color-text-3)' }}>Réservation GO</span><strong>H {getLinePassageDimensions(line).hauteur_reservation_mm || '?'} × L {getLinePassageDimensions(line).largeur_reservation_mm || '?'} mm</strong>
+                        <span style={{ color: 'var(--color-text-3)' }}>Prix base TG</span><strong>{fmt(line.prix_base_ht)} HT</strong>
+                        {line.serrure_ref && <><span style={{ color: 'var(--color-text-3)' }}>Serrure</span><span>{line.serrure_ref}</span></>}
+                        {line.ferme_porte_ref && <><span style={{ color: 'var(--color-text-3)' }}>Ferme-porte</span><span>{line.ferme_porte_ref}</span></>}
+                      </div>
+                      {opts.length > 0 && (
+                        <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--color-border)' }}>
+                          <div style={{ fontSize: 11, fontWeight: 800, marginBottom: 6 }}>Options</div>
+                          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11, lineHeight: 1.5 }}>
+                            {opts.map((option, optionIndex) => <li key={`${lineKey}-option-${optionIndex}`}>{option.label} : +{(option.prix || 0).toLocaleString('fr-FR')} €</li>)}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  </section>
+                )
+              })}
+            </div>
           </div>
         </div>
       </div>
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ── STEP 6: HUBSPOT SEND ─────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+function StepHubSpot({ devisId, versionId, selectedCompany, selectedDeal, onDealChange, onGoStep, onCreateNewVersion }) {
+  const [deals, setDeals] = useState([])
+  const [loadingDeals, setLoadingDeals] = useState(false)
+  const [devisInfo, setDevisInfo] = useState(null)   // { name, status, hubspot_note_id }
+  const [versionInfo, setVersionInfo] = useState(null) // { version_label, title, branch_label, hubspot_note_id, hubspot_file_id }
+  const [loadingMeta, setLoadingMeta] = useState(false)
+  const [sending, setSending] = useState(false)
+  const [creatingVersion, setCreatingVersion] = useState(false)
+  const [result, setResult] = useState(null) // { fileId, fileUrl, noteId, filename }
+  const [error, setError] = useState('')
+  const [hubspotOk, setHubspotOk] = useState(null)
+
+  // Load devis metadata + active version details
+  useEffect(() => {
+    if (!devisId) return
+    setLoadingMeta(true)
+    Promise.all([
+      api.get(`/devis/${devisId}`).catch(() => null),
+      versionId
+        ? api.get(`/devis/${devisId}/versions`).then(d => {
+            const v = (d.versions || []).find(v => String(v.id) === String(versionId))
+            return v || null
+          }).catch(() => null)
+        : Promise.resolve(null),
+    ]).then(([devis, version]) => {
+      setDevisInfo(devis)
+      setVersionInfo(version)
+    }).finally(() => setLoadingMeta(false))
+  }, [devisId, versionId])
+
+  // Load company's deals from HubSpot
+  useEffect(() => {
+    if (!selectedCompany?.id) return
+    setLoadingDeals(true)
+    api.get(`/prospects/companies/${selectedCompany.id}`)
+      .then(data => {
+        const list = (data.deals || []).map(d => ({
+          id: d.id,
+          name: d.properties?.dealname || `Deal #${d.id}`,
+          amount: d.properties?.amount || null,
+          attachments: d.attachments || [],
+        }))
+        setDeals(list)
+        setHubspotOk(true)
+      })
+      .catch(err => {
+        if (err?.status === 503) setHubspotOk(false)
+        else setHubspotOk(true)
+      })
+      .finally(() => setLoadingDeals(false))
+  }, [selectedCompany?.id])
+
+  // Compute version display name (same logic as StepVersions.versionDisplayName)
+  const versionDisplayLabel = versionInfo
+    ? (versionInfo.title || versionInfo.branch_label || versionInfo.version_label || 'Version de travail')
+    : null
+  const versionComment = useMemo(() => {
+    const comments = (versionInfo?.comments || []).filter(item => item.kind === 'comment' && item.content?.trim())
+    return comments.length ? comments[comments.length - 1].content.trim() : ''
+  }, [versionInfo?.comments])
+
+  // Compute PDF filename preview (mirrors buildDevisNexusPdf slug logic)
+  const baseName = devisInfo?.name || (devisId ? `D${devisId}` : null)
+  const enrichedName = baseName && versionDisplayLabel ? `${baseName} — ${versionDisplayLabel}` : baseName
+  const slug = enrichedName ? enrichedName.replace(/[^a-zA-Z0-9_-]/g, '_') : null
+  const pdfFilename = slug ? `Devis_NEXUS_${slug}.pdf` : null
+
+  // Already sent indicator (from version or devis)
+  const alreadySentNoteId = result?.noteId || versionInfo?.hubspot_note_id || devisInfo?.hubspot_note_id || null
+
+  const currentDeal = deals.find(d => String(d.id) === String(selectedDeal?.id)) || null
+  const existingAttachments = currentDeal?.attachments || []
+  const noteBodyPreview = [
+    `Devis NEXUS — ${devisInfo?.client_name || selectedCompany?.name || ''} — ${devisInfo?.name || ''}${versionDisplayLabel ? ` — ${versionDisplayLabel}` : ''}`,
+    versionComment ? `Commentaire version : ${versionComment}` : null,
+  ].filter(Boolean).join('\n')
+
+  const handleSend = async () => {
+    if (!devisId || !selectedDeal?.id) return
+    setSending(true)
+    setError('')
+    setResult(null)
+    try {
+      const data = await api.post(`/devis/${devisId}/send-hubspot`, {
+        deal_id: selectedDeal.id,
+        version_id: versionId || undefined,
+        note_body: noteBodyPreview,
+      })
+      setResult(data)
+      // Refresh version info to reflect new hubspot_note_id
+      if (versionId) {
+        api.get(`/devis/${devisId}/versions`).then(d => {
+          const v = (d.versions || []).find(v => String(v.id) === String(versionId))
+          if (v) setVersionInfo(v)
+        }).catch(() => {})
+      }
+    } catch (err) {
+      setError(err?.error || err?.message || 'Erreur lors de l\'envoi vers HubSpot')
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const createNewVersion = async () => {
+    if (!onCreateNewVersion || creatingVersion) return
+    setCreatingVersion(true)
+    setError('')
+    try {
+      await onCreateNewVersion({ sourceVersionId: versionId, sourceLabel: versionDisplayLabel })
+    } catch (err) {
+      setError(err?.error || err?.message || 'Erreur création nouvelle version')
+    } finally {
+      setCreatingVersion(false)
+    }
+  }
+
+  return (
+    <div style={{ flex: 1, overflowY: 'auto', padding: '28px 32px', maxWidth: 760, margin: '0 auto', width: '100%', boxSizing: 'border-box' }}>
+      <h2 style={{ margin: '0 0 4px', fontSize: 18, fontWeight: 800 }}>Envoyer vers HubSpot</h2>
+      <p style={{ margin: '0 0 24px', fontSize: 13, color: 'var(--color-text-3)' }}>
+        Génère le PDF final et le joint à l'affaire HubSpot du client en tant que note avec pièce jointe.
+      </p>
+
+      {hubspotOk === false && (
+        <div style={{ padding: '12px 16px', borderRadius: 8, background: 'color-mix(in srgb, #ef4444 10%, var(--color-surface))', border: '1px solid #ef4444', color: '#ef4444', fontSize: 13, marginBottom: 20 }}>
+          <strong>HubSpot non configuré</strong> — La variable <code>HUBSPOT_PRIVATE_APP_TOKEN</code> est manquante sur le serveur.
+        </div>
+      )}
+
+      {/* ── Document à envoyer ── */}
+      <div style={{ marginBottom: 24 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-3)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Document à envoyer</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 16px', borderRadius: 10, border: '1.5px solid var(--color-primary)', background: 'color-mix(in srgb, var(--color-primary) 5%, var(--color-surface))' }}>
+          <div style={{ width: 40, height: 48, borderRadius: 5, background: 'color-mix(in srgb, var(--color-primary) 12%, var(--color-surface))', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, border: '1px solid color-mix(in srgb, var(--color-primary) 25%, transparent)' }}>
+            <FileText size={22} style={{ color: 'var(--color-primary)' }} />
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            {loadingMeta ? (
+              <div style={{ fontSize: 13, color: 'var(--color-text-3)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> Chargement…
+              </div>
+            ) : pdfFilename ? (
+              <>
+                <div style={{ fontSize: 13, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pdfFilename}</div>
+                <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 11, color: 'var(--color-text-3)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <FolderOpen size={11} /> {versionInfo?.version_label || '—'}{versionDisplayLabel ? ` — ${versionDisplayLabel}` : ''}
+                  </span>
+                  {devisId && (
+                    <span style={{ fontSize: 10, color: 'var(--color-text-3)' }}>Devis #{devisId}</span>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div style={{ fontSize: 13, color: 'var(--color-text-3)', fontStyle: 'italic' }}>
+                {devisId ? 'Chargement du devis…' : 'Aucun devis actif'}
+              </div>
+            )}
+          </div>
+          {/* Already sent badge */}
+          {alreadySentNoteId && !result && (
+            <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 20, background: 'color-mix(in srgb, #22c55e 12%, transparent)', border: '1px solid #22c55e', fontSize: 11, fontWeight: 700, color: '#166534' }}>
+              <Check size={11} /> Déjà envoyé
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Texte de note HubSpot ── */}
+      {noteBodyPreview && (
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-3)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Texte de la note HubSpot</div>
+          <div style={{ whiteSpace: 'pre-wrap', padding: '10px 14px', borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-surface)', fontSize: 12, lineHeight: 1.45, color: 'var(--color-text-2)' }}>
+            {noteBodyPreview}
+          </div>
+        </div>
+      )}
+
+      {/* ── Client + Affaire ── */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 24 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-3)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Destination HubSpot</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-surface)' }}>
+          <Building2 size={15} style={{ flexShrink: 0, color: 'var(--color-text-3)' }} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 11, color: 'var(--color-text-3)', marginBottom: 2 }}>Client</div>
+            <div style={{ fontSize: 13, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {selectedCompany?.name || <span style={{ color: 'var(--color-text-3)', fontStyle: 'italic' }}>Aucun client sélectionné</span>}
+            </div>
+          </div>
+          {!selectedCompany && (
+            <button onClick={() => onGoStep(1)} style={ghostBtn()}>
+              <ArrowLeft size={12} /> Étape 1
+            </button>
+          )}
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-surface)' }}>
+          <Briefcase size={15} style={{ flexShrink: 0, color: 'var(--color-text-3)' }} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 11, color: 'var(--color-text-3)', marginBottom: 2 }}>Affaire HubSpot</div>
+            {loadingDeals ? (
+              <div style={{ fontSize: 12, color: 'var(--color-text-3)', display: 'flex', alignItems: 'center', gap: 5 }}>
+                <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> Chargement…
+              </div>
+            ) : selectedDeal ? (
+              <div style={{ fontSize: 13, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {selectedDeal.name}
+                {selectedDeal.amount ? <span style={{ marginLeft: 8, fontWeight: 400, color: 'var(--color-text-3)', fontSize: 12 }}>{Number(selectedDeal.amount).toLocaleString('fr-FR')} €</span> : null}
+              </div>
+            ) : (
+              <div style={{ fontSize: 13, color: 'var(--color-text-3)', fontStyle: 'italic' }}>Aucune affaire sélectionnée</div>
+            )}
+          </div>
+        </div>
+
+        {/* Deal picker if company has multiple deals */}
+        {deals.length > 1 && (
+          <div style={{ padding: '10px 14px', borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-surface)' }}>
+            <div style={{ fontSize: 11, color: 'var(--color-text-3)', marginBottom: 8 }}>Choisir une autre affaire</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 160, overflowY: 'auto' }}>
+              {deals.map(d => (
+                <button
+                  key={d.id}
+                  onClick={() => onDealChange({ id: d.id, name: d.name, amount: d.amount })}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px',
+                    borderRadius: 6, border: `1px solid ${String(d.id) === String(selectedDeal?.id) ? 'var(--color-primary)' : 'var(--color-border)'}`,
+                    background: String(d.id) === String(selectedDeal?.id) ? 'color-mix(in srgb, var(--color-primary) 8%, transparent)' : 'transparent',
+                    cursor: 'pointer', textAlign: 'left', color: 'var(--color-text)', fontSize: 12,
+                  }}
+                >
+                  {String(d.id) === String(selectedDeal?.id) && <Check size={12} style={{ color: 'var(--color-primary)', flexShrink: 0 }} />}
+                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name}</span>
+                  {d.amount && <span style={{ color: 'var(--color-text-3)', flexShrink: 0 }}>{Number(d.amount).toLocaleString('fr-FR')} €</span>}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ── Pièces jointes existantes ── */}
+      {existingAttachments.length > 0 && (
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-3)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Pièces jointes existantes sur ce deal</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {existingAttachments.map(a => (
+              <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-surface)', fontSize: 12 }}>
+                <FileText size={13} style={{ flexShrink: 0, color: 'var(--color-text-3)' }} />
+                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.name}</span>
+                {a.url && (
+                  <a href={a.url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-primary)', fontSize: 11, textDecoration: 'none', display: 'flex', alignItems: 'center', gap: 3, flexShrink: 0 }}>
+                    <ExternalLink size={11} /> Ouvrir
+                  </a>
+                )}
+                <span style={{ fontSize: 10, color: 'var(--color-text-3)', flexShrink: 0 }}>{a.source}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Résultat envoi ── */}
+      {result && (
+        <div style={{ padding: '14px 16px', borderRadius: 8, background: 'color-mix(in srgb, #22c55e 10%, var(--color-surface))', border: '1px solid #22c55e', marginBottom: 20 }}>
+          <div style={{ fontWeight: 700, marginBottom: 6, color: '#166534', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Check size={15} /> PDF envoyé avec succès
+          </div>
+          <div style={{ fontSize: 12, color: '#166534', marginBottom: 4 }}>{result.filename}</div>
+          {result.version_label && <div style={{ fontSize: 11, color: '#166534', opacity: 0.8 }}>Version : {result.version_label}</div>}
+          {result.fileUrl && (
+            <a href={result.fileUrl} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginTop: 8, color: '#166534', fontSize: 12, fontWeight: 600 }}>
+              <ExternalLink size={11} /> Voir le fichier dans HubSpot
+            </a>
+          )}
+          {onCreateNewVersion && (
+            <div style={{ marginTop: 12 }}>
+              <button type="button" onClick={createNewVersion} disabled={creatingVersion || !versionId} style={{ ...ghostBtn(), color: '#166534', borderColor: '#22c55e', background: 'rgba(255,255,255,0.35)' }}>
+                {creatingVersion ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Copy size={12} />}
+                Créer une nouvelle version depuis celle envoyée
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Erreur ── */}
+      {error && (
+        <div style={{ padding: '10px 14px', borderRadius: 8, background: 'color-mix(in srgb, #ef4444 10%, var(--color-surface))', border: '1px solid #ef4444', color: '#ef4444', fontSize: 13, marginBottom: 20 }}>
+          {error}
+        </div>
+      )}
+
+      {/* ── Action ── */}
+      {!devisId ? (
+        <div style={{ padding: '12px 16px', borderRadius: 8, background: 'var(--color-surface)', border: '1px solid var(--color-border)', fontSize: 13, color: 'var(--color-text-3)' }}>
+          Aucun devis actif — retournez à l'étape 1 pour créer ou charger un devis.
+        </div>
+      ) : (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button
+            onClick={handleSend}
+            disabled={sending || !selectedDeal?.id || hubspotOk === false}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 8, padding: '10px 22px',
+              borderRadius: 8, border: 'none', background: 'var(--color-primary)', color: '#fff',
+              fontWeight: 700, fontSize: 13, cursor: sending || !selectedDeal?.id ? 'not-allowed' : 'pointer',
+              opacity: sending || !selectedDeal?.id || hubspotOk === false ? 0.6 : 1,
+            }}
+          >
+            {sending
+              ? <><Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> Envoi en cours…</>
+              : alreadySentNoteId && !result
+                ? <><Send size={14} /> Renvoyer le PDF vers HubSpot</>
+                : <><Send size={14} /> Envoyer le PDF vers HubSpot</>
+            }
+          </button>
+          {alreadySentNoteId && onCreateNewVersion && (
+            <button type="button" onClick={createNewVersion} disabled={creatingVersion || !versionId} style={ghostBtn()}>
+              {creatingVersion ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Copy size={13} />}
+              Nouvelle version
+            </button>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -1489,14 +2482,29 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
 // ══════════════════════════════════════════════════════════════════════════════
 export default function DevisStepper() {
   const navigate = useNavigate()
+  const { darkMode, toggleDarkMode } = useThemeStore()
 
   // Stepper state
   const [step, setStep] = useState(1)
   const [maxReached, setMaxReached] = useState(1)
 
   // Step 1: client + deal
-  const [selectedCompany, setSelectedCompany] = useState(null)
-  const [selectedDeal, setSelectedDeal] = useState(null)
+  const [selectedCompany, setSelectedCompany] = useState(() => {
+    try { const s = localStorage.getItem('devis_selected_company'); return s ? JSON.parse(s) : null } catch { return null }
+  })
+  const [selectedDeal, setSelectedDeal] = useState(() => {
+    try { const s = localStorage.getItem('devis_selected_deal'); return s ? JSON.parse(s) : null } catch { return null }
+  })
+
+  // Persist selected company/deal in localStorage
+  useEffect(() => {
+    if (selectedCompany) localStorage.setItem('devis_selected_company', JSON.stringify(selectedCompany))
+    else localStorage.removeItem('devis_selected_company')
+  }, [selectedCompany])
+  useEffect(() => {
+    if (selectedDeal) localStorage.setItem('devis_selected_deal', JSON.stringify(selectedDeal))
+    else localStorage.removeItem('devis_selected_deal')
+  }, [selectedDeal])
   const [existingDevis, setExistingDevis] = useState([])
   const [currentDevisId, setCurrentDevisId] = useState(null)
   const [currentVersionId, setCurrentVersionId] = useState(null)
@@ -1519,12 +2527,105 @@ export default function DevisStepper() {
   const [editorAiMessages, setEditorAiMessages] = useState([])
   const [editorAiInput, setEditorAiInput] = useState('')
   const [editorAiLoading, setEditorAiLoading] = useState(false)
+  const [linkCopied, setLinkCopied] = useState(false)
   const editorAiEndRef = useRef(null)
   const editorAiInputRef = useRef(null)
   const selectedCompanyId = selectedCompany?.id
+  const [companyDetailRefreshKey, setCompanyDetailRefreshKey] = useState(0)
+  const restoringUrlRef = useRef(false)
+  const lastUrlRef = useRef('')
+  // Ref to read current selectedCompany inside restoreFromUrl without creating
+  // a reactive dependency that would re-run the restore on every company change.
+  const selectedCompanyRef = useRef(selectedCompany)
+  useEffect(() => { selectedCompanyRef.current = selectedCompany }, [selectedCompany])
 
   // Chat panel width ratio (1/3, 1/2, 2/3)
   const [chatRatio, setChatRatio] = useState('1/3')
+
+  const restoreFromUrl = useCallback(async () => {
+    const params = new URLSearchParams(window.location.search)
+    const nextStep = Math.min(5, Math.max(1, Number(params.get('step')) || 1))
+    const companyId = params.get('company')
+    const dealId = params.get('deal')
+    const devisId = params.get('devis')
+    const versionId = params.get('version')
+
+    restoringUrlRef.current = true
+    try {
+      setStep(nextStep)
+      setMaxReached(value => Math.max(value, nextStep))
+      if (companyId) {
+        const sameStoredCompany = selectedCompanyRef.current?.id && String(selectedCompanyRef.current.id) === String(companyId)
+        if (!sameStoredCompany) {
+          try {
+            const detail = await api.get(`/prospects/companies/${companyId}`)
+            const company = detail?.company || {}
+            setSelectedCompany({
+              id: company.id || companyId,
+              name: company.properties?.name || `#${company.id || companyId}`,
+              properties: company.properties || {},
+              deliveryAddress: companyDeliveryAddress(company),
+            })
+            if (dealId) {
+              const deal = (detail?.deals || []).find(d => String(d.id || d.hs_object_id) === String(dealId))
+              if (deal) {
+                setSelectedDeal({ id: deal.id || deal.hs_object_id, name: deal.properties?.dealname || `Deal #${dealId}`, amount: deal.properties?.amount })
+              }
+            }
+          } catch {
+            // Si HubSpot ne répond pas, on garde le contexte local existant.
+          }
+        }
+      }
+      if (devisId) {
+        try {
+          const detail = await api.get(`/devis/${devisId}`)
+          setCurrentDevisId(detail.id)
+          setCurrentVersionId(versionId || detail.current_version_id || detail.current_version?.id || null)
+          setLines(detail.lines || [])
+          if (!companyId && detail.company_id) {
+            setSelectedCompany(prev => prev || { id: detail.company_id, name: detail.client_name || `Client #${detail.company_id}` })
+          }
+          if (!dealId && detail.deal_id) {
+            setSelectedDeal(prev => prev || { id: detail.deal_id, name: `Deal #${detail.deal_id}` })
+          }
+        } catch {
+          setCurrentDevisId(null)
+          setCurrentVersionId(null)
+          setLines([])
+        }
+      } else {
+        setCurrentDevisId(null)
+        setCurrentVersionId(null)
+        setLines([])
+      }
+    } finally {
+      lastUrlRef.current = `${window.location.pathname}${window.location.search}`
+      setTimeout(() => { restoringUrlRef.current = false }, 0)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    restoreFromUrl()
+    const onPopState = () => { restoreFromUrl() }
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [restoreFromUrl])
+
+  useEffect(() => {
+    if (restoringUrlRef.current) return
+    const params = new URLSearchParams()
+    params.set('step', String(step))
+    if (selectedCompany?.id) params.set('company', selectedCompany.id)
+    if (selectedDeal?.id) params.set('deal', selectedDeal.id)
+    if (currentDevisId) params.set('devis', currentDevisId)
+    if (currentVersionId) params.set('version', currentVersionId)
+    const nextUrl = `${window.location.pathname}?${params.toString()}`
+    if (nextUrl === lastUrlRef.current || nextUrl === `${window.location.pathname}${window.location.search}`) return
+    window.history.pushState({ step, company: selectedCompany?.id || null, deal: selectedDeal?.id || null, devis: currentDevisId || null, version: currentVersionId || null }, '', nextUrl)
+    lastUrlRef.current = nextUrl
+  }, [currentDevisId, currentVersionId, selectedCompany?.id, selectedDeal?.id, step])
 
   // Load existing devis when company changes
   useEffect(() => {
@@ -1553,6 +2654,18 @@ export default function DevisStepper() {
     if (n > maxReached) setMaxReached(n)
   }
 
+  const copyBookmarkLink = async () => {
+    try {
+      await navigator.clipboard.writeText(window.location.href)
+      setLinkCopied(true)
+      setTimeout(() => setLinkCopied(false), 1800)
+    } catch {
+      setLinkCopied(false)
+    }
+  }
+
+  const currentStepperUrl = () => `${window.location.pathname}${window.location.search}`
+
   // Step 1 handlers
   const handleNewDevis = async () => {
     if (!selectedCompany || !selectedDeal) return
@@ -1563,12 +2676,65 @@ export default function DevisStepper() {
         deal_id: selectedDeal.id,
         name: `Devis ${selectedCompany.name} — ${new Date().toLocaleDateString('fr-FR')}`,
       })
+      setExistingDevis((prev) => [devis, ...prev.filter((d) => d.id !== devis.id)])
       setCurrentDevisId(devis.id)
       setCurrentVersionId(devis.current_version_id || devis.current_version?.id || null)
       goStep(2)
     } catch (err) {
       console.error('Create devis error:', err)
     }
+  }
+
+
+  const handleSelectDeal = (deal) => {
+    const sameDeal = selectedDeal?.id && deal?.id && String(selectedDeal.id) === String(deal.id)
+    if (!sameDeal) {
+      setCurrentDevisId(null)
+      setCurrentVersionId(null)
+      setLines([])
+      setResults([])
+    }
+    setSelectedDeal(deal)
+  }
+
+  const handleSelectCompany = (company) => {
+    const sameCompany = selectedCompany?.id && company?.id && String(selectedCompany.id) === String(company.id)
+    if (!sameCompany) {
+      setSelectedDeal(null)
+      setCurrentDevisId(null)
+      setCurrentVersionId(null)
+      setLines([])
+      setResults([])
+    }
+    setSelectedCompany(company)
+  }
+  const handleCreateDeal = async ({ companyId, dealname, amount, pipeline, dealstage }) => {
+    const createdDeal = await api.post(`/prospects/companies/${companyId}/deals`, {
+      dealname,
+      amount,
+      pipeline,
+      dealstage,
+    })
+    setCompanyDetailRefreshKey((value) => value + 1)
+    return createdDeal
+  }
+
+  const handleUpdateDeal = async ({ dealId, dealname, amount, pipeline, dealstage }) => {
+    const updatedDeal = await api.patch(`/prospects/deals/${dealId}`, {
+      dealname,
+      amount,
+      pipeline,
+      dealstage,
+    })
+    setSelectedDeal((previous) => {
+      if (!previous || String(previous.id) !== String(dealId)) return previous
+      return {
+        ...previous,
+        name: updatedDeal?.properties?.dealname || dealname || previous.name,
+        amount: updatedDeal?.properties?.amount ?? previous.amount,
+      }
+    })
+    return updatedDeal
   }
 
   const handleOpenDevis = async (d) => {
@@ -1656,7 +2822,7 @@ export default function DevisStepper() {
           status: 'editing',
         }).catch(() => {})
       }
-      goStep(4)
+      goStep(3)
     } catch (err) {
       console.error('Bulk import error:', err)
     }
@@ -1668,7 +2834,7 @@ export default function DevisStepper() {
     setAiRow(null)
     setExpandedRow(null)
     setAiMessages([])
-    goStep(4)
+    goStep(3)
   }
 
   // Step 4: editor AI
@@ -1710,17 +2876,31 @@ export default function DevisStepper() {
       .catch(() => [])
   }
 
-  // Step 5: HubSpot
-  const handleSendHubSpot = async () => {
-    // TODO: implement PDF generation + HubSpot note creation
-    console.log('Send to HubSpot — devis:', currentDevisId)
+  // Step 4 → Step 5: navigate to HubSpot send step
+  const handleSendHubSpot = () => goStep(5)
+
+  const handleCreateVersionAfterHubSpot = async ({ sourceVersionId, sourceLabel }) => {
+    if (!currentDevisId || !sourceVersionId) return null
+    const created = await api.post(`/devis/${currentDevisId}/versions`, {
+      source_version_id: sourceVersionId,
+      title: `Nouvelle version après envoi HubSpot`,
+      comment: `Nouvelle version créée après envoi HubSpot de ${sourceLabel || `version #${sourceVersionId}`}`,
+      step_key: 'hubspot',
+    })
+    setCurrentVersionId(created.id)
+    goStep(3)
+    return created
   }
 
   const aiRowData = aiRow !== null ? results[aiRow] : null
+  const currentDevis = useMemo(
+    () => existingDevis.find((d) => String(d.id) === String(currentDevisId)) || null,
+    [currentDevisId, existingDevis]
+  )
 
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--color-bg)', color: 'var(--color-text)', fontFamily: 'var(--font-body)' }}>
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } } @keyframes fadeInUp { from { opacity: 0; transform: translateX(-50%) translateY(10px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }`}</style>
 
       {/* Topbar */}
       <header className="admin-topbar" style={{ borderRadius: 0, flexShrink: 0, margin: 0 }}>
@@ -1740,19 +2920,25 @@ export default function DevisStepper() {
               <ArrowLeft size={14} /> Étape précédente
             </button>
           )}
-          {step === 3 && results.length > 0 && (
-            <button className="admin-btn-primary" onClick={() => {
-              handleValidateAnalysis()
-            }} style={{ fontSize: '0.8125rem' }}>
-              Valider vers la grille <ArrowRight size={14} />
-            </button>
-          )}
-          {step === 4 && (
-            <button className="admin-btn-primary" onClick={() => goStep(5)} style={{ fontSize: '0.8125rem' }}>
-              Préparer le PDF <ArrowRight size={14} />
-            </button>
-          )}
-          <button type="button" className="admin-btn-ghost" onClick={() => navigate('/rules')}>
+          <button
+            type="button"
+            className="admin-btn-ghost"
+            onClick={toggleDarkMode}
+            title={darkMode ? 'Passer en mode clair' : 'Passer en mode sombre'}
+            aria-label={darkMode ? 'Passer en mode clair' : 'Passer en mode sombre'}
+          >
+            {darkMode ? <Sun size={16} /> : <Moon size={16} />}
+            <span>{darkMode ? 'Mode clair' : 'Mode sombre'}</span>
+          </button>
+          <button type="button" className="admin-btn-ghost" onClick={copyBookmarkLink} title="Copier le lien direct vers ce contexte">
+            {linkCopied ? <Check size={16} /> : <Copy size={16} />}
+            <span>{linkCopied ? 'Lien copié' : 'Copier lien'}</span>
+          </button>
+          <button type="button" className="admin-btn-ghost" onClick={() => navigate('/experiences', { state: { returnTo: currentStepperUrl(), returnLabel: 'Retour au devis NEXUS' } })}>
+            <BookOpen size={16} />
+            <span>Expériences</span>
+          </button>
+          <button type="button" className="admin-btn-ghost" onClick={() => navigate('/rules', { state: { returnTo: currentStepperUrl(), returnLabel: 'Retour au devis NEXUS' } })}>
             <Shield size={16} />
             <span>Règles</span>
           </button>
@@ -1764,7 +2950,14 @@ export default function DevisStepper() {
       </header>
 
       {/* Stepper bar */}
-      <StepperBar step={step} maxReached={maxReached} onStep={goStep} />
+      <StepperBar step={step} maxReached={step >= 4 ? Math.max(maxReached, 5) : step >= 3 ? Math.max(maxReached, 4) : maxReached} onStep={goStep} />
+
+      <WorkflowContextBar
+        selectedCompany={selectedCompany}
+        selectedDeal={selectedDeal}
+        currentDevis={currentDevis}
+        currentVersionId={currentVersionId}
+      />
 
       {/* Step content */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
@@ -1773,10 +2966,13 @@ export default function DevisStepper() {
             selectedCompany={selectedCompany}
             selectedDeal={selectedDeal}
             existingDevis={existingDevis}
-            onSelect={setSelectedCompany}
-            onSelectDeal={setSelectedDeal}
+            onSelect={handleSelectCompany}
+            onSelectDeal={handleSelectDeal}
+            onCreateDeal={handleCreateDeal}
+            onUpdateDeal={handleUpdateDeal}
             onNewDevis={handleNewDevis}
             onOpenDevis={handleOpenDevis}
+            detailRefreshKey={companyDetailRefreshKey}
           />
         )}
         {step === 2 && (
@@ -1784,28 +2980,14 @@ export default function DevisStepper() {
             devisId={currentDevisId}
             currentVersionId={currentVersionId}
             onVersionSelected={setCurrentVersionId}
-            onContinue={() => goStep(lines.length > 0 ? 4 : 3)}
+            onContinue={() => goStep(3)}
           />
         )}
         {step === 3 && (
-          <StepAnalysis
-            results={results} analyzing={analyzing} error={analysisError}
-            expandedRow={expandedRow} setExpandedRow={setExpandedRow}
-            aiRow={aiRow} selectRow={selectRow}
-            fileInputRef={fileInputRef} analyzeFile={analyzeFile}
-            aiRowData={aiRowData} aiMessages={aiMessages}
-            aiInput={aiInput} setAiInput={setAiInput}
-            aiLoading={aiLoading} askAI={askAI}
-            aiEndRef={aiEndRef} aiInputRef={aiInputRef}
-            onValidate={handleValidateAnalysis}
-            onStartBlank={handleStartBlankEditor}
-            chatRatio={chatRatio} setChatRatio={setChatRatio}
-          />
-        )}
-        {step === 4 && (
           <StepEditor
             devisId={currentDevisId} versionId={currentVersionId} lines={lines} setLines={setLines}
             onRefresh={refreshLines}
+            onContinuePdf={() => goStep(4)}
             defaultTransportAddress={companyDeliveryAddress(selectedCompany)}
             aiMessages={editorAiMessages} aiInput={editorAiInput} setAiInput={setEditorAiInput}
             aiLoading={editorAiLoading} askAIEditor={askAIEditor}
@@ -1813,11 +2995,22 @@ export default function DevisStepper() {
             chatRatio={chatRatio} setChatRatio={setChatRatio}
           />
         )}
-        {step === 5 && (
+        {step === 4 && (
           <StepPDF
             devisId={currentDevisId} versionId={currentVersionId} lines={lines} setLines={setLines}
             clientName={selectedCompany?.name} dealName={selectedDeal?.name}
             onSendHubSpot={handleSendHubSpot}
+          />
+        )}
+        {step === 5 && (
+          <StepHubSpot
+            devisId={currentDevisId}
+            versionId={currentVersionId}
+            selectedCompany={selectedCompany}
+            selectedDeal={selectedDeal}
+            onDealChange={handleSelectDeal}
+            onGoStep={goStep}
+            onCreateNewVersion={handleCreateVersionAfterHubSpot}
           />
         )}
       </div>

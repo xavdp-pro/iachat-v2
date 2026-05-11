@@ -23,7 +23,7 @@ const GAMME_COLORS = {
   FB7:   '#7f1d1d', ANTI: '#374151', PRISON:'#111827',
 }
 const gammeColor = (g = '') => {
-  const upper = g.toUpperCase()
+  const upper = String(g ?? '').toUpperCase()
   return GAMME_COLORS[Object.keys(GAMME_COLORS).find(k => upper.includes(k))] ?? '#354346'
 }
 
@@ -628,7 +628,7 @@ export default function ProspectQuotes() {
   const results = activeSession?.results || []
 
   const [conseils, setConseils] = useState([])
-  const [conseilsLoading, setConseilsLoading] = useState(false)
+  const [, setConseilsLoading] = useState(false)
   const [applyError, setApplyError] = useState('')
 
   const handleAnalyzeConseils = async () => {
@@ -683,11 +683,11 @@ export default function ProspectQuotes() {
     const v = localStorage.getItem(UI_KEY.assistantDock)
     return v === 'bottom' ? 'bottom' : 'right'
   })
-  const [rightWidth, setRightWidth] = useState(() => {
+  const [rightWidth] = useState(() => {
     const n = parseInt(localStorage.getItem(UI_KEY.rightWidth) || '', 10)
     return Number.isFinite(n) ? Math.min(RIGHT_W_MAX, Math.max(RIGHT_W_MIN, n)) : 400
   })
-  const [bottomHeight, setBottomHeight] = useState(() => {
+  const [bottomHeight] = useState(() => {
     const n = parseInt(localStorage.getItem(UI_KEY.bottomHeight) || '', 10)
     if (Number.isFinite(n)) return Math.min(BOTTOM_H_MAX, Math.max(BOTTOM_H_MIN, n))
     return typeof window !== 'undefined' ? Math.round(window.innerHeight * 0.36) : 360
@@ -704,38 +704,6 @@ export default function ProspectQuotes() {
   }, [rightWidth])
   useEffect(() => {
     localStorage.setItem(UI_KEY.bottomHeight, String(bottomHeight))
-  }, [bottomHeight])
-
-  const startRightResize = useCallback((e) => {
-    e.preventDefault()
-    const startX = e.clientX
-    const startW = rightWidth
-    const onMove = (ev) => {
-      const delta = startX - ev.clientX
-      setRightWidth(Math.min(RIGHT_W_MAX, Math.max(RIGHT_W_MIN, startW + delta)))
-    }
-    const onUp = () => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
-    }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
-  }, [rightWidth])
-
-  const startBottomResize = useCallback((e) => {
-    e.preventDefault()
-    const startY = e.clientY
-    const startH = bottomHeight
-    const onMove = (ev) => {
-      const delta = ev.clientY - startY
-      setBottomHeight(Math.min(BOTTOM_H_MAX, Math.max(BOTTOM_H_MIN, startH - delta)))
-    }
-    const onUp = () => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
-    }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
   }, [bottomHeight])
 
   // Persist sessions
@@ -857,14 +825,6 @@ export default function ProspectQuotes() {
       setAiRow(null)
       setAiMessages([])
     }
-  }
-
-  const newSession = () => {
-    setActiveSessionId(null)
-    setAiRow(null)
-    setAiMessages([])
-    setExpandedRow(null)
-    setError('')
   }
 
   // ── Devis generation ──────────────────────────────────────────────────

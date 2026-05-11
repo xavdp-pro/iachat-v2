@@ -15,10 +15,10 @@ import { getGlobalOllamaModel } from './appSettings.js'
 /** Récupère toutes les règles métier approuvées en DB. */
 export async function loadApprovedRules() {
   const [ruleRows] = await db.query(
-    `SELECT id, title, content, category, severity, source_type, source_ref
+    `SELECT id, rule_code, title, content, category, severity, source_type, source_ref
        FROM devis_rules
       WHERE status = 'active'
-      ORDER BY id ASC`
+      ORDER BY rule_code ASC, id ASC`
   )
   const [experienceRows] = await db.query(
     `SELECT id, title, content, category
@@ -36,7 +36,7 @@ export async function loadApprovedRules() {
 /** Construit le prompt de validation pour une ligne de devis. */
 function buildPrompt(line, rules) {
   const rulesList = rules
-    .map((r, i) => `Règle ${i + 1} (id=${r.id}) — "${r.title}":\n${r.content}`)
+    .map((r, i) => `Règle ${i + 1} (${r.rule_code || `id=${r.id}`}) — "${r.title}":\n${r.content}`)
     .join('\n\n---\n\n')
 
   const lineSummary = {
@@ -60,7 +60,7 @@ function buildPrompt(line, rules) {
     "Tu es un auditeur qualité NEXUS. Tu reçois une ligne de devis et une liste de règles métier. " +
     "Pour CHAQUE règle, tu dois indiquer si la ligne est conforme. " +
     "Réponds UNIQUEMENT par un JSON valide, sans texte autour, au format strict :\n" +
-    `{ "verdicts": [ { "rule_id": <int>, "rule_title": "<titre>", "status": "ok"|"warning"|"violation"|"na", "reason": "<phrase courte>", "fix": "<correctif suggéré ou null>" } ] }\n\n` +
+    `{ "verdicts": [ { "rule_id": <int>, "rule_code": "R001", "rule_title": "<titre>", "status": "ok"|"warning"|"violation"|"na", "reason": "<phrase courte>", "fix": "<correctif suggéré ou null>" } ] }\n\n` +
     "Statuts :\n" +
     "- 'ok'         : la ligne respecte clairement la règle\n" +
     "- 'warning'    : la ligne pourrait poser problème, à vérifier manuellement\n" +
@@ -124,6 +124,7 @@ export async function validateLine({ line, rules, model }) {
     const status = ['ok', 'warning', 'violation', 'na'].includes(v.status) ? v.status : 'warning'
     return {
       rule_id: r.id,
+      rule_code: r.rule_code || null,
       rule_title: r.title,
       status,
       reason: typeof v.reason === 'string' ? v.reason.slice(0, 400) : '',
