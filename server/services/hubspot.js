@@ -268,6 +268,11 @@ export async function updateDeal(dealId, { dealname = null, amount = null, pipel
   return deal
 }
 
+export async function deleteDeal(dealId) {
+  await hubspotFetch(`/crm/v3/objects/deals/${dealId}`, { method: 'DELETE' })
+  return { success: true, id: String(dealId) }
+}
+
 function associationIds(company, type) {
   const block = company?.associations?.[type]
   const results = block?.results

@@ -294,6 +294,38 @@ export async function ensureDbSchema() {
     `)
     console.log('✅ DB: devis_version_comments table ready')
 
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS devis_ai_messages (
+        id          INT AUTO_INCREMENT PRIMARY KEY,
+        devis_id    INT DEFAULT NULL,
+        version_id  INT DEFAULT NULL,
+        user_id     INT DEFAULT NULL,
+        role        ENUM('user','assistant') NOT NULL,
+        content     MEDIUMTEXT NOT NULL,
+        images_json MEDIUMTEXT DEFAULT NULL,
+        agent_slug  VARCHAR(100) DEFAULT NULL,
+        shared      TINYINT(1) NOT NULL DEFAULT 1,
+        created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        edited_at   DATETIME DEFAULT NULL,
+        INDEX idx_dam_scope (devis_id, version_id, created_at),
+        INDEX idx_dam_user (user_id),
+        CONSTRAINT fk_dam_devis FOREIGN KEY (devis_id) REFERENCES devis(id) ON DELETE CASCADE,
+        CONSTRAINT fk_dam_version FOREIGN KEY (version_id) REFERENCES devis_versions(id) ON DELETE CASCADE,
+        CONSTRAINT fk_dam_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `)
+    console.log('✅ DB: devis_ai_messages table ready')
+
+    const [devisAiImageCols] = await db.query(
+      `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'devis_ai_messages' AND COLUMN_NAME = 'images_json'`
+    )
+    if (!devisAiImageCols.length) {
+      await db.query('ALTER TABLE devis_ai_messages ADD COLUMN images_json MEDIUMTEXT DEFAULT NULL AFTER content')
+      console.log('✅ DB: devis_ai_messages.images_json column added')
+    }
+
     // ── devis_rules (atomic operational rules, separate from experiences) ─
     await db.query(`
       CREATE TABLE IF NOT EXISTS devis_rules (

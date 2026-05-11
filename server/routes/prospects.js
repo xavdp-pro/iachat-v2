@@ -6,6 +6,7 @@ import {
   getCompanyDetail,
   createDealForCompany,
   updateDeal,
+  deleteDeal,
   isHubspotConfigured,
 } from '../services/hubspot.js'
 
@@ -105,6 +106,28 @@ router.patch('/deals/:dealId', async (req, res) => {
       return res.status(503).json({ error: err.message })
     }
     console.error('[prospects] PATCH /deals/:dealId', err)
+    res.status(err.status >= 400 && err.status < 600 ? err.status : 500).json({
+      error: err.message || 'HubSpot request failed',
+    })
+  }
+})
+
+// DELETE /api/prospects/deals/:dealId — archive/delete a HubSpot deal
+router.delete('/deals/:dealId', async (req, res) => {
+  try {
+    if (!isHubspotConfigured()) {
+      return res
+        .status(503)
+        .json({ error: 'HubSpot is not configured (set HUBSPOT_PRIVATE_APP_TOKEN in server env)' })
+    }
+
+    const result = await deleteDeal(req.params.dealId)
+    res.json(result)
+  } catch (err) {
+    if (err.code === 'NO_TOKEN') {
+      return res.status(503).json({ error: err.message })
+    }
+    console.error('[prospects] DELETE /deals/:dealId', err)
     res.status(err.status >= 400 && err.status < 600 ? err.status : 500).json({
       error: err.message || 'HubSpot request failed',
     })

@@ -171,12 +171,15 @@ export async function chatCompletion({ model, messages, signal, responseFormat, 
  * @param {(delta: string) => void} opts.onChunk  called for each streamed token
  * @returns {Promise<string>} full assistant text once streaming is done
  */
-export async function chatCompletionStream({ model, messages, signal, onChunk }) {
+export async function chatCompletionStream({ model, messages, signal, onChunk, temperature, maxTokens }) {
   const url = `${baseUrl()}/v1/chat/completions`
+  const payload = { model, messages, stream: true }
+  if (typeof temperature === 'number') payload.temperature = temperature
+  if (typeof maxTokens === 'number') payload.max_tokens = maxTokens
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, messages, stream: true }),
+    body: JSON.stringify(payload),
     signal,
   })
   if (!res.ok) {

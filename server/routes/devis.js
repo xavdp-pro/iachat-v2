@@ -14,12 +14,14 @@ import { Router } from 'express'
 import { authenticate } from '../middleware/auth.js'
 import { chatCompletion } from '../services/ollama.js'
 import { getGlobalOllamaModel } from '../services/appSettings.js'
-import { searchDesignationExamples, searchExperiences } from '../services/memory.js'
+import { parseDocument } from '../services/document-parser.js'
+import { analyzeDocument } from '../services/document-analyzer.js'
+import { searchDesignationExamples, searchDevisRules, searchExperiences } from '../services/memory.js'
 import db from '../db/index.js'
 import multer from 'multer'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
-import { readFile, unlink } from 'fs/promises'
+import { mkdtemp, readFile, rm, unlink, writeFile } from 'fs/promises'
 import { join, basename, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { existsSync } from 'fs'
@@ -39,6 +41,51 @@ router.use(authenticate)
 const VALID_LINE_SECTIONS = new Set(['products', 'calculations', 'transport'])
 const normalizeLineSection = (value) => VALID_LINE_SECTIONS.has(value) ? value : 'products'
 const RD_VALIDATION_CATEGORY = 'Validations individuelles R&D'
+const GEMMA_ATTACHMENT_MIMES = new Set(['application/pdf', 'image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif', 'image/tiff'])
+
+function normalizeGemmaAttachments(input = [], limit = 6) {
+  if (!Array.isArray(input)) return []
+  return input
+    .map((item) => {
+      const dataUrl = String(item?.dataUrl || item?.data_url || '')
+      const match = dataUrl.match(/^data:([^;,]+);base64,(.+)$/i)
+      if (!match) return null
+      const type = String(item?.type || match[1] || '').toLowerCase()
+      if (!GEMMA_ATTACHMENT_MIMES.has(type)) return null
+      return {
+        name: String(item?.name || (type === 'application/pdf' ? 'document.pdf' : 'image')).slice(0, 140),
+        type,
+        dataUrl,
+      }
+    })
+    .filter(Boolean)
+    .slice(0, limit)
+}
+
+async function analyzeGemmaDocuments(attachments, model) {
+  const docs = attachments.filter(item => item.type === 'application/pdf')
+  if (!docs.length) return ''
+  const parts = []
+  for (const doc of docs.slice(0, 3)) {
+    const dir = await mkdtemp(join(os.tmpdir(), 'gemma-doc-'))
+    const safeName = basename(doc.name || '').replace(/[^a-zA-Z0-9._-]/g, '_') || `${crypto.randomUUID()}.pdf`
+    const filePath = join(dir, safeName.toLowerCase().endsWith('.pdf') ? safeName : `${safeName}.pdf`)
+    try {
+      const base64 = doc.dataUrl.split(',')[1] || ''
+      await writeFile(filePath, Buffer.from(base64, 'base64'))
+      const parsed = await parseDocument(filePath, doc.type)
+      const limitedPages = parsed.pages.slice(0, 8)
+      const { pageResults, summary } = await analyzeDocument({ pages: limitedPages, model })
+      const pageText = pageResults.map(page => `Page ${page.pageNumber}: ${page.result}`).join('\n\n')
+      parts.push(`### ${doc.name}\nPages analysees: ${limitedPages.length}/${parsed.pageCount}\nSynthese:\n${summary}\n\nDetails par page:\n${pageText}`)
+    } catch (err) {
+      parts.push(`### ${doc.name}\nImpossible d'analyser ce PDF: ${err.message}`)
+    } finally {
+      await rm(dir, { recursive: true, force: true }).catch(() => { })
+    }
+  }
+  return parts.length ? `\n\n[PIECES JOINTES PDF ANALYSEES PAR VISION/OCR]\n${parts.join('\n\n---\n\n')}` : ''
+}
 
 async function loadRdValidations() {
   const [rows] = await db.query(
@@ -563,11 +610,107 @@ Contraintes absolues :
   }
 })
 
+// ── Shared Gemma 4 chat messages for stepper ────────────────────────────────
+router.get('/ai-messages', async (req, res) => {
+  const devisId = req.query.devis_id || null
+  const versionId = req.query.version_id || null
+  if (!devisId) return res.json([])
+  try {
+    const [rows] = await db.query(
+      `SELECT m.id, m.devis_id, m.version_id, m.user_id, m.role, m.content, m.images_json, m.agent_slug, m.shared,
+                  m.created_at, m.updated_at, m.edited_at, u.name AS user_name
+             FROM devis_ai_messages m
+             LEFT JOIN users u ON u.id = m.user_id
+            WHERE m.devis_id = ? AND (m.version_id <=> ?)
+            ORDER BY m.created_at ASC, m.id ASC`,
+      [devisId, versionId]
+    )
+    res.json(rows)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.post('/ai-messages', async (req, res) => {
+  const { devis_id, version_id = null, role = 'user', content, images = [], agent_slug = null } = req.body
+  if (!devis_id) return res.status(400).json({ error: 'devis_id requis' })
+  if (!['user', 'assistant'].includes(role)) return res.status(400).json({ error: 'role invalide' })
+  if (!content?.trim()) return res.status(400).json({ error: 'content requis' })
+  const safeImages = normalizeGemmaAttachments(images, 6)
+  try {
+    const [result] = await db.query(
+      `INSERT INTO devis_ai_messages (devis_id, version_id, user_id, role, content, images_json, agent_slug, shared)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
+      [devis_id, version_id || null, role === 'user' ? req.user.id : null, role, content.trim(), safeImages.length ? JSON.stringify(safeImages) : null, agent_slug]
+    )
+    const [rows] = await db.query(
+      `SELECT m.id, m.devis_id, m.version_id, m.user_id, m.role, m.content, m.images_json, m.agent_slug, m.shared,
+                  m.created_at, m.updated_at, m.edited_at, u.name AS user_name
+             FROM devis_ai_messages m
+             LEFT JOIN users u ON u.id = m.user_id
+            WHERE m.id = ?`,
+      [result.insertId]
+    )
+    res.status(201).json(rows[0])
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.delete('/ai-messages', async (req, res) => {
+  const { devis_id, version_id = null } = req.body || {}
+  if (!devis_id) return res.status(400).json({ error: 'devis_id requis' })
+  try {
+    const [result] = await db.query(
+      'DELETE FROM devis_ai_messages WHERE devis_id = ? AND (version_id <=> ?)',
+      [devis_id, version_id || null]
+    )
+    res.json({ success: true, deleted: result.affectedRows || 0 })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.put('/ai-messages/:id', async (req, res) => {
+  const { content } = req.body
+  if (!content?.trim()) return res.status(400).json({ error: 'content requis' })
+  try {
+    const [rows] = await db.query('SELECT * FROM devis_ai_messages WHERE id = ?', [req.params.id])
+    if (!rows.length) return res.status(404).json({ error: 'Message introuvable' })
+    const message = rows[0]
+    if (message.role !== 'user') return res.status(403).json({ error: 'Seuls les messages utilisateur sont éditables' })
+    await db.query(
+      'UPDATE devis_ai_messages SET content = ?, edited_at = NOW() WHERE id = ?',
+      [content.trim(), req.params.id]
+    )
+    const [updated] = await db.query(
+      `SELECT m.id, m.devis_id, m.version_id, m.user_id, m.role, m.content, m.images_json, m.agent_slug, m.shared,
+                  m.created_at, m.updated_at, m.edited_at, u.name AS user_name
+             FROM devis_ai_messages m
+             LEFT JOIN users u ON u.id = m.user_id
+            WHERE m.id = ?`,
+      [req.params.id]
+    )
+    res.json(updated[0])
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 // ── POST /api/devis/ask ─────────────────────────────────────────────────────
 // body: { rows: [...], question: string, mdFiles: [string], scope: 'line'|'all' }
 router.post('/ask', async (req, res) => {
-  const { rows = [], question, mdFiles = [], scope = 'line' } = req.body
-  if (!question?.trim()) return res.status(400).json({ error: 'Question requise' })
+  const { rows = [], question, mdFiles = [], scope = 'line', images = [], history = [], devis_id = null, version_id = null } = req.body
+  const safeQuestion = String(question || '').trim()
+  const incomingHistory = Array.isArray(history)
+    ? history
+      .filter(item => ['user', 'assistant'].includes(item?.role) && String(item?.content || '').trim())
+      .slice(-10)
+      .map(item => ({ role: item.role, content: String(item.content || '').trim().slice(0, 1200) }))
+    : []
+  const attachments = normalizeGemmaAttachments(images, 6)
+  const pastedImages = attachments.filter(item => item.type.startsWith('image/')).map(item => item.dataUrl)
+  if (!safeQuestion && !attachments.length) return res.status(400).json({ error: 'Question requise' })
 
   // ── Enrichissement automatique des markdowns selon les caractéristiques de la ligne ──
   // Objectif : garantir que Gemma a toujours accès aux bons référentiels croisés,
@@ -585,7 +728,7 @@ router.post('/ask', async (req, res) => {
     const extraText = String(r.type || '') + ' ' + optionsText + ' ' + JSON.stringify(r.alertes || [])
     const extraUpper = extraText.toUpperCase()
 
-    if (gamme.includes('CR3')) crossRefs.add('CR3.md')
+    if (gamme.includes('CR2') || gamme.includes('RC2') || gamme.includes('CR3') || gamme.includes('RC3')) crossRefs.add('CR3.md')
     if (gamme.includes('CR4')) crossRefs.add('CR4.md')
     if (gamme.includes('CR5')) crossRefs.add('CR5.md')
     if (gamme.includes('CR6')) crossRefs.add('CR6.md')
@@ -612,11 +755,15 @@ router.post('/ask', async (req, res) => {
   }
 
   // Consolider : docs détectés + cross-refs + fichiers transverses systématiques
-  const allDocs = [...new Set([
-    ...mdFiles,
+  const requestedDocs = Array.isArray(mdFiles) ? mdFiles : []
+  const rowDocs = contextRows.flatMap(r => Array.isArray(r.docs) ? r.docs : [])
+  const shouldLoadKnowledgeDocs = requestedDocs.length > 0 || contextRows.length > 0
+  const allDocs = shouldLoadKnowledgeDocs ? [...new Set([
+    ...requestedDocs,
+    ...rowDocs,
     ...Array.from(crossRefs),
     ...ALWAYS_LOAD,
-  ])]
+  ])] : []
 
   // Chargement des markdowns référencés (protection path-traversal)
   const mdParts = []
@@ -652,8 +799,8 @@ router.post('/ask', async (req, res) => {
 
   // ── Expériences terrain : recherche sémantique (contexte-dépendant) ──
   const expKeywords = /expérience|commercial|précédent|collègue|équipe|terrain|cas vécu|autre(s)? commercial|ont traité|ont fait/i
-  const expTopK = expKeywords.test(question) ? 8 : 5
-  const expHitsRaw = await searchExperiences({ text: question, topK: expTopK }).catch(() => [])
+  const expTopK = expKeywords.test(safeQuestion) ? 8 : 5
+  const expHitsRaw = await searchExperiences({ text: safeQuestion, topK: expTopK }).catch(() => [])
   // Exclure les règles métier déjà injectées ci-dessus (éviter doublons)
   const expHits = expHitsRaw.filter(h => !['Règle métier', 'Chiffrage', 'Validations individuelles R&D'].includes(h.category))
   const expBlock = expHits.length
@@ -661,9 +808,58 @@ router.post('/ask', async (req, res) => {
     expHits.map((h, i) => `${i + 1}. [${h.category || 'Général'}] ${h.title} — ${h.excerpt || ''}`).join('\n')
     : ''
 
+  const semanticRuleText = [
+    safeQuestion,
+    ...contextRows.slice(0, 40).map((r, i) => `Ligne ${i + 1}: ${r.gamme || ''} ${r.vantail || ''} ${r.type || r.designation || ''} ${r.dimensions || ''} options ${(r.options || []).join?.(', ') || ''} alertes ${(r.alertes || []).join?.(' | ') || ''}`),
+  ].filter(Boolean).join('\n')
+  const ruleTopK = /v[ée]rif|conforme|conformit|r[èe]gle|audit|contr[oô]le|conseil|attention|risque/i.test(safeQuestion) ? 12 : 7
+  const ruleHits = await searchDevisRules({ text: semanticRuleText || safeQuestion, topK: ruleTopK, minScore: 0.28 }).catch(() => [])
+  const rulesBlock = ruleHits.length
+    ? `\n\n[RÈGLES DEVIS QDRANT PERTINENTES — À UTILISER POUR VÉRIFIER/CONSEILLER :]\n` +
+    ruleHits.map((r, i) => `${i + 1}. ${r.rule_code || `R${r.rule_id}`} [${r.severity || 'warning'}] ${r.title}\n${r.excerpt}${r.source_ref ? `\nSource: ${r.source_type || 'source'} ${r.source_ref}` : ''}`).join('\n\n')
+    : ''
+
+  let storedHistory = []
+  if (devis_id) {
+    try {
+      const [storedRows] = await db.query(
+        `SELECT role, content
+           FROM devis_ai_messages
+          WHERE devis_id = ? AND (version_id <=> ?)
+          ORDER BY created_at DESC, id DESC
+          LIMIT 12`,
+        [devis_id, version_id || null]
+      )
+      storedHistory = storedRows.reverse()
+        .filter(item => ['user', 'assistant'].includes(item.role) && String(item.content || '').trim())
+        .map(item => ({ role: item.role, content: String(item.content || '').trim().slice(0, 1200) }))
+    } catch { /* non-bloquant */ }
+  }
+  const historySeen = new Set()
+  const shortHistory = [...storedHistory, ...incomingHistory]
+    .filter(item => {
+      const key = `${item.role}:${item.content}`
+      if (historySeen.has(key)) return false
+      historySeen.add(key)
+      return true
+    })
+    .slice(-12)
+  const historyBlock = shortHistory.length
+    ? `\n\n[MÉMOIRE COURTE DE LA CONVERSATION — contexte récent à conserver :]\n` +
+    shortHistory.map((m, i) => `${i + 1}. ${m.role === 'user' ? 'Utilisateur' : 'Gemma'}: ${m.content}`).join('\n')
+    : ''
+
   const systemMsg = `Tu es un expert NEXUS en menuiserie sécurisée (portes blindées RC3-RC6, coupe-feu EI60/EI120, pare-balles FB4-FB7).
 Tu es avant tout un assistant conversationnel et naturel. Si l'utilisateur te salue, te demande comment tu vas ou te dit "tu es là ?", réponds naturellement, brièvement et poliment, sans générer d'analyse de devis si cela n'est pas explicitement demandé ou pertinent.
 Quand il s'agit d'analyser des demandes clients ou de générer des devis (en t'appuyant sur le tarif NEXUS 2026-01), tu deviens précis et tu vérifies la cohérence des gammes, dimensions, options et équipements. Tu signales les alertes importantes.
+
+MODE AGENT DE TABLEAU :
+- Comporte-toi comme un assistant d'atelier intégré au tableau, pas comme un formulaire.
+- Si la demande peut être comprise depuis le tableau, les pièces jointes ou la conversation, réponds directement et n'enchaîne pas les questions de clarification.
+- Pose au maximum une question courte uniquement si une information bloquante manque vraiment.
+- Pour une demande d'action, confirme l'action attendue ou appliquée en 1 à 3 phrases. Ne rédige pas de long préambule.
+- Pour un audit ou une vérification de conformité, utilise les règles Qdrant pertinentes et les expériences terrain. Donne d'abord le verdict par ligne, puis les corrections/conseils.
+- Pour les images/PDF/fichiers, commence par ce que tu vois ou lis dans la pièce jointe, puis relie-le au devis. Ne réponds pas uniquement avec les règles générales si une pièce jointe est présente.
 
 CONVENTION DE LECTURE DES TABLEAUX DE PRIX (IMPORTANT) :
 Les tableaux de prix fonctionnent par fourchettes de dimensions (hauteur HT en lignes, largeur HT en colonnes).
@@ -693,6 +889,9 @@ Pour chiffrer une porte correctement, tu dois TOUJOURS croiser plusieurs markdow
 - TABLEAUX-ADDITIONNELS.md : règles courtes issues des onglets additionnels du XLSX (séisme, AEV, Blast 0,5 t/m², bornes mini/maxi, pièces détachées)
 - SERRURES-GARNITURES.md : TOUJOURS consulter pour connaître la serrure et les garnitures livrées par défaut avec chaque gamme. Ne jamais laisser serrure_ref vide sans avoir vérifié ce fichier.
 
+RÈGLE CR2/RC2 :
+Si une ligne est demandée ou affichée en CR2/RC2, elle doit utiliser le référentiel CR3 pour le chiffrage et les équipements, car la performance inférieure est chiffrée sur la performance supérieure la plus proche. Ne demande pas quelle ligne modifier quand le tableau fourni contient clairement les lignes concernées : réponds directement avec l'action ou le contrôle appliqué.
+
 CAS HORS CATALOGUE — traitement manuel obligatoire (ne jamais générer de prix automatique) :
 - "Chassis vitré" ou toute porte avec H < 1500 mm (1V) / H < 1890 mm (2V) : hors plage catalogue, dimensions incompatibles avec les tableaux standard. Indiquer clairement "nous consulter — devis sur mesure" et ne pas chiffrer de prix de base.
 - L > max de la gamme + H < minimum : impossible à fabriquer en standard.
@@ -710,33 +909,48 @@ CONVENTION DE LECTURE DES TABLEAUX DE PRIX (CRITIQUE) :
 
 Si deux markdowns se contredisent, privilégie le markdown de la gamme principale. Signale la contradiction.
 Les fichiers transverses (GUIDE-DEVIS, BASE, EQUIP-COMMUN) sont TOUJOURS chargés pour toi — consulte-les systématiquement.
-${context ? `\n\nBase documentaire NEXUS 2026 mise à disposition (${loadedDocs.length} fichiers : ${loadedDocs.join(', ')}) :\n\n${context}` : ''}${mandatoryRulesBlock}${expBlock}
+${context ? `\n\nBase documentaire NEXUS 2026 mise à disposition (${loadedDocs.length} fichiers : ${loadedDocs.join(', ')}) :\n\n${context}` : ''}${mandatoryRulesBlock}${rulesBlock}${expBlock}${historyBlock}
 Réponds en français de façon structurée et professionnelle. Si une information manque ou est incohérente, indique-le clairement.`
-
-  const userContent = (() => {
-    if (!rows.length) return question
-
-    if (scope === 'all' || rows.length > 1) {
-      // Résumé synthétique du devis complet
-      const summary = rows.map((r, i) => {
-        const opts = (r.options || []).map(o => o.label).join(', ') || '—'
-        const alts = (r.alertes || []).join(' | ') || '—'
-        return `Ligne ${i + 1}: ${r.gamme || '?'} ${r.vantail || ''} — H${r.dim_standard?.h ?? '?'}×L${r.dim_standard?.l ?? '?'} — Base: ${r.prix_base_ht != null ? r.prix_base_ht + ' €' : '?'} HT — Total: ${r.prix_total_min_ht != null ? r.prix_total_min_ht + ' €' : '?'} HT — Options: ${opts} — Alertes: ${alts}`
-      }).join('\n')
-      return `Ensemble du devis (${rows.length} ligne${rows.length > 1 ? 's' : ''}) :\n\`\`\`\n${summary}\n\`\`\`\n\nQuestion / Message : ${question}`
-    }
-
-    // Scope ligne unique
-    return `Données de la ligne de devis en cours :\n\`\`\`json\n${JSON.stringify(rows[0], null, 2)}\n\`\`\`\n\nQuestion / Message : ${question}`
-  })()
 
   try {
     const model = await getGlobalOllamaModel()
+    const documentContext = await analyzeGemmaDocuments(attachments, model)
+    const userContent = (() => {
+      const imageInstruction = attachments.length
+        ? `Une ou plusieurs pieces jointes sont jointes a ce message ou reprises depuis le contexte recent de la conversation: ${attachments.map(item => `${item.name} (${item.type})`).join(', ')}. Elles font partie du contexte utilisateur au meme titre que le texte. Analyse-les et combine ce que tu vois/lis avec la question ecrite et, si present, avec le devis. Pour les PDF, utilise la synthese OCR/vision fournie ci-dessous. Si la question porte sur une image ou un PDF, reponds d'abord explicitement a ce que tu vois/lis dans la piece jointe. Si tu ne peux pas lire ou interpreter une piece jointe, dis-le clairement au lieu de repondre uniquement sur le contexte du devis.\n\n`
+        : ''
+      if (!rows.length) return `${imageInstruction}${safeQuestion}${documentContext}`
+
+      if (scope === 'all' || rows.length > 1) {
+        // Résumé synthétique du devis complet
+        const summary = rows.map((r, i) => {
+          const opts = (r.options || []).map(o => o.label).join(', ') || '—'
+          const alts = (r.alertes || []).join(' | ') || '—'
+          const dimensions = r.dimensions || `H${r.dim_standard?.h ?? '?'}×L${r.dim_standard?.l ?? '?'}`
+          const price = r.prix_ht ?? r.prix_total_min_ht ?? r.prix_base_ht
+          return `Ligne ${i + 1}: ${r.gamme || '?'} ${r.vantail || ''} — ${dimensions} — Total: ${price != null ? price + ' €' : '?'} HT — Options: ${opts} — Alertes: ${alts}`
+        }).join('\n')
+        return `${imageInstruction}Ensemble du devis (${rows.length} ligne${rows.length > 1 ? 's' : ''}) :\n\`\`\`\n${summary}\n\`\`\`\n\nQuestion / Message : ${safeQuestion}${documentContext}`
+      }
+
+      // Scope ligne unique
+      return `${imageInstruction}Données de la ligne de devis en cours :\n\`\`\`json\n${JSON.stringify(rows[0], null, 2)}\n\`\`\`\n\nQuestion / Message : ${safeQuestion}${documentContext}`
+    })()
+
+    const userMessage = pastedImages.length
+      ? {
+        role: 'user',
+        content: [
+          { type: 'text', text: userContent },
+          ...pastedImages.map(url => ({ type: 'image_url', image_url: { url } })),
+        ],
+      }
+      : { role: 'user', content: userContent }
     const answer = await chatCompletion({
       model,
       messages: [
         { role: 'system', content: systemMsg },
-        { role: 'user', content: userContent },
+        userMessage,
       ],
     })
     res.json({ answer })
@@ -753,7 +967,12 @@ Réponds en français de façon structurée et professionnelle. Si une informati
 router.get('/', async (req, res) => {
   try {
     const [rows] = await db.query(
-      `SELECT * FROM devis WHERE created_by = ? ORDER BY updated_at DESC`,
+      `SELECT d.*,
+              (SELECT COUNT(*) FROM devis_lines dl WHERE dl.devis_id = d.id) AS row_count,
+              (SELECT COUNT(*) FROM devis_versions dv WHERE dv.devis_id = d.id) AS versions_count
+       FROM devis d
+       WHERE d.created_by = ?
+       ORDER BY d.updated_at DESC`,
       [req.user.id]
     )
     res.json(rows)
@@ -819,7 +1038,21 @@ router.put('/:id', async (req, res) => {
 // DELETE /api/devis/:id
 router.delete('/:id', async (req, res) => {
   try {
-    await db.query('DELETE FROM devis WHERE id = ? AND created_by = ?', [req.params.id, req.user.id])
+    const devisId = Number(req.params.id)
+    if (!Number.isInteger(devisId) || devisId < 1) return res.status(400).json({ error: 'ID invalide' })
+    const [[devisRow]] = await db.query('SELECT id FROM devis WHERE id = ? AND created_by = ?', [devisId, req.user.id])
+    if (!devisRow) return res.status(404).json({ error: 'Devis introuvable' })
+    const [versionRows] = await db.query('SELECT id FROM devis_versions WHERE devis_id = ?', [devisId])
+    const versionIds = versionRows.map(row => Number(row.id)).filter(Boolean)
+    await db.query('DELETE FROM devis_ai_messages WHERE devis_id = ?', [devisId])
+    if (versionIds.length) {
+      const placeholders = versionIds.map(() => '?').join(',')
+      await db.query(`DELETE FROM devis_version_comments WHERE version_id IN (${placeholders})`, versionIds)
+      await db.query(`DELETE FROM devis_version_lines WHERE version_id IN (${placeholders})`, versionIds)
+      await db.query(`DELETE FROM devis_versions WHERE id IN (${placeholders})`, versionIds)
+    }
+    await db.query('DELETE FROM devis_lines WHERE devis_id = ?', [devisId])
+    await db.query('DELETE FROM devis WHERE id = ? AND created_by = ?', [devisId, req.user.id])
     res.json({ success: true })
   } catch (err) {
     console.error("CRASH:", err); res.status(500).json({ error: err.message })
@@ -1175,7 +1408,11 @@ router.get('/:id/versions', async (req, res) => {
     if (!devisRow) return res.status(404).json({ error: 'Devis introuvable' })
 
     const [versions] = await db.query(
-      `SELECT * FROM devis_versions WHERE devis_id = ? ORDER BY id ASC`,
+      `SELECT v.*,
+              (SELECT COUNT(*) FROM devis_version_lines vl WHERE vl.version_id = v.id) AS row_count
+       FROM devis_versions v
+       WHERE v.devis_id = ?
+       ORDER BY v.id ASC`,
       [devisId]
     )
     const [comments] = await db.query(
@@ -1215,11 +1452,11 @@ router.get('/:id/versions', async (req, res) => {
 
 // POST /api/devis/:id/versions
 // Creates a new version (optionally copies lines from source_version_id or devis_lines)
-// Body: { source_version_id?, branch_label?, title?, comment?, step_key? }
+// Body: { source_version_id?, parent_version_id?, branch_label?, title?, comment?, step_key? }
 router.post('/:id/versions', async (req, res) => {
   const devisId = Number(req.params.id)
   if (!Number.isInteger(devisId) || devisId < 1) return res.status(400).json({ error: 'ID invalide' })
-  const { source_version_id, branch_label, title, comment, step_key } = req.body
+  const { source_version_id, parent_version_id, branch_label, title, comment, step_key } = req.body
   try {
     // Compute next version label
     const [[{ cnt }]] = await db.query(
@@ -1228,7 +1465,9 @@ router.post('/:id/versions', async (req, res) => {
     const versionLabel = `v${cnt + 1}`
 
     // Determine parent
-    const parentId = source_version_id ? Number(source_version_id) : null
+    const parentId = Object.prototype.hasOwnProperty.call(req.body, 'parent_version_id')
+      ? (parent_version_id ? Number(parent_version_id) : null)
+      : (source_version_id ? Number(source_version_id) : null)
 
     const [vResult] = await db.query(
       `INSERT INTO devis_versions (devis_id, parent_version_id, version_label, branch_label, title, status, created_by)
@@ -1278,6 +1517,64 @@ router.post('/:id/versions', async (req, res) => {
     res.status(201).json({ ...newVersion, comments: newComments })
   } catch (err) {
     console.error('POST versions error:', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// DELETE /api/devis/:id/versions/:vId
+// Deletes the target version and all descendant versions.
+router.delete('/:id/versions/:vId', async (req, res) => {
+  const devisId = Number(req.params.id)
+  const versionId = Number(req.params.vId)
+  if (!Number.isInteger(devisId) || devisId < 1 || !Number.isInteger(versionId) || versionId < 1) {
+    return res.status(400).json({ error: 'ID invalide' })
+  }
+  try {
+    const [versions] = await db.query(
+      'SELECT id, parent_version_id FROM devis_versions WHERE devis_id = ? ORDER BY id ASC',
+      [devisId]
+    )
+    if (!versions.some(version => Number(version.id) === versionId)) {
+      return res.status(404).json({ error: 'Version introuvable' })
+    }
+
+    const childrenByParent = new Map()
+    for (const version of versions) {
+      const key = Number(version.parent_version_id || 0)
+      const list = childrenByParent.get(key) || []
+      list.push(Number(version.id))
+      childrenByParent.set(key, list)
+    }
+    const idsToDelete = []
+    const collect = (id) => {
+      idsToDelete.push(id)
+      for (const childId of childrenByParent.get(id) || []) collect(childId)
+    }
+    collect(versionId)
+
+    const remainingIds = versions
+      .map(version => Number(version.id))
+      .filter(id => !idsToDelete.includes(id))
+    if (!remainingIds.length) {
+      return res.status(400).json({ error: 'Impossible de supprimer toutes les versions du devis' })
+    }
+
+    const placeholders = idsToDelete.map(() => '?').join(',')
+    await db.query(`DELETE FROM devis_version_comments WHERE version_id IN (${placeholders})`, idsToDelete)
+    await db.query(`DELETE FROM devis_version_lines WHERE version_id IN (${placeholders})`, idsToDelete)
+    await db.query(`DELETE FROM devis_versions WHERE id IN (${placeholders}) AND devis_id = ?`, [...idsToDelete, devisId])
+
+    const [[devisRow]] = await db.query('SELECT current_version_id FROM devis WHERE id = ?', [devisId])
+    const storedCurrentVersionId = Number(devisRow?.current_version_id || 0)
+    const needsNewCurrent = !storedCurrentVersionId || idsToDelete.includes(storedCurrentVersionId)
+    const nextCurrentVersionId = needsNewCurrent ? remainingIds[0] : storedCurrentVersionId
+    if (needsNewCurrent) {
+      await db.query('UPDATE devis SET current_version_id = ? WHERE id = ?', [nextCurrentVersionId, devisId])
+    }
+
+    res.json({ success: true, deleted_version_ids: idsToDelete, current_version_id: nextCurrentVersionId })
+  } catch (err) {
+    console.error('DELETE version error:', err)
     res.status(500).json({ error: err.message })
   }
 })

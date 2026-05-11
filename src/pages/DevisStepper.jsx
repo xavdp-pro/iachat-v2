@@ -12,16 +12,15 @@ import {
   Wrench, Package, Sparkles, RefreshCw, Plus,
   MessageCircleReply, Clock, FolderOpen, LayoutGrid,
   Briefcase, User, Hash, ExternalLink, Download, Columns3, Columns2, Columns,
-  Pencil, Trash2, Moon, Sun, BookOpen,
+  Pencil, Trash2, BookOpen,
 } from 'lucide-react'
 import { MarkdownRenderer } from '../components/MarkdownRenderer.jsx'
 import api from '../api/index.js'
-import { useThemeStore } from '../store/useThemeStore.js'
 import { DevisGridWorkspace, resolveRow, computePassageDimensions } from './DevisGrid.jsx'
 
 // ── Palette by gamme ─────────────────────────────────────────────────────────
 const GAMME_COLORS = {
-  BASE: '#64748b', CR3: '#0ea5e9', CR4: '#2563eb', CR5: '#4f46e5',
+  BASE: '#64748b', CR2: '#0891b2', CR3: '#0ea5e9', CR4: '#2563eb', CR5: '#4f46e5',
   CR6: '#7c3aed', EI60: '#d97706', EI120: '#c2410c', FB6: '#dc2626',
   FB7: '#7f1d1d', ANTI: '#374151', PRISON: '#111827',
 }
@@ -140,6 +139,107 @@ function gridRowToLinePayload(row, position) {
     alertes_json: row.alertes || [],
     docs_json: row.docs || [],
   }
+}
+
+function compactLineForAI(line, index) {
+  const options = parseJsonArray(line.options_json)
+    .slice(0, 8)
+    .map(option => typeof option === 'string'
+      ? option
+      : (option?.label || option?.designation || option?.name || option?.ref || null))
+    .filter(Boolean)
+  return {
+    ligne: repLetter(index),
+    localisation: line.localisation || null,
+    gamme: line.gamme || null,
+    vantail: line.vantail || null,
+    type: line.type_porte || line.designation || null,
+    designation: line.designation || null,
+    dimensions: [line.hauteur_mm, line.largeur_mm].filter(value => value != null).join('x') || null,
+    prix_ht: line.total_ligne_ht ?? line.prix_total_min_ht ?? line.prix_base_ht ?? null,
+    ref_base: line.ref_base || null,
+    options,
+    alertes: parseJsonArray(line.alertes_json).slice(0, 5),
+    docs: parseJsonArray(line.docs_json).slice(0, 10),
+  }
+}
+
+function parsePerformanceChangeCommand(value) {
+  const text = String(value || '')
+  const token = '(C\\s*R|R\\s*C)\\s*([2-6])'
+  const connector = '(?:en|e\\s*n|vers|par|a|à|->|=>)'
+  const match = text.match(new RegExp(`${token}[\\s,;:._-]*(?:${connector})[\\s,;:._-]*${token}`, 'i'))
+  if (!match) return null
+  const fromPrefix = String(match[1] || '').replace(/\s+/g, '').toUpperCase()
+  const toPrefix = String(match[3] || '').replace(/\s+/g, '').toUpperCase()
+  const fromLevel = Number(match[2])
+  const toLevel = Number(match[4])
+  if (!['CR', 'RC'].includes(fromPrefix) || !['CR', 'RC'].includes(toPrefix)) return null
+  if (!Number.isFinite(fromLevel) || !Number.isFinite(toLevel) || fromLevel === toLevel) return null
+  return { fromPrefix, toPrefix, fromLevel, toLevel, fromToken: `${fromPrefix}${fromLevel}`, toToken: `${toPrefix}${toLevel}` }
+}
+
+function performanceLevelPattern(level) {
+  return new RegExp(`\\b(?:C\\s*R|R\\s*C)\\s*${level}\\b`, 'gi')
+}
+
+function replacePerformanceText(value, fromLevel, toLevel) {
+  if (typeof value !== 'string' || !value) return value
+  return value.replace(performanceLevelPattern(fromLevel), (match) => {
+    const compact = match.replace(/\s+/g, '').toUpperCase()
+    const prefix = compact.startsWith('RC') ? 'RC' : 'CR'
+    return `${prefix}${toLevel}`
+  })
+}
+
+function replacePerformanceInValue(value, fromLevel, toLevel) {
+  if (typeof value === 'string') return replacePerformanceText(value, fromLevel, toLevel)
+  if (Array.isArray(value)) return value.map(item => replacePerformanceInValue(item, fromLevel, toLevel))
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, replacePerformanceInValue(item, fromLevel, toLevel)]))
+  }
+  return value
+}
+
+function lineContainsPerformance(line, level) {
+  const text = [
+    line?.gamme,
+    line?.type_porte,
+    line?.designation,
+    line?.ref_base,
+    line?.options_json,
+    line?.equipements_json,
+    line?.alertes_json,
+    line?.docs_json,
+  ].filter(Boolean).map(item => typeof item === 'string' ? item : JSON.stringify(item)).join(' ')
+  return performanceLevelPattern(level).test(text)
+}
+
+function applyPerformanceChangeToLine(line, command) {
+  const alertes = parseJsonArray(line.alertes_json)
+  const pricingNote = command.toLevel < command.fromLevel
+    ? `Performance demandée ${command.toToken} : chiffrage conservé sur base ${command.fromToken} selon règle métier de surclassement.`
+    : null
+  return {
+    ...line,
+    gamme: replacePerformanceText(line.gamme || '', command.fromLevel, command.toLevel),
+    type_porte: replacePerformanceText(line.type_porte || '', command.fromLevel, command.toLevel),
+    designation: replacePerformanceText(line.designation || '', command.fromLevel, command.toLevel),
+    ref_base: replacePerformanceText(line.ref_base || '', command.fromLevel, command.toLevel) || line.ref_base,
+    options_json: replacePerformanceInValue(parseJsonArray(line.options_json), command.fromLevel, command.toLevel),
+    equipements_json: replacePerformanceInValue(parseJsonArray(line.equipements_json), command.fromLevel, command.toLevel),
+    alertes_json: pricingNote && !alertes.includes(pricingNote) ? [...alertes, pricingNote] : alertes,
+    docs_json: parseJsonArray(line.docs_json),
+  }
+}
+
+function parseGemmaImages(value) {
+  if (Array.isArray(value)) return value
+  if (!value) return []
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed : []
+  } catch { return [] }
 }
 
 function splitCalculationOptions(rows) {
@@ -291,120 +391,483 @@ function ghostBtn() {
   }
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// ── STEPPER BAR ─────────────────────────────────────────────────────────────
-// ══════════════════════════════════════════════════════════════════════════════
-function StepperBar({ step, maxReached, onStep }) {
-  return (
-    <div style={{
-      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0,
-      padding: '12px 24px', background: 'var(--color-surface)',
-      borderBottom: '1px solid var(--color-border)', flexShrink: 0,
-    }}>
-      {STEP_LABELS.map((s, i) => {
-        const Icon = s.icon
-        const active = step === s.num
-        const done = step > s.num
-        const reachable = s.num <= maxReached
-        return (
-          <div key={s.num} style={{ display: 'flex', alignItems: 'center' }}>
-            {i > 0 && (
-              <div style={{
-                width: 48, height: 2, borderRadius: 1,
-                background: done ? 'var(--color-primary)' : 'var(--color-border)',
-                margin: '0 4px',
-              }} />
-            )}
-            <button
+function StepperAssistantPanel({
+  step,
+  currentDevis,
+  selectedCompany,
+  selectedDeal,
+  lines = [],
+  messages,
+  input,
+  setInput,
+  loading,
+  historyLoading,
+  onAsk,
+  onEditMessage,
+  onClearMessages,
+  inputRef,
+  endRef,
+}) {
+  const [editingId, setEditingId] = useState(null)
+  const [editingContent, setEditingContent] = useState('')
+  const [draft, setDraft] = useState(input || '')
+  const [pastedImages, setPastedImages] = useState([])
+  const attachmentInputRef = useRef(null)
+  const assistantMinWidth = () => 260
+  const assistantDefaultWidth = () => 420
+  const assistantMaxWidth = () => Math.max(560, typeof window !== 'undefined' ? Math.floor(window.innerWidth * 0.62) : 720)
+  const clampAssistantWidth = (value) => Math.min(assistantMaxWidth(), Math.max(assistantMinWidth(), value))
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem('devis_stepper_assistant_collapsed') === '1' } catch { return false }
+  })
+  const [panelWidth, setPanelWidth] = useState(() => {
+    try {
+      const saved = Number(localStorage.getItem('devis_stepper_assistant_width'))
+      const initial = Number.isFinite(saved) && saved > assistantMinWidth() ? saved : assistantDefaultWidth()
+      return clampAssistantWidth(initial)
+    } catch { return clampAssistantWidth(assistantDefaultWidth()) }
+  })
+  const activeStep = STEP_LABELS.find(item => item.num === step)
+  const submit = (value = draft) => {
+    const text = String(value || '').trim()
+    if ((!text && pastedImages.length === 0) || loading) return
+    onAsk?.(text, pastedImages)
+    setDraft('')
+    setPastedImages([])
+    requestAnimationFrame(() => {
+      if (inputRef?.current) inputRef.current.style.height = '36px'
+    })
+  }
 
-              onClick={() => reachable && onStep(s.num)}
-              disabled={!reachable}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 6,
-                padding: '6px 14px', borderRadius: '20px',
-                border: active ? '2px solid var(--color-primary)' : '1px solid var(--color-border)',
-                background: active
-                  ? 'color-mix(in srgb, var(--color-primary) 10%, var(--color-surface))'
-                  : done
-                    ? 'color-mix(in srgb, var(--color-primary) 5%, var(--color-surface))'
-                    : 'var(--color-surface)',
-                color: active ? 'var(--color-primary)' : done ? 'var(--color-text)' : 'var(--color-text-3)',
-                fontWeight: active ? 700 : 500, fontSize: '12px',
-                cursor: reachable ? 'pointer' : 'default',
-                opacity: reachable ? 1 : 0.5,
-                transition: 'all 0.15s',
-              }}
-            >
-              {done ? <Check size={13} /> : <Icon size={13} />}
-              <span>{s.label}</span>
-            </button>
+  const copyMessage = async (content) => {
+    try { await navigator.clipboard.writeText(content || '') } catch { /* noop */ }
+  }
+
+  const startEditMessage = (message) => {
+    setEditingId(message.id)
+    setEditingContent(message.content || '')
+  }
+
+  const saveEditMessage = async () => {
+    if (!editingId || !editingContent.trim()) return
+    await onEditMessage?.(editingId, editingContent.trim())
+    setEditingId(null)
+    setEditingContent('')
+  }
+
+  const resizeDraft = () => {
+    const el = inputRef?.current
+    if (!el) return
+    el.style.height = 'auto'
+    const maxHeight = 20 * 5 + 18
+    el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`
+    el.style.overflowY = el.scrollHeight > maxHeight ? 'auto' : 'hidden'
+  }
+
+  const handleDraftChange = (event) => {
+    setDraft(event.target.value)
+    requestAnimationFrame(resizeDraft)
+  }
+
+  const handleDraftPaste = (event) => {
+    const files = Array.from(event.clipboardData?.files || []).filter(file => file.type?.startsWith('image/') || file.type === 'application/pdf')
+    if (!files.length) return
+    event.preventDefault()
+    addAttachmentFiles(files)
+  }
+
+  const addAttachmentFiles = (files) => {
+    Array.from(files || [])
+      .filter(file => file.type?.startsWith('image/') || file.type === 'application/pdf')
+      .slice(0, 6)
+      .forEach((file) => {
+      const reader = new FileReader()
+      reader.onload = () => setPastedImages(prev => [...prev, {
+        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        name: file.name || (file.type === 'application/pdf' ? 'document.pdf' : 'image collee'),
+        type: file.type || 'application/octet-stream',
+        dataUrl: String(reader.result || ''),
+      }])
+      reader.readAsDataURL(file)
+    })
+  }
+
+  useEffect(() => {
+    try { localStorage.setItem('devis_stepper_assistant_collapsed', collapsed ? '1' : '0') } catch { /* noop */ }
+  }, [collapsed])
+
+  useEffect(() => {
+    try { localStorage.setItem('devis_stepper_assistant_width', String(panelWidth)) } catch { /* noop */ }
+  }, [panelWidth])
+
+  useEffect(() => { resizeDraft() }, [draft])
+
+  useEffect(() => {
+    const onResize = () => setPanelWidth(width => clampAssistantWidth(width || assistantDefaultWidth()))
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
+  const startResize = (event) => {
+    event.preventDefault()
+    const startX = event.clientX
+    const startWidth = panelWidth
+    const onMove = (moveEvent) => {
+      const nextWidth = clampAssistantWidth(startWidth - (moveEvent.clientX - startX))
+      setPanelWidth(nextWidth)
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
+  if (collapsed) {
+    return (
+      <aside style={{ width: 44, minWidth: 44, flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', height: '100%', borderLeft: '1px solid var(--color-border)', background: 'var(--color-surface)' }}>
+        <button type="button" onClick={() => setCollapsed(false)} title="Ouvrir Gemma 4" style={{ marginTop: 10, width: 30, height: 30, borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-input-bg)', color: 'var(--color-primary)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
+          <Bot size={15} />
+        </button>
+        <div style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)', marginTop: 12, fontSize: 11, fontWeight: 800, color: 'var(--color-text-3)', letterSpacing: '0.02em' }}>Gemma 4</div>
+      </aside>
+    )
+  }
+
+  return (
+    <aside style={{ width: panelWidth, minWidth: panelWidth, maxWidth: panelWidth, flexShrink: 0, display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, borderLeft: '1px solid var(--color-border)', background: 'var(--color-surface)', position: 'relative' }}>
+      <div
+        role="separator"
+        aria-label="Redimensionner Gemma 4"
+        onMouseDown={startResize}
+        title="Glisser pour agrandir ou réduire Gemma 4"
+        style={{ position: 'absolute', left: -4, top: 0, bottom: 0, width: 8, cursor: 'col-resize', zIndex: 2 }}
+      />
+      <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+        <Bot size={16} color="var(--color-primary)" />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 800, fontSize: 13 }}>Gemma 4</div>
+          <div style={{ fontSize: 10, color: 'var(--color-text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {activeStep?.label || `Étape ${step}`} · {currentDevis?.title || currentDevis?.name || 'devis NEXUS'}
           </div>
-        )
-      })}
-    </div>
+        </div>
+        <button type="button" onClick={onClearMessages} title="Vider le chat" style={{ ...iconBtn(), border: '1px solid var(--color-border)', color: '#dc2626' }}>
+          <Trash2 size={13} />
+        </button>
+        <button type="button" onClick={() => setPanelWidth(clampAssistantWidth(assistantDefaultWidth()))} title="Largeur par défaut" style={{ ...iconBtn(), border: '1px solid var(--color-border)' }}>
+          <Columns2 size={13} />
+        </button>
+        <button type="button" onClick={() => setCollapsed(true)} title="Rétracter Gemma 4" style={{ ...iconBtn(), border: '1px solid var(--color-border)' }}>
+          <ChevronRight size={14} />
+        </button>
+      </div>
+
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 12 }}>
+        {historyLoading && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--color-text-3)', fontSize: 12, padding: '6px 2px' }}>
+            <Loader2 size={14} style={{ animation: 'spin 0.8s linear infinite' }} /> Chargement des dernières conversations…
+          </div>
+        )}
+        {messages.map((message, index) => (
+          <div key={index} style={{ marginBottom: 10, display: 'flex', justifyContent: message.role === 'user' ? 'flex-end' : 'flex-start' }}>
+            <div style={{ maxWidth: '94%', minWidth: 0 }}>
+              <div style={{ display: 'flex', justifyContent: message.role === 'user' ? 'flex-end' : 'flex-start', gap: 3, marginBottom: 3 }}>
+                <button type="button" onClick={() => copyMessage(message.content)} title="Copier ce message" style={{ ...iconBtn(), padding: 3, color: 'var(--color-text-3)' }}>
+                  <Copy size={11} />
+                </button>
+                {message.role === 'user' && message.id && (
+                  <button type="button" onClick={() => startEditMessage(message)} title="Modifier ce message" style={{ ...iconBtn(), padding: 3, color: 'var(--color-text-3)' }}>
+                    <Pencil size={11} />
+                  </button>
+                )}
+              </div>
+              <div style={{ padding: '8px 10px', borderRadius: 10, background: message.role === 'user' ? 'var(--color-primary)' : 'var(--color-input-bg)', color: message.role === 'user' ? '#fff' : 'var(--color-text)', fontSize: 12, lineHeight: 1.5 }}>
+                {parseGemmaImages(message.images_json).length > 0 && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 7 }}>
+                    {parseGemmaImages(message.images_json).map((image, imageIndex) => {
+                      const src = image.dataUrl || image.data_url
+                      const isImage = String(image.type || '').startsWith('image/') || /^data:image\//i.test(src || '')
+                      return isImage ? (
+                        <img key={`${message.id || index}-${imageIndex}`} src={src} alt={image.name || 'image'} style={{ width: 74, height: 74, borderRadius: 7, objectFit: 'cover', border: '1px solid rgba(255,255,255,0.28)', background: 'var(--color-surface)' }} />
+                      ) : (
+                        <div key={`${message.id || index}-${imageIndex}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, maxWidth: 170, padding: '5px 7px', borderRadius: 7, border: '1px solid rgba(255,255,255,0.28)', background: 'rgba(255,255,255,0.12)', fontSize: 10, fontWeight: 800 }}>
+                          <FileText size={12} />
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{image.name || 'document'}</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+                {editingId === message.id ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <textarea
+                      value={editingContent}
+                      onChange={(event) => setEditingContent(event.target.value)}
+                      rows={4}
+                      style={{ width: '100%', resize: 'vertical', borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-surface)', color: 'var(--color-text)', fontSize: 12, padding: 8, outline: 'none' }}
+                    />
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
+                      <button type="button" onClick={() => setEditingId(null)} style={{ ...ghostBtn(), background: 'var(--color-surface)', color: 'var(--color-text-2)' }}><X size={12} /> Annuler</button>
+                      <button type="button" onClick={saveEditMessage} style={{ ...ghostBtn(), background: 'var(--color-surface)', color: 'var(--color-primary)' }}><Check size={12} /> Sauver</button>
+                    </div>
+                  </div>
+                ) : message.role === 'assistant' ? <MarkdownRenderer content={message.content} /> : message.content}
+                {message.edited_at && <div style={{ marginTop: 4, fontSize: 9, opacity: 0.72 }}>modifié</div>}
+              </div>
+            </div>
+          </div>
+        ))}
+        {loading && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--color-text-3)', fontSize: 12 }}>
+            <Loader2 size={14} style={{ animation: 'spin 0.8s linear infinite' }} /> Gemma 4 travaille…
+          </div>
+        )}
+        <div ref={endRef} />
+      </div>
+
+      <div style={{ padding: 10, borderTop: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', gap: 7, flexShrink: 0 }}>
+        {pastedImages.length > 0 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {pastedImages.map(image => {
+              const isImage = String(image.type || '').startsWith('image/')
+              return <div key={image.id} style={{ position: 'relative', width: isImage ? 46 : 112, height: 46, borderRadius: 7, overflow: 'hidden', border: '1px solid var(--color-border)', background: 'var(--color-input-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                {isImage ? <img src={image.dataUrl} alt={image.name} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} /> : (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, minWidth: 0, padding: '0 8px', fontSize: 10, fontWeight: 800, color: 'var(--color-text-2)' }}>
+                    <FileText size={14} style={{ flexShrink: 0 }} />
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{image.name}</span>
+                  </div>
+                )}
+                <button type="button" onClick={() => setPastedImages(prev => prev.filter(item => item.id !== image.id))} title="Retirer l'image" style={{ position: 'absolute', top: 2, right: 2, width: 16, height: 16, borderRadius: 999, border: 'none', background: 'rgba(15,23,42,0.82)', color: '#fff', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0, cursor: 'pointer' }}>
+                  <X size={10} />
+                </button>
+              </div>
+            })}
+          </div>
+        )}
+        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 6 }}>
+          <input
+            ref={attachmentInputRef}
+            type="file"
+            accept="application/pdf,image/*"
+            multiple
+            onChange={(event) => {
+              addAttachmentFiles(event.target.files)
+              event.target.value = ''
+            }}
+            style={{ display: 'none' }}
+          />
+          <button type="button" onClick={() => attachmentInputRef.current?.click()} disabled={loading} title="Ajouter une pièce jointe" style={{ width: 36, height: 36, flexShrink: 0, borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-input-bg)', color: 'var(--color-text-2)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', opacity: loading ? 0.45 : 1 }}>
+            <Upload size={14} />
+          </button>
+          <textarea
+            ref={inputRef}
+            value={draft}
+            onChange={handleDraftChange}
+            onPaste={handleDraftPaste}
+            onKeyDown={(event) => event.key === 'Enter' && !event.shiftKey && (event.preventDefault(), submit())}
+            placeholder="Dis à Gemma 4 quoi modifier…"
+            disabled={loading}
+            rows={1}
+            style={{ flex: 1, minWidth: 0, height: 36, maxHeight: 118, resize: 'none', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-input-bg)', color: 'var(--color-text)', fontSize: 12, lineHeight: '20px', outline: 'none', fontFamily: 'var(--font-body)' }}
+          />
+          <button type="button" onClick={() => submit()} disabled={(!draft.trim() && pastedImages.length === 0) || loading} style={{ width: 36, height: 36, flexShrink: 0, borderRadius: 8, border: 'none', background: 'var(--color-primary)', color: '#fff', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', opacity: ((!draft.trim() && pastedImages.length === 0) || loading) ? 0.45 : 1 }}>
+            <Send size={14} />
+          </button>
+        </div>
+        {pastedImages.length > 0 && <div style={{ fontSize: 10, color: 'var(--color-text-3)' }}>{pastedImages.length} pièce{pastedImages.length > 1 ? 's' : ''} jointe{pastedImages.length > 1 ? 's' : ''}</div>}
+      </div>
+    </aside>
   )
 }
 
-function WorkflowContextBar({ selectedCompany, selectedDeal, currentDevis, currentVersionId }) {
-  const itemStyle = {
-    display: 'flex', alignItems: 'center', gap: 8, minWidth: 0,
-    padding: '8px 10px', borderRadius: 8,
-    background: 'var(--color-surface)', border: '1px solid var(--color-border)',
+// ══════════════════════════════════════════════════════════════════════════════
+// ── COMPACT HEADER ──────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+function CompactDevisHeader({
+  step,
+  maxReached,
+  onStep,
+  selectedCompany,
+  selectedDeal,
+  currentDevis,
+  currentVersionId,
+  onOpenExperiences,
+  onOpenRules,
+  onBackToChat,
+}) {
+  const [infoOpen, setInfoOpen] = useState(false)
+  const infoPopoverRef = useRef(null)
+  const actionStyle = {
+    width: 34, height: 34, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+    borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-bg)',
+    color: 'var(--color-text-2)', cursor: 'pointer', flexShrink: 0,
   }
-  const labelStyle = { fontSize: 9, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--color-text-3)', fontWeight: 800 }
-  const valueStyle = { fontSize: 12, color: 'var(--color-text)', fontWeight: 800, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
-  const emptyStyle = { ...valueStyle, color: 'var(--color-text-3)', fontWeight: 600 }
+  const activeStep = STEP_LABELS.find(item => item.num === step)
+  const infoRows = [
+    { label: 'Client', value: selectedCompany?.name || 'Non sélectionné', meta: selectedCompany?.id ? `ID ${selectedCompany.id}` : null, icon: Building2 },
+    { label: 'Projet / deal', value: selectedDeal?.name || 'Non sélectionné', meta: selectedDeal?.id ? `ID ${selectedDeal.id}` : null, icon: Briefcase },
+    { label: 'Devis', value: currentDevis?.name || 'Aucun devis ouvert', meta: currentDevis?.status ? `Statut ${currentDevis.status}` : null, icon: FileText },
+    { label: 'Version', value: currentVersionId ? `Version #${currentVersionId}` : 'Aucune version active', meta: null, icon: FolderOpen },
+    { label: 'Étape', value: activeStep?.label || `Étape ${step}`, meta: `${step} / ${STEP_LABELS.length}`, icon: activeStep?.icon || LayoutGrid },
+  ]
+
+  useEffect(() => {
+    if (!infoOpen) return undefined
+    const handleOutsideClick = (event) => {
+      if (!infoPopoverRef.current?.contains(event.target)) setInfoOpen(false)
+    }
+    document.addEventListener('pointerdown', handleOutsideClick)
+    return () => document.removeEventListener('pointerdown', handleOutsideClick)
+  }, [infoOpen])
 
   return (
-    <div style={{ flexShrink: 0, padding: '10px 24px', borderBottom: '1px solid var(--color-border)', background: 'color-mix(in srgb, var(--color-surface) 72%, var(--color-bg))' }}>
-      <div style={{ maxWidth: 1180, margin: '0 auto', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8 }}>
-        <div style={itemStyle} title={selectedCompany?.name || 'Aucun client sélectionné'}>
-          <Building2 size={15} color={selectedCompany ? 'var(--color-primary)' : 'var(--color-text-3)'} />
-          <div style={{ minWidth: 0 }}>
-            <div style={labelStyle}>Client</div>
-            <div style={selectedCompany ? valueStyle : emptyStyle}>{selectedCompany?.name || 'À sélectionner'}</div>
+    <header style={{
+      position: 'relative',
+      flexShrink: 0,
+      minHeight: 58,
+      display: 'grid',
+      gridTemplateColumns: 'minmax(170px, 0.75fr) minmax(520px, 1.35fr) minmax(120px, 0.75fr)',
+      alignItems: 'center',
+      gap: 10,
+      padding: '8px 14px',
+      borderBottom: '1px solid var(--color-border)',
+      background: 'var(--color-surface)',
+      overflow: 'visible',
+    }}>
+      <div ref={infoPopoverRef} style={{ position: 'relative', minWidth: 0 }}>
+        <button
+          type="button"
+          onClick={() => setInfoOpen(value => !value)}
+          aria-expanded={infoOpen}
+          aria-label="Informations du devis"
+          title="Informations du devis"
+          style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0, maxWidth: '100%', padding: 0, border: 'none', background: 'transparent', color: 'inherit', cursor: 'pointer', fontFamily: 'var(--font-body)', textAlign: 'left' }}
+        >
+          <div style={{ width: 34, height: 34, borderRadius: 8, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: 'var(--color-primary)', color: '#fff', flexShrink: 0 }}>
+            <FileSpreadsheet size={17} strokeWidth={2} />
           </div>
-        </div>
-        <div style={itemStyle} title={selectedDeal?.name || 'Aucun projet sélectionné'}>
-          <Briefcase size={15} color={selectedDeal ? 'var(--color-primary)' : 'var(--color-text-3)'} />
           <div style={{ minWidth: 0 }}>
-            <div style={labelStyle}>Projet / deal</div>
-            <div style={selectedDeal ? valueStyle : emptyStyle}>{selectedDeal?.name || 'À sélectionner'}</div>
+            <div style={{ fontSize: 13, fontWeight: 900, lineHeight: 1.15, whiteSpace: 'nowrap' }}>Devis NEXUS</div>
+            <div style={{ fontSize: 10, color: 'var(--color-text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              Informations du devis
+            </div>
           </div>
-        </div>
-        <div style={itemStyle} title={currentDevis?.name || 'Aucun devis ouvert'}>
-          <FileText size={15} color={currentDevis ? 'var(--color-primary)' : 'var(--color-text-3)'} />
-          <div style={{ minWidth: 0 }}>
-            <div style={labelStyle}>Devis</div>
-            <div style={currentDevis ? valueStyle : emptyStyle}>{currentDevis?.name || 'Aucun devis ouvert'}</div>
+        </button>
+        {infoOpen && (
+          <div style={{ position: 'absolute', top: 44, left: 0, zIndex: 80, width: 360, maxWidth: 'calc(100vw - 28px)', border: '1px solid var(--color-border)', borderRadius: 10, background: 'var(--color-surface)', boxShadow: '0 18px 45px rgba(0,0,0,0.22)', padding: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+              <div style={{ fontSize: 13, fontWeight: 900 }}>Informations du devis</div>
+              <button type="button" onClick={() => setInfoOpen(false)} style={iconBtn()} aria-label="Fermer">
+                <X size={14} />
+              </button>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+              {infoRows.map((row) => {
+                const Icon = row.icon
+                return (
+                  <div key={row.label} style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '8px 9px', border: '1px solid var(--color-border)', borderRadius: 8, background: 'var(--color-bg)' }}>
+                    <Icon size={14} style={{ color: 'var(--color-primary)', flexShrink: 0 }} />
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ fontSize: 8, fontWeight: 900, textTransform: 'uppercase', color: 'var(--color-text-3)' }}>{row.label}</div>
+                      <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--color-text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.value}</div>
+                      {row.meta && <div style={{ fontSize: 10, color: 'var(--color-text-3)', marginTop: 1 }}>{row.meta}</div>}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
           </div>
-        </div>
-        <div style={itemStyle} title={currentVersionId ? `Version #${currentVersionId}` : 'Aucune version active'}>
-          <FolderOpen size={15} color={currentVersionId ? 'var(--color-primary)' : 'var(--color-text-3)'} />
-          <div style={{ minWidth: 0 }}>
-            <div style={labelStyle}>Version</div>
-            <div style={currentVersionId ? valueStyle : emptyStyle}>{currentVersionId ? `Version #${currentVersionId}` : 'À choisir / créer'}</div>
-          </div>
-        </div>
+        )}
       </div>
-    </div>
+
+      <nav aria-label="Étapes devis" style={{ display: 'flex', alignItems: 'center', justifySelf: 'center', width: 'min(100%, 660px)', minWidth: 520, padding: '0 4px' }}>
+        {STEP_LABELS.map((item) => {
+          const Icon = item.icon
+          const active = step === item.num
+          const done = step > item.num
+          const reachable = item.num <= maxReached
+          const lineDone = step > item.num
+          return (
+            <div key={item.num} style={{ display: 'flex', alignItems: 'center', flex: 1, minWidth: 0 }}>
+              <button
+                type="button"
+                onClick={() => reachable && onStep(item.num)}
+                disabled={!reachable}
+                title={item.label}
+                style={{
+                  position: 'relative', zIndex: 1,
+                  width: 86, minWidth: 86, height: 42,
+                  display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 3,
+                  padding: 0, borderRadius: 9,
+                  border: active ? '1.5px solid color-mix(in srgb, var(--color-primary) 82%, #fff)' : done ? '1px solid color-mix(in srgb, var(--color-primary) 54%, var(--color-border))' : '1px solid color-mix(in srgb, var(--color-border) 78%, var(--color-text-3))',
+                  background: active
+                    ? 'color-mix(in srgb, var(--color-primary) 18%, var(--color-surface))'
+                    : done
+                      ? 'color-mix(in srgb, var(--color-primary) 10%, var(--color-surface))'
+                      : 'color-mix(in srgb, var(--color-surface) 88%, var(--color-bg))',
+                  color: active ? 'color-mix(in srgb, var(--color-primary) 78%, #fff)' : done ? 'var(--color-text)' : 'color-mix(in srgb, var(--color-text-2) 82%, #fff)',
+                  cursor: reachable ? 'pointer' : 'default',
+                  opacity: reachable ? 1 : 0.62,
+                  fontFamily: 'var(--font-body)',
+                  boxShadow: active ? '0 0 0 1px color-mix(in srgb, var(--color-primary) 18%, transparent)' : 'none',
+                }}
+              >
+                <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4, fontSize: 10, fontWeight: 950, lineHeight: 1 }}>
+                  {done ? <Check size={12} /> : <Icon size={12} />}
+                  {item.num}
+                </span>
+                <span style={{ maxWidth: 78, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 10, fontWeight: active ? 950 : 850, lineHeight: 1.05 }}>
+                  {item.label}
+                </span>
+              </button>
+              {item.num < STEP_LABELS.length && (
+                <div style={{ flex: 1, minWidth: 18, height: 2, margin: '0 6px', borderRadius: 999, background: lineDone ? 'color-mix(in srgb, var(--color-primary) 82%, #fff)' : 'color-mix(in srgb, var(--color-border) 80%, var(--color-text-3))' }} />
+              )}
+            </div>
+          )
+        })}
+      </nav>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end', minWidth: 0 }}>
+        <button type="button" onClick={onOpenExperiences} style={actionStyle} title="Expériences" aria-label="Expériences">
+          <BookOpen size={15} />
+        </button>
+        <button type="button" onClick={onOpenRules} style={actionStyle} title="Règles" aria-label="Règles">
+          <Shield size={15} />
+        </button>
+        <button type="button" onClick={onBackToChat} style={actionStyle} title="Retour au chat" aria-label="Retour au chat">
+          <MessageCircleReply size={15} />
+        </button>
+      </div>
+    </header>
   )
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
 // ── STEP 1: CLIENT & DEAL SELECTION ─────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════════════════
-function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, onSelectDeal, onCreateDeal, onNewDevis, onOpenDevis, detailRefreshKey = 0, onUpdateDeal }) {
+const companyDetailCache = new Map()
+
+function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, onSelectDeal, onCreateDeal, onNewDevis, onOpenDevis, onDeleteDevis, detailRefreshKey = 0, onUpdateDeal }) {
   const [query, setQuery] = useState('')
   const [companies, setCompanies] = useState([])
   const [loading, setLoading] = useState(false)
   const [searchDone, setSearchDone] = useState(false)
   const [companyDetail, setCompanyDetail] = useState(null)
   const [detailLoading, setDetailLoading] = useState(false)
+  const [manualRefreshKey, setManualRefreshKey] = useState(0)
   const [creatingDeal, setCreatingDeal] = useState(false)
   const [editingDealId, setEditingDealId] = useState(null)
   const [editingDealName, setEditingDealName] = useState('')
   const [savingDealId, setSavingDealId] = useState(null)
+  const [editingDevisId, setEditingDevisId] = useState(null)
+  const [editingDevisName, setEditingDevisName] = useState('')
+  const [savingDevisId, setSavingDevisId] = useState(null)
+  const [pendingDeleteDevis, setPendingDeleteDevis] = useState(null)
+  const [pendingDeleteDeal, setPendingDeleteDeal] = useState(null)
+  const [deletingDevisId, setDeletingDevisId] = useState(null)
+  const [deletingDealId, setDeletingDealId] = useState(null)
   const [toast, setToast] = useState(null)
   const toastTimerRef = useRef(null)
   const showToast = (msg, type = 'success') => {
@@ -449,19 +912,28 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
         clearTimeout(resetTimer)
       }
     }
+    const cachedDetail = companyDetailCache.get(String(selectedCompanyId))
+    if (cachedDetail) setCompanyDetail(cachedDetail)
     Promise.resolve().then(async () => {
-      setDetailLoading(true)
+      setDetailLoading(!cachedDetail)
       try {
         const detail = await api.get(`/prospects/companies/${selectedCompanyId}`)
+        companyDetailCache.set(String(selectedCompanyId), detail)
         if (active) setCompanyDetail(detail)
       } catch {
-        if (active) setCompanyDetail(null)
+        if (active && !cachedDetail) setCompanyDetail(null)
       } finally {
         if (active) setDetailLoading(false)
       }
     })
     return () => { active = false }
-  }, [selectedCompanyId, detailRefreshKey])
+  }, [selectedCompanyId, detailRefreshKey, manualRefreshKey])
+
+  const refreshCompanyDetail = () => {
+    if (!selectedCompanyId || detailLoading) return
+    companyDetailCache.delete(String(selectedCompanyId))
+    setManualRefreshKey((value) => value + 1)
+  }
 
   const selectCompany = (c) => {
     onSelect({
@@ -525,7 +997,7 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
       // Mise à jour locale sans recharger depuis HubSpot
       setCompanyDetail((prev) => {
         if (!prev) return prev
-        return {
+        const next = {
           ...prev,
           deals: (prev.deals || []).map((d) =>
             String(d.id) === String(dealId)
@@ -533,6 +1005,8 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
               : d
           ),
         }
+        if (selectedCompanyId) companyDetailCache.set(String(selectedCompanyId), next)
+        return next
       })
       setEditingDealId(null)
       setEditingDealName('')
@@ -548,8 +1022,126 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
     setEditingDealName('')
   }
 
+  const startEditingDevis = (devis) => {
+    setEditingDevisId(devis.id)
+    setEditingDevisName(devis.name || '')
+  }
+
+  const cancelEditingDevis = () => {
+    setEditingDevisId(null)
+    setEditingDevisName('')
+  }
+
+  const saveDevisName = async (devisId) => {
+    const name = editingDevisName.trim()
+    if (!devisId || !name || savingDevisId) return
+    setSavingDevisId(devisId)
+    try {
+      const updated = await api.patch(`/devis/${devisId}`, { name })
+      setExistingDevis(prev => prev.map(item => String(item.id) === String(devisId) ? { ...item, ...updated, name } : item))
+      setEditingDevisId(null)
+      setEditingDevisName('')
+      showToast('Devis renommé', 'success')
+    } catch (err) {
+      console.error('Rename devis error:', err)
+      showToast(err?.error || err?.message || 'Erreur renommage devis', 'error')
+    } finally {
+      setSavingDevisId(null)
+    }
+  }
+
+  const confirmDeleteDevis = async () => {
+    if (!pendingDeleteDevis || deletingDevisId) return
+    setDeletingDevisId(pendingDeleteDevis.id)
+    try {
+      await onDeleteDevis?.(pendingDeleteDevis)
+      setPendingDeleteDevis(null)
+    } catch (err) {
+      console.error('Delete devis error:', err)
+      showToast('Erreur suppression devis', 'error')
+    } finally {
+      setDeletingDevisId(null)
+    }
+  }
+
+  const confirmDeleteDeal = async () => {
+    if (!pendingDeleteDeal || deletingDealId) return
+    const dealId = String(pendingDeleteDeal.id || pendingDeleteDeal.deal_id || '')
+    if (!dealId) return
+    setDeletingDealId(dealId)
+    try {
+      await api.delete(`/prospects/deals/${dealId}`)
+      onSelectDeal?.(null)
+      if (selectedCompanyId) companyDetailCache.delete(String(selectedCompanyId))
+      setSelectedCompanyDetail(prev => {
+        if (!prev) return prev
+        const nextDeals = (prev.deals || []).filter(deal => String(deal.id) !== dealId)
+        return { ...prev, deals: nextDeals }
+      })
+      setPendingDeleteDeal(null)
+      showToast('Projet supprimé', 'success')
+    } catch (err) {
+      console.error('Delete deal error:', err)
+      showToast(err?.error || err?.message || 'Erreur suppression projet', 'error')
+    } finally {
+      setDeletingDealId(null)
+    }
+  }
+
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', overflow: 'auto', padding: '30px 20px', position: 'relative' }}>
+      {pendingDeleteDeal && (
+        <div role="dialog" aria-modal="true" aria-labelledby="delete-deal-title" style={{ position: 'fixed', inset: 0, zIndex: 1200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, background: 'rgba(15, 23, 42, 0.42)' }} onClick={() => !deletingDealId && setPendingDeleteDeal(null)}>
+          <div style={{ width: 'min(440px, 100%)', border: '1px solid var(--color-border)', borderRadius: 10, background: 'var(--color-surface)', boxShadow: '0 20px 60px rgba(0,0,0,0.28)', padding: 18 }} onClick={(event) => event.stopPropagation()}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+              <div style={{ width: 34, height: 34, borderRadius: 8, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(220,38,38,0.1)', color: '#dc2626', flexShrink: 0 }}>
+                <Trash2 size={17} />
+              </div>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div id="delete-deal-title" style={{ fontSize: 15, fontWeight: 900, marginBottom: 5 }}>Supprimer ce projet ?</div>
+                <div style={{ fontSize: 12, color: 'var(--color-text-2)', lineHeight: 1.45 }}>
+                  Le projet HubSpot "{pendingDeleteDeal.name || pendingDeleteDeal.properties?.dealname || pendingDeleteDeal.id}" sera supprimé.
+                </div>
+              </div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 18 }}>
+              <button type="button" onClick={() => setPendingDeleteDeal(null)} disabled={!!deletingDealId} style={ghostBtn()}>
+                Annuler
+              </button>
+              <button type="button" onClick={confirmDeleteDeal} disabled={!!deletingDealId} style={{ ...ghostBtn(), color: '#dc2626', borderColor: 'rgba(220,38,38,0.35)' }}>
+                {deletingDealId ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Trash2 size={12} />}
+                Supprimer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {pendingDeleteDevis && (
+        <div role="dialog" aria-modal="true" aria-labelledby="delete-devis-title" style={{ position: 'fixed', inset: 0, zIndex: 1200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, background: 'rgba(15, 23, 42, 0.42)' }} onClick={() => !deletingDevisId && setPendingDeleteDevis(null)}>
+          <div style={{ width: 'min(440px, 100%)', border: '1px solid var(--color-border)', borderRadius: 10, background: 'var(--color-surface)', boxShadow: '0 20px 60px rgba(0,0,0,0.28)', padding: 18 }} onClick={(event) => event.stopPropagation()}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+              <div style={{ width: 34, height: 34, borderRadius: 8, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(220,38,38,0.1)', color: '#dc2626', flexShrink: 0 }}>
+                <Trash2 size={17} />
+              </div>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div id="delete-devis-title" style={{ fontSize: 15, fontWeight: 900, marginBottom: 5 }}>Supprimer ce devis ?</div>
+                <div style={{ fontSize: 12, color: 'var(--color-text-2)', lineHeight: 1.45 }}>
+                  Le devis “{pendingDeleteDevis.name}” sera supprimé avec ses versions et ses lignes.
+                </div>
+              </div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 18 }}>
+              <button type="button" onClick={() => setPendingDeleteDevis(null)} disabled={!!deletingDevisId} style={ghostBtn()}>
+                Annuler
+              </button>
+              <button type="button" onClick={confirmDeleteDevis} disabled={!!deletingDevisId} style={{ ...ghostBtn(), color: '#dc2626', borderColor: 'rgba(220,38,38,0.35)' }}>
+                {deletingDevisId ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Trash2 size={12} />}
+                Supprimer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {toast && (
         <div style={{
           position: 'fixed', bottom: 28, left: '50%', transform: 'translateX(-50%)',
@@ -645,6 +1237,15 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
               <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
                 <button
                   type="button"
+                  onClick={refreshCompanyDetail}
+                  disabled={detailLoading}
+                  title="Rafraîchir les deals HubSpot"
+                  style={{ ...iconBtn(), color: detailLoading ? 'var(--color-text-3)' : 'var(--color-primary)' }}
+                >
+                  <RefreshCw size={14} style={detailLoading ? { animation: 'spin 0.8s linear infinite' } : undefined} />
+                </button>
+                <button
+                  type="button"
                   onClick={createDeal}
                   disabled={!onCreateDeal || creatingDeal}
                   title="Créer un deal HubSpot pour ce client"
@@ -668,7 +1269,7 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
               </div>
             </div>
 
-            {detailLoading ? (
+            {detailLoading && deals.length === 0 ? (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--color-text-3)', fontSize: '12px', padding: 8 }}>
                 <Loader2 size={14} style={{ animation: 'spin 0.8s linear infinite' }} /> Chargement des deals…
               </div>
@@ -702,7 +1303,7 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
                   <span style={{ width: 22, height: 22, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 6, background: 'var(--color-primary)', color: '#fff', fontSize: 11, fontWeight: 800 }}>2</span>
                   <div>
                     <div style={{ fontSize: '12px', fontWeight: 800 }}>Choisir le projet / deal HubSpot ({deals.length})</div>
-                    <div style={{ fontSize: '10px', color: 'var(--color-text-3)' }}>Le devis sera attaché au projet sélectionné.</div>
+                    <div style={{ fontSize: '10px', color: 'var(--color-text-3)' }}>Les devis existants sont affichés directement sous chaque projet.</div>
                   </div>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -711,7 +1312,9 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
                     const active = selectedDeal?.id === dId
                     const isEditing = editingDealId === dId
                     const dealName = d.properties?.dealname || `Deal #${dId}`
-                    const devisCount = dealDevisCount.get(String(dId)) || 0
+                    const dealPayload = { id: dId, name: dealName, amount: d.properties?.amount }
+                    const dealDevis = (existingDevis || []).filter(devis => String(devis.deal_id) === String(dId))
+                    const devisCount = dealDevis.length || dealDevisCount.get(String(dId)) || 0
                     const createdDate = d.properties?.createdate
                       ? new Date(d.properties.createdate).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })
                       : 'n/d'
@@ -721,93 +1324,193 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
                     return (
                       <div
                         key={dId}
-                        onClick={() => onSelectDeal({ id: dId, name: dealName, amount: d.properties?.amount })}
                         style={{
-                          display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px',
+                          display: 'flex', flexDirection: 'column', gap: 0,
                           borderRadius: '8px', cursor: 'pointer',
                           border: active ? '2px solid var(--color-primary)' : '1px solid var(--color-border)',
                           background: active ? 'color-mix(in srgb, var(--color-primary) 8%, var(--color-surface))' : 'var(--color-surface)',
+                          overflow: 'hidden',
                           transition: 'all 0.12s',
                         }}
                       >
-                        <Briefcase size={14} color={active ? 'var(--color-primary)' : 'var(--color-text-3)'} />
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          {isEditing ? (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }} onClick={(event) => event.stopPropagation()}>
-                              <input
-                                value={editingDealName}
-                                onChange={(event) => setEditingDealName(event.target.value)}
-                                onKeyDown={(event) => {
-                                  if (event.key === 'Enter') {
-                                    event.preventDefault()
-                                    saveDealName(dId)
-                                  }
-                                  if (event.key === 'Escape') {
-                                    event.preventDefault()
-                                    cancelEditingDeal()
-                                  }
-                                }}
-                                autoFocus
-                                style={{
-                                  flex: 1,
-                                  minWidth: 0,
-                                  padding: '5px 8px',
-                                  borderRadius: '6px',
-                                  border: '1px solid var(--color-border)',
-                                  background: 'var(--color-input-bg, var(--color-surface))',
-                                  color: 'var(--color-text)',
-                                  fontSize: '12px',
-                                  fontFamily: 'var(--font-body)',
-                                }}
-                              />
+                        <div
+                          onClick={() => onSelectDeal(dealPayload)}
+                          style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px' }}
+                        >
+                          <Briefcase size={14} color={active ? 'var(--color-primary)' : 'var(--color-text-3)'} />
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            {isEditing ? (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }} onClick={(event) => event.stopPropagation()}>
+                                <input
+                                  value={editingDealName}
+                                  onChange={(event) => setEditingDealName(event.target.value)}
+                                  onKeyDown={(event) => {
+                                    if (event.key === 'Enter') {
+                                      event.preventDefault()
+                                      saveDealName(dId)
+                                    }
+                                    if (event.key === 'Escape') {
+                                      event.preventDefault()
+                                      cancelEditingDeal()
+                                    }
+                                  }}
+                                  autoFocus
+                                  style={{
+                                    flex: 1,
+                                    minWidth: 0,
+                                    padding: '5px 8px',
+                                    borderRadius: '6px',
+                                    border: '1px solid var(--color-border)',
+                                    background: 'var(--color-input-bg, var(--color-surface))',
+                                    color: 'var(--color-text)',
+                                    fontSize: '12px',
+                                    fontFamily: 'var(--font-body)',
+                                  }}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={(event) => { event.stopPropagation(); saveDealName(dId) }}
+                                  disabled={savingDealId === dId || !editingDealName.trim()}
+                                  style={{ ...iconBtn(), color: 'var(--color-primary)' }}
+                                  title="Valider"
+                                >
+                                  {savingDealId === dId ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Check size={13} />}
+                                </button>
+                                <button type="button" onClick={(event) => { event.stopPropagation(); cancelEditingDeal() }} style={iconBtn()} title="Annuler">
+                                  <X size={13} />
+                                </button>
+                              </div>
+                            ) : (
+                              <div style={{ fontWeight: 600, fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {dealName}
+                              </div>
+                            )}
+                            <div style={{ fontSize: '10px', color: 'var(--color-text-3)', marginTop: 2 }}>
+                              {d.properties?.dealstage || '—'} {d.properties?.amount ? `· ${Number(d.properties.amount).toLocaleString('fr-FR')} €` : ''}
+                              {` · créé ${createdDate}`}
+                              {` · modifié ${modifiedDate}`}
+                            </div>
+                          </div>
+                          <span style={{ flexShrink: 0, padding: '3px 8px', borderRadius: 999, background: devisCount ? 'color-mix(in srgb, var(--color-primary) 12%, transparent)' : 'var(--color-input-bg)', color: devisCount ? 'var(--color-primary)' : 'var(--color-text-3)', fontSize: 10, fontWeight: 900 }}>
+                            {devisCount} devis
+                          </span>
+                          {!isEditing && (
+                            <button
+                              type="button"
+                              onClick={(event) => { event.stopPropagation(); onSelectDeal(dealPayload); onNewDevis?.(dealPayload) }}
+                              style={{ ...ghostBtn(), flexShrink: 0, padding: '5px 9px', color: 'var(--color-primary)', borderColor: 'var(--color-primary)', background: 'color-mix(in srgb, var(--color-primary) 7%, transparent)' }}
+                              title="Créer un devis pour ce projet"
+                            >
+                              <Plus size={12} /> Nouveau devis
+                            </button>
+                          )}
+                          {!isEditing && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
                               <button
                                 type="button"
-                                onClick={(event) => { event.stopPropagation(); saveDealName(dId) }}
-                                disabled={savingDealId === dId || !editingDealName.trim()}
-                                style={{ ...iconBtn(), color: 'var(--color-primary)' }}
-                                title="Valider"
+                                onClick={(event) => { event.stopPropagation(); startEditingDeal(dId, dealName) }}
+                                style={iconBtn()}
+                                title="Renommer ce deal"
                               >
-                                {savingDealId === dId ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Check size={13} />}
+                                <Pencil size={13} />
                               </button>
-                              <button type="button" onClick={(event) => { event.stopPropagation(); cancelEditingDeal() }} style={iconBtn()} title="Annuler">
-                                <X size={13} />
+                              <button
+                                type="button"
+                                onClick={(event) => { event.stopPropagation(); setPendingDeleteDeal({ ...dealPayload, name: dealName }) }}
+                                style={{ ...iconBtn(), color: 'var(--color-danger, #e53e3e)' }}
+                                title="Supprimer ce deal"
+                              >
+                                <Trash2 size={13} />
                               </button>
-                            </div>
-                          ) : (
-                            <div style={{ fontWeight: 600, fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                              {dealName}
                             </div>
                           )}
-                          <div style={{ fontSize: '10px', color: 'var(--color-text-3)', marginTop: 2 }}>
-                            {d.properties?.dealstage || '—'} {d.properties?.amount ? `· ${Number(d.properties.amount).toLocaleString('fr-FR')} €` : ''}
-                            {` · ${devisCount} devis`}
-                            {` · créé ${createdDate}`}
-                            {` · modifié ${modifiedDate}`}
-                          </div>
                         </div>
-                        {!isEditing && active && (
-                          <span style={{ flexShrink: 0, padding: '3px 7px', borderRadius: 999, background: 'color-mix(in srgb, var(--color-primary) 12%, transparent)', color: 'var(--color-primary)', fontSize: 10, fontWeight: 800 }}>
-                            sélectionné
-                          </span>
-                        )}
-                        {!isEditing && (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
-                            <button
-                              type="button"
-                              onClick={(event) => { event.stopPropagation(); startEditingDeal(dId, dealName) }}
-                              style={iconBtn()}
-                              title="Renommer ce deal"
-                            >
-                              <Pencil size={13} />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(event) => { event.stopPropagation(); /* TODO: delete */ }}
-                              style={{ ...iconBtn(), color: 'var(--color-danger, #e53e3e)' }}
-                              title="Supprimer ce deal"
-                            >
-                              <Trash2 size={13} />
-                            </button>
+                        {dealDevis.length > 0 && (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 5, padding: '0 10px 10px 36px' }}>
+                            {dealDevis.map((devis) => {
+                              const rowCount = Number(devis.row_count || devis.lines_count || 0)
+                              const totalHt = Number(devis.total_ht || 0)
+                              const isEditingDevis = String(editingDevisId) === String(devis.id)
+                              return (
+                                <div
+                                  key={devis.id}
+                                  onClick={(event) => {
+                                    event.stopPropagation()
+                                    if (isEditingDevis) return
+                                    onSelectDeal(dealPayload)
+                                    onOpenDevis(devis)
+                                  }}
+                                  style={{
+                                    display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+                                    padding: '8px 10px', borderRadius: 7,
+                                    border: '1px solid var(--color-border)',
+                                    background: 'var(--color-bg)', color: 'var(--color-text)',
+                                    cursor: 'pointer', textAlign: 'left', fontFamily: 'var(--font-body)',
+                                  }}
+                                >
+                                  <FileText size={13} color="var(--color-primary)" />
+                                  <span style={{ flex: 1, minWidth: 0 }}>
+                                    {isEditingDevis ? (
+                                      <span style={{ display: 'flex', alignItems: 'center', gap: 5 }} onClick={(event) => event.stopPropagation()}>
+                                        <input
+                                          value={editingDevisName}
+                                          onChange={(event) => setEditingDevisName(event.target.value)}
+                                          onKeyDown={(event) => {
+                                            if (event.key === 'Enter') saveDevisName(devis.id)
+                                            if (event.key === 'Escape') cancelEditingDevis()
+                                          }}
+                                          autoFocus
+                                          style={{ flex: 1, minWidth: 0, height: 26, border: '1px solid var(--color-border)', borderRadius: 6, background: 'var(--color-input-bg)', color: 'var(--color-text)', padding: '0 8px', fontSize: 11, fontWeight: 800, fontFamily: 'var(--font-body)' }}
+                                        />
+                                        <button
+                                          type="button"
+                                          onClick={(event) => { event.stopPropagation(); saveDevisName(devis.id) }}
+                                          disabled={savingDevisId === devis.id || !editingDevisName.trim()}
+                                          style={{ ...iconBtn(), color: 'var(--color-primary)' }}
+                                          title="Valider"
+                                        >
+                                          {savingDevisId === devis.id ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Check size={13} />}
+                                        </button>
+                                        <button type="button" onClick={(event) => { event.stopPropagation(); cancelEditingDevis() }} style={iconBtn()} title="Annuler">
+                                          <X size={13} />
+                                        </button>
+                                      </span>
+                                    ) : (
+                                      <span style={{ display: 'block', fontSize: 11, fontWeight: 800, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{devis.name}</span>
+                                    )}
+                                    <span style={{ display: 'block', fontSize: 9, color: 'var(--color-text-3)', marginTop: 1 }}>
+                                      {devis.status} · {new Date(devis.updated_at).toLocaleDateString('fr-FR')} · {Number(devis.versions_count || 0)} version{Number(devis.versions_count || 0) > 1 ? 's' : ''} · {rowCount} ligne{rowCount > 1 ? 's' : ''} · {totalHt.toLocaleString('fr-FR')} € HT
+                                    </span>
+                                  </span>
+                                  {!isEditingDevis && (
+                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, flexShrink: 0, fontSize: 11, fontWeight: 900, color: 'var(--color-primary)' }}>
+                                      Continuer <ArrowRight size={12} />
+                                    </span>
+                                  )}
+                                  {!isEditingDevis && (
+                                    <button
+                                      type="button"
+                                      onClick={(event) => { event.stopPropagation(); startEditingDevis(devis) }}
+                                      style={{ ...iconBtn(), flexShrink: 0 }}
+                                      title="Renommer ce devis"
+                                      aria-label="Renommer ce devis"
+                                    >
+                                      <Pencil size={13} />
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={(event) => { event.stopPropagation(); setPendingDeleteDevis(devis) }}
+                                    disabled={isEditingDevis}
+                                    style={{ ...iconBtn(), color: '#dc2626', flexShrink: 0 }}
+                                    title="Supprimer ce devis"
+                                    aria-label="Supprimer ce devis"
+                                  >
+                                    <Trash2 size={13} />
+                                  </button>
+                                </div>
+                              )
+                            })}
                           </div>
                         )}
                       </div>
@@ -817,89 +1520,6 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
               </>
             )}
           </div>
-        )}
-
-        {/* Existing devis for selected deal */}
-        {selectedCompany && selectedDeal && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '0 0 8px' }}>
-            <span style={{ width: 22, height: 22, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 6, background: 'var(--color-primary)', color: '#fff', fontSize: 11, fontWeight: 800 }}>3</span>
-            <div>
-              <div style={{ fontSize: '12px', fontWeight: 800 }}>Reprendre un devis ou en créer un nouveau</div>
-              <div style={{ fontSize: '10px', color: 'var(--color-text-3)' }}>Les versions se trouvent dans chaque devis existant.</div>
-            </div>
-          </div>
-        )}
-        {selectedCompany && selectedDeal && devisForSelectedDeal.length > 0 && (
-          <div style={{ marginBottom: 20 }}>
-            <div style={{ fontSize: '12px', fontWeight: 600, marginBottom: 8, color: 'var(--color-text-2)' }}>
-              Devis existants pour ce deal ({devisForSelectedDeal.length})
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {devisForSelectedDeal.map((d) => (
-                <div
-                  key={d.id}
-                  onClick={() => onOpenDevis(d)}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px',
-                    borderRadius: '8px', cursor: 'pointer',
-                    border: '1px solid var(--color-border)', background: 'var(--color-surface)',
-                    transition: 'background 0.1s',
-                  }}
-                  onMouseEnter={e => e.currentTarget.style.background = 'var(--color-input-bg)'}
-                  onMouseLeave={e => e.currentTarget.style.background = 'var(--color-surface)'}
-                >
-                  <FileText size={16} color="var(--color-primary)" />
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 600, fontSize: '12px' }}>{d.name}</div>
-                    <div style={{ fontSize: '10px', color: 'var(--color-text-3)' }}>
-                      {d.status} · {new Date(d.updated_at).toLocaleDateString('fr-FR')}
-                      {` · ${Number(d.versions_count || 0)} version${Number(d.versions_count || 0) > 1 ? 's' : ''}`}
-                      {d.total_ht ? ` · ${Number(d.total_ht).toLocaleString('fr-FR')} €` : ''}
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={(event) => { event.stopPropagation(); onOpenDevis(d) }}
-                    style={{ ...ghostBtn(), color: 'var(--color-primary)', borderColor: 'var(--color-primary)' }}
-                    title="Ouvrir les versions de ce devis"
-                  >
-                    <FolderOpen size={12} />
-                    Ouvrir versions
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-        {selectedCompany && selectedDeal && devisForSelectedDeal.length === 0 && (
-          <div style={{ marginBottom: 20, padding: 14, border: '1px dashed var(--color-border)', borderRadius: 10, background: 'var(--color-surface)', display: 'flex', alignItems: 'center', gap: 10 }}>
-            <FileText size={18} color="var(--color-text-3)" />
-            <div>
-              <div style={{ fontSize: 12, fontWeight: 800 }}>Aucun devis pour ce projet</div>
-              <div style={{ fontSize: 11, color: 'var(--color-text-3)', marginTop: 2 }}>Créez le premier devis ci-dessous. La version V1 sera créée automatiquement.</div>
-            </div>
-          </div>
-        )}
-
-        {/* Create new button */}
-        {selectedCompany && (
-          <button
-            onClick={onNewDevis}
-            disabled={!selectedDeal}
-            style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-              width: '100%', padding: '12px', borderRadius: '10px',
-              border: '1px solid transparent',
-              background: selectedDeal ? 'var(--color-primary)' : 'var(--color-border)',
-              color: selectedDeal ? '#fff' : 'var(--color-text-3)',
-              fontWeight: 700, fontSize: '13px',
-              cursor: selectedDeal ? 'pointer' : 'not-allowed',
-              opacity: selectedDeal ? 1 : 0.72,
-            }}
-          >
-            <Plus size={16} />
-            {selectedDeal ? `Créer un nouveau devis pour ${selectedDeal.name}` : 'Sélectionnez un projet pour créer un devis'}
-          </button>
         )}
       </div>
     </div>
@@ -1017,13 +1637,22 @@ function StepVersions({ devisId, currentVersionId, onVersionSelected, onContinue
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [data, setData] = useState(null)
-  const [comment, setComment] = useState('')
   const [busyId, setBusyId] = useState(null)
   const [editingVersionId, setEditingVersionId] = useState(null)
   const [editingVersionTitle, setEditingVersionTitle] = useState('')
   const [savingVersionId, setSavingVersionId] = useState(null)
-  const [draftSavedAt, setDraftSavedAt] = useState(null)
-  const [commentSavedAt, setCommentSavedAt] = useState(null)
+  const [editingCommentVersionId, setEditingCommentVersionId] = useState(null)
+  const [editingCommentText, setEditingCommentText] = useState('')
+  const [savingCommentVersionId, setSavingCommentVersionId] = useState(null)
+  const [collapsedVersionIds, setCollapsedVersionIds] = useState(() => new Set())
+  const [pendingDeleteVersion, setPendingDeleteVersion] = useState(null)
+  const [toast, setToast] = useState(null)
+  const toastTimerRef = useRef(null)
+  const showToast = (msg, type = 'success') => {
+    clearTimeout(toastTimerRef.current)
+    setToast({ msg, type })
+    toastTimerRef.current = setTimeout(() => setToast(null), 2600)
+  }
 
   const loadVersions = useCallback(async () => {
     if (!devisId) return
@@ -1045,53 +1674,27 @@ function StepVersions({ devisId, currentVersionId, onVersionSelected, onContinue
   const versions = useMemo(() => Array.isArray(data?.versions) ? data.versions : [], [data?.versions])
   const activeVersionId = currentVersionId || data?.current_version_id || null
   const activeVersion = versions.find(v => v.id === activeVersionId) || versions[0] || null
-  const activeSavedComment = useMemo(() => {
-    const comments = (activeVersion?.comments || []).filter(item => item.kind === 'comment')
-    return comments.length ? comments[comments.length - 1] : null
-  }, [activeVersion?.comments])
-  const commentDraftKey = useMemo(() => (
-    devisId && activeVersionId ? `devis_version_comment_draft_${devisId}_${activeVersionId}` : null
-  ), [activeVersionId, devisId])
+  const collapsedStorageKey = useMemo(() => (devisId ? `devis_versions_collapsed_${devisId}` : null), [devisId])
 
   useEffect(() => {
-    if (!commentDraftKey) {
-      setComment('')
-      setDraftSavedAt(null)
-      setCommentSavedAt(null)
+    if (!collapsedStorageKey) {
+      setCollapsedVersionIds(new Set())
       return
     }
     try {
-      const savedDraft = localStorage.getItem(commentDraftKey)
-      setComment(savedDraft || activeSavedComment?.content || '')
-      setDraftSavedAt(savedDraft ? 'restauré' : null)
-      setCommentSavedAt(null)
+      const saved = JSON.parse(localStorage.getItem(collapsedStorageKey) || '[]')
+      setCollapsedVersionIds(new Set(Array.isArray(saved) ? saved.map(Number).filter(Boolean) : []))
     } catch {
-      setDraftSavedAt(null)
+      setCollapsedVersionIds(new Set())
     }
-  }, [activeSavedComment?.content, commentDraftKey])
+  }, [collapsedStorageKey])
 
-  const handleCommentChange = (nextComment) => {
-    setComment(nextComment)
-    setCommentSavedAt(null)
-    if (!commentDraftKey) return
+  useEffect(() => {
+    if (!collapsedStorageKey) return
     try {
-      if (nextComment.trim()) {
-        localStorage.setItem(commentDraftKey, nextComment)
-        setDraftSavedAt(new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }))
-      } else {
-        localStorage.removeItem(commentDraftKey)
-        setDraftSavedAt(null)
-      }
-    } catch {
-      setError('Impossible d’enregistrer le brouillon localement')
-    }
-  }
-
-  const clearCommentDraft = () => {
-    if (!commentDraftKey) return
-    try { localStorage.removeItem(commentDraftKey) } catch {}
-    setDraftSavedAt(null)
-  }
+      localStorage.setItem(collapsedStorageKey, JSON.stringify([...collapsedVersionIds]))
+    } catch {}
+  }, [collapsedStorageKey, collapsedVersionIds])
   const versionById = useMemo(() => {
     const map = new Map()
     for (const version of versions) map.set(version.id, version)
@@ -1100,6 +1703,10 @@ function StepVersions({ devisId, currentVersionId, onVersionSelected, onContinue
   const versionDisplayName = useCallback((version) => (
     version?.title || version?.branch_label || version?.version_label || 'Version de travail'
   ), [])
+  const versionComment = useCallback((version) => {
+    const comments = Array.isArray(version?.comments) ? version.comments : []
+    return [...comments].reverse().find(item => item.kind === 'comment') || comments[comments.length - 1] || null
+  }, [])
   const childrenByParent = useMemo(() => {
     const map = new Map()
     for (const version of versions) {
@@ -1108,33 +1715,68 @@ function StepVersions({ devisId, currentVersionId, onVersionSelected, onContinue
       list.push(version)
       map.set(key, list)
     }
+    for (const list of map.values()) list.sort((a, b) => (a.id || 0) - (b.id || 0))
     return map
   }, [versions])
+  const versionNumberById = useMemo(() => {
+    const map = new Map()
+    const walk = (parentId, prefix) => {
+      const children = childrenByParent.get(parentId) || []
+      children.forEach((version, index) => {
+        const number = prefix ? `${prefix}.${index + 1}` : String(index + 1)
+        map.set(version.id, number)
+        walk(version.id, number)
+      })
+    }
+    walk(0, '')
+    return map
+  }, [childrenByParent])
   const orderedVersions = useMemo(() => {
     const out = []
     const walk = (parentId, depth) => {
       for (const version of childrenByParent.get(parentId) || []) {
         out.push({ ...version, _depth: depth })
+        if (collapsedVersionIds.has(version.id)) continue
         walk(version.id, depth + 1)
       }
     }
     walk(0, 0)
     return out.length ? out : versions.map(version => ({ ...version, _depth: 0 }))
+  }, [childrenByParent, collapsedVersionIds, versions])
+  const descendantCountById = useMemo(() => {
+    const countFor = (id) => (childrenByParent.get(id) || []).reduce((sum, child) => sum + 1 + countFor(child.id), 0)
+    const map = new Map()
+    for (const version of versions) map.set(version.id, countFor(version.id))
+    return map
   }, [childrenByParent, versions])
+  const parentVersionIds = useMemo(() => (
+    versions.filter(version => (childrenByParent.get(version.id) || []).length > 0).map(version => version.id)
+  ), [childrenByParent, versions])
 
   const activateVersion = async (version) => {
     if (!version || !devisId) return
-    if (String(version.id) === String(activeVersionId)) return
+    if (String(version.id) === String(activeVersionId)) return true
     setBusyId(version.id)
     try {
       await api.post(`/devis/${devisId}/versions/${version.id}/activate`)
       onVersionSelected?.(version.id)
       await loadVersions()
+      return true
     } catch (err) {
       setError(err?.error || err?.message || 'Erreur activation version')
+      return false
     } finally {
       setBusyId(null)
     }
+  }
+
+  const openVersionAndContinue = async (version) => {
+    if (!version) return
+    if (String(version.id) !== String(activeVersionId)) {
+      const activated = await activateVersion(version)
+      if (!activated) return
+    }
+    onContinue?.()
   }
 
   const startEditingVersion = (version) => {
@@ -1163,21 +1805,72 @@ function StepVersions({ devisId, currentVersionId, onVersionSelected, onContinue
     }
   }
 
-  const duplicateVersion = async (version) => {
+  const startEditingComment = (version) => {
+    const comment = versionComment(version)
+    setEditingCommentVersionId(version.id)
+    setEditingCommentText(comment?.content || '')
+  }
+
+  const cancelEditingComment = () => {
+    setEditingCommentVersionId(null)
+    setEditingCommentText('')
+  }
+
+  const toggleVersionCollapsed = (versionId) => {
+    setCollapsedVersionIds((previous) => {
+      const next = new Set(previous)
+      if (next.has(versionId)) next.delete(versionId)
+      else next.add(versionId)
+      return next
+    })
+  }
+
+  const collapseAllVersions = () => setCollapsedVersionIds(new Set(parentVersionIds))
+  const expandAllVersions = () => setCollapsedVersionIds(new Set())
+
+  const saveVersionComment = async (version) => {
+    if (!version || savingCommentVersionId) return
+    const content = editingCommentText.trim()
+    setSavingCommentVersionId(version.id)
+    const existingComment = versionComment(version)
+    try {
+      if (existingComment?.id) {
+        await api.patch(`/devis/${devisId}/versions/${version.id}/comments/${existingComment.id}`, { content })
+      } else if (content) {
+        await api.post(`/devis/${devisId}/versions/${version.id}/comments`, {
+          content,
+          step_key: 'versions',
+          kind: 'comment',
+        })
+      }
+      setEditingCommentVersionId(null)
+      setEditingCommentText('')
+      showToast('Commentaire enregistré')
+      await loadVersions()
+    } catch (err) {
+      setError(err?.error || err?.message || 'Erreur enregistrement commentaire')
+      showToast('Erreur enregistrement commentaire', 'error')
+    } finally {
+      setSavingCommentVersionId(null)
+    }
+  }
+
+  const duplicateVersion = async (version, { asRoot = false } = {}) => {
     if (!version || !devisId) return
-    setBusyId(`dup-${version.id}`)
+    const busyKey = asRoot ? `root-${version.id}` : `dup-${version.id}`
+    setBusyId(busyKey)
     const sourceName = versionDisplayName(version)
+    const sourceNumber = versionNumberById.get(version.id) || version.version_label
     try {
       const created = await api.post(`/devis/${devisId}/versions`, {
         source_version_id: version.id,
+        parent_version_id: asRoot ? null : version.id,
         branch_label: version.branch_label || null,
-        title: `Copie de ${sourceName}`,
-        comment: comment.trim() || `Nouvelle version depuis ${sourceName}`,
+        title: asRoot ? `Nouvelle version principale` : `Copie de ${sourceName}`,
+        comment: asRoot ? `Nouvelle version principale depuis ${sourceNumber}` : `Nouvelle version depuis ${sourceNumber}`,
         step_key: 'versions',
       })
       onVersionSelected?.(created.id)
-      clearCommentDraft()
-      setComment('')
       await loadVersions()
     } catch (err) {
       setError(err?.error || err?.message || 'Erreur duplication version')
@@ -1186,26 +1879,23 @@ function StepVersions({ devisId, currentVersionId, onVersionSelected, onContinue
     }
   }
 
-  const saveComment = async () => {
-    if (!activeVersion || !comment.trim()) return
-    setBusyId(`comment-${activeVersion.id}`)
+  const deleteVersion = async (version) => {
+    if (!version || !devisId || versions.length <= 1) return
+    setPendingDeleteVersion(version)
+  }
+
+  const confirmDeleteVersion = async () => {
+    const version = pendingDeleteVersion
+    if (!version || !devisId || versions.length <= 1) return
+    const versionNumber = versionNumberById.get(version.id) || version.version_label
+    setBusyId(`del-${version.id}`)
     try {
-      if (activeSavedComment?.id) {
-        await api.patch(`/devis/${devisId}/versions/${activeVersion.id}/comments/${activeSavedComment.id}`, {
-          content: comment.trim(),
-        })
-      } else {
-        await api.post(`/devis/${devisId}/versions/${activeVersion.id}/comments`, {
-          content: comment.trim(),
-          step_key: 'versions',
-          kind: 'comment',
-        })
-      }
-      clearCommentDraft()
-      setCommentSavedAt(new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }))
+      const result = await api.delete(`/devis/${devisId}/versions/${version.id}`)
+      onVersionSelected?.(result.current_version_id || null)
+      setPendingDeleteVersion(null)
       await loadVersions()
     } catch (err) {
-      setError(err?.error || err?.message || 'Erreur enregistrement commentaire')
+      setError(err?.error || err?.message || `Erreur suppression version ${versionNumber}`)
     } finally {
       setBusyId(null)
     }
@@ -1223,6 +1913,46 @@ function StepVersions({ devisId, currentVersionId, onVersionSelected, onContinue
 
   return (
     <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '26px 32px' }}>
+      {toast && (
+        <div style={{
+          position: 'fixed', bottom: 28, left: '50%', transform: 'translateX(-50%)', zIndex: 1300,
+          display: 'inline-flex', alignItems: 'center', gap: 8,
+          padding: '10px 16px', borderRadius: 9,
+          background: toast.type === 'success' ? '#22c55e' : '#dc2626', color: '#fff',
+          fontSize: 12, fontWeight: 800, boxShadow: '0 10px 30px rgba(0,0,0,0.28)', pointerEvents: 'none',
+        }}>
+          <Check size={14} /> {toast.msg}
+        </div>
+      )}
+      {pendingDeleteVersion && (
+        <div role="dialog" aria-modal="true" aria-labelledby="delete-version-title" style={{ position: 'fixed', inset: 0, zIndex: 1200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, background: 'rgba(15, 23, 42, 0.42)' }} onClick={() => busyId !== `del-${pendingDeleteVersion.id}` && setPendingDeleteVersion(null)}>
+          <div style={{ width: 'min(440px, 100%)', border: '1px solid var(--color-border)', borderRadius: 10, background: 'var(--color-surface)', boxShadow: '0 20px 60px rgba(0,0,0,0.28)', padding: 18 }} onClick={(event) => event.stopPropagation()}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+              <div style={{ width: 34, height: 34, borderRadius: 8, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(220,38,38,0.1)', color: '#dc2626', flexShrink: 0 }}>
+                <Trash2 size={17} />
+              </div>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div id="delete-version-title" style={{ fontSize: 15, fontWeight: 900, marginBottom: 5 }}>Supprimer cette version ?</div>
+                <div style={{ fontSize: 12, color: 'var(--color-text-2)', lineHeight: 1.45 }}>
+                  La version {versionNumberById.get(pendingDeleteVersion.id) || pendingDeleteVersion.version_label} sera supprimée
+                  {(descendantCountById.get(pendingDeleteVersion.id) || 0) > 0
+                    ? ` avec ses ${descendantCountById.get(pendingDeleteVersion.id)} sous-version${descendantCountById.get(pendingDeleteVersion.id) > 1 ? 's' : ''}.`
+                    : '.'}
+                </div>
+              </div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 18 }}>
+              <button type="button" onClick={() => setPendingDeleteVersion(null)} disabled={busyId === `del-${pendingDeleteVersion.id}`} style={ghostBtn()}>
+                Annuler
+              </button>
+              <button type="button" onClick={confirmDeleteVersion} disabled={busyId === `del-${pendingDeleteVersion.id}`} style={{ ...ghostBtn(), color: '#dc2626', borderColor: 'rgba(220,38,38,0.35)' }}>
+                {busyId === `del-${pendingDeleteVersion.id}` ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Trash2 size={12} />}
+                Supprimer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <div style={{ maxWidth: 960, margin: '0 auto' }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, marginBottom: 18 }}>
           <div>
@@ -1231,10 +1961,24 @@ function StepVersions({ devisId, currentVersionId, onVersionSelected, onContinue
               Ouvrez une version existante, créez une nouvelle version depuis celle-ci, puis continuez vers la grille.
             </p>
           </div>
-          <button type="button" onClick={loadVersions} style={ghostBtn()} disabled={loading}>
-            {loading ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <RefreshCw size={13} />}
-            Actualiser
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <button type="button" onClick={collapseAllVersions} style={ghostBtn()} disabled={!parentVersionIds.length} title="Tout replier">
+              <ChevronRight size={13} />
+              Tout replier
+            </button>
+            <button type="button" onClick={expandAllVersions} style={ghostBtn()} disabled={!collapsedVersionIds.size} title="Tout déplier">
+              <ChevronDown size={13} />
+              Tout déplier
+            </button>
+            <button type="button" onClick={() => activeVersion && duplicateVersion(activeVersion, { asRoot: true })} style={{ ...ghostBtn(), color: 'var(--color-primary)', borderColor: 'var(--color-primary)' }} disabled={!activeVersion || busyId === `root-${activeVersion?.id}`}>
+              {busyId === `root-${activeVersion?.id}` ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Plus size={13} />}
+              Nouvelle version principale
+            </button>
+            <button type="button" onClick={loadVersions} style={ghostBtn()} disabled={loading}>
+              {loading ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <RefreshCw size={13} />}
+              Actualiser
+            </button>
+          </div>
         </div>
 
         {error && (
@@ -1245,19 +1989,26 @@ function StepVersions({ devisId, currentVersionId, onVersionSelected, onContinue
 
         <div style={{ marginBottom: 14, padding: 12, border: '1px solid var(--color-border)', borderRadius: 8, background: 'var(--color-surface)', display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
           <div style={{ fontSize: 11, color: 'var(--color-text-2)' }}><strong style={{ color: 'var(--color-text)' }}>1. Ouvrir</strong><br />Sélectionnez la version à modifier.</div>
-          <div style={{ fontSize: 11, color: 'var(--color-text-2)' }}><strong style={{ color: 'var(--color-text)' }}>2. Nouvelle version</strong><br />Créez une copie avant de changer le devis.</div>
+          <div style={{ fontSize: 11, color: 'var(--color-text-2)' }}><strong style={{ color: 'var(--color-text)' }}>2. Nouvelle version</strong><br />Principale = 2, enfant = 1.1, 1.2, 1.2.1.</div>
           <div style={{ fontSize: 11, color: 'var(--color-text-2)' }}><strong style={{ color: 'var(--color-text)' }}>3. Continuer</strong><br />Passez à la grille.</div>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(360px, 1fr) minmax(280px, 0.8fr)', gap: 16 }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {orderedVersions.map(version => {
               const active = version.id === activeVersionId
               const isEditingVersion = editingVersionId === version.id
+              const versionNumber = versionNumberById.get(version.id) || String(version.version_label || '').replace(/^v/i, '') || '1'
               const parentVersion = version.parent_version_id ? versionById.get(version.parent_version_id) : null
-              const sourceLabel = parentVersion ? `Nouvelle version depuis ${versionDisplayName(parentVersion)}` : null
-              const latestComment = version.comments?.[version.comments.length - 1]?.content || ''
-              const showLatestComment = latestComment && latestComment !== sourceLabel && !latestComment.startsWith('Nouvelle version depuis ')
+              const parentNumber = parentVersion ? versionNumberById.get(parentVersion.id) : null
+              const sourceLabel = parentVersion ? `Enfant de ${parentNumber || versionDisplayName(parentVersion)}` : null
+              const latestComment = versionComment(version)
+              const latestCommentText = latestComment?.content || ''
+              const showLatestComment = latestCommentText && latestCommentText !== sourceLabel && !latestCommentText.startsWith('Nouvelle version depuis ')
+              const rowCount = Number(version.row_count || version.lines_count || 0)
+              const totalHt = Number(version.total_ht || 0)
+              const isEditingComment = editingCommentVersionId === version.id
+              const childCount = (childrenByParent.get(version.id) || []).length
+              const collapsed = collapsedVersionIds.has(version.id)
               return (
                 <div key={version.id} style={{ marginLeft: version._depth * 22 }}>
                   <div
@@ -1265,75 +2016,131 @@ function StepVersions({ devisId, currentVersionId, onVersionSelected, onContinue
                     style={{ border: active ? '1.5px solid var(--color-primary)' : '1px solid var(--color-border)', borderRadius: 8, background: active ? 'color-mix(in srgb, var(--color-primary) 6%, var(--color-surface))' : 'var(--color-surface)', padding: 12, cursor: active ? 'default' : 'pointer' }}
                     title={active ? 'Version active' : 'Cliquer pour ouvrir cette version'}
                   >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ width: 34, height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 6, background: active ? 'var(--color-primary)' : 'var(--color-surface-2, var(--color-input-bg))', color: active ? '#fff' : 'var(--color-text)', fontWeight: 800, fontSize: 11 }}>
-                        {version.version_label}
-                      </span>
-                      <div style={{ minWidth: 0, flex: 1 }}>
-                        {isEditingVersion ? (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }} onClick={(event) => event.stopPropagation()}>
-                            <input
-                              value={editingVersionTitle}
-                              onChange={(event) => setEditingVersionTitle(event.target.value)}
-                              onKeyDown={(event) => {
-                                if (event.key === 'Enter') {
-                                  event.preventDefault()
-                                  saveVersionTitle(version)
-                                }
-                                if (event.key === 'Escape') {
-                                  event.preventDefault()
-                                  cancelEditingVersion()
-                                }
-                              }}
-                              autoFocus
-                              style={{
-                                flex: 1, minWidth: 0, padding: '5px 8px', borderRadius: 6,
-                                border: '1px solid var(--color-border)', background: 'var(--color-input-bg, var(--color-bg))',
-                                color: 'var(--color-text)', fontSize: 12, fontWeight: 700, fontFamily: 'var(--font-body)',
-                              }}
-                            />
-                            <button type="button" onClick={(event) => { event.stopPropagation(); saveVersionTitle(version) }} disabled={savingVersionId === version.id || !editingVersionTitle.trim()} style={{ ...iconBtn(), color: 'var(--color-primary)' }} title="Valider le titre">
-                              {savingVersionId === version.id ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Check size={13} />}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) auto minmax(0, 1fr)', gap: 12, alignItems: 'start' }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          {childCount > 0 ? (
+                            <button type="button" onClick={(event) => { event.stopPropagation(); toggleVersionCollapsed(version.id) }} style={iconBtn()} title={collapsed ? 'Déplier les sous-versions' : 'Replier les sous-versions'} aria-label={collapsed ? 'Déplier les sous-versions' : 'Replier les sous-versions'}>
+                              {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
                             </button>
-                            <button type="button" onClick={(event) => { event.stopPropagation(); cancelEditingVersion() }} style={iconBtn()} title="Annuler">
-                              <X size={13} />
-                            </button>
-                          </div>
-                        ) : (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                            <div style={{ fontWeight: 800, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                              {versionDisplayName(version)}
+                          ) : (
+                            <span style={{ width: 26, flexShrink: 0 }} />
+                          )}
+                          <span style={{ width: 34, height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 6, background: active ? 'var(--color-primary)' : 'var(--color-surface-2, var(--color-input-bg))', color: active ? '#fff' : 'var(--color-text)', fontWeight: 800, fontSize: 11 }}>
+                            {versionNumber}
+                          </span>
+                          <div style={{ minWidth: 0, flex: 1 }}>
+                            {isEditingVersion ? (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }} onClick={(event) => event.stopPropagation()}>
+                                <input
+                                  value={editingVersionTitle}
+                                  onChange={(event) => setEditingVersionTitle(event.target.value)}
+                                  onKeyDown={(event) => {
+                                    if (event.key === 'Enter') {
+                                      event.preventDefault()
+                                      saveVersionTitle(version)
+                                    }
+                                    if (event.key === 'Escape') {
+                                      event.preventDefault()
+                                      cancelEditingVersion()
+                                    }
+                                  }}
+                                  autoFocus
+                                  style={{
+                                    flex: 1, minWidth: 0, padding: '5px 8px', borderRadius: 6,
+                                    border: '1px solid var(--color-border)', background: 'var(--color-input-bg, var(--color-bg))',
+                                    color: 'var(--color-text)', fontSize: 12, fontWeight: 700, fontFamily: 'var(--font-body)',
+                                  }}
+                                />
+                                <button type="button" onClick={(event) => { event.stopPropagation(); saveVersionTitle(version) }} disabled={savingVersionId === version.id || !editingVersionTitle.trim()} style={{ ...iconBtn(), color: 'var(--color-primary)' }} title="Valider le titre">
+                                  {savingVersionId === version.id ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Check size={13} />}
+                                </button>
+                                <button type="button" onClick={(event) => { event.stopPropagation(); cancelEditingVersion() }} style={iconBtn()} title="Annuler">
+                                  <X size={13} />
+                                </button>
+                              </div>
+                            ) : (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <div style={{ fontWeight: 800, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                  {versionDisplayName(version)}
+                                </div>
+                                <button type="button" onClick={(event) => { event.stopPropagation(); startEditingVersion(version) }} style={iconBtn()} title="Renommer cette version">
+                                  <Pencil size={12} />
+                                </button>
+                              </div>
+                            )}
+                            <div style={{ fontSize: 10, color: 'var(--color-text-3)' }}>
+                              {statusLabel(version.status)} · {rowCount} ligne{rowCount > 1 ? 's' : ''} · {totalHt.toLocaleString('fr-FR')} € HT · {version.comments?.length || 0} commentaire{(version.comments?.length || 0) > 1 ? 's' : ''}{childCount ? ` · ${childCount} fille${childCount > 1 ? 's' : ''}${collapsed ? ' repliée' : ''}` : ''}
                             </div>
-                            <button type="button" onClick={(event) => { event.stopPropagation(); startEditingVersion(version) }} style={iconBtn()} title="Renommer cette version">
+                          </div>
+                          {version.locked && <span style={{ fontSize: 10, color: '#f59e0b', fontWeight: 700 }}>verrouillée</span>}
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start' }} onClick={(event) => event.stopPropagation()}>
+                          <button
+                            type="button"
+                            onClick={(event) => { event.stopPropagation(); openVersionAndContinue(version) }}
+                            style={{ ...iconBtn(), width: 32, height: 32, color: 'var(--color-primary)' }}
+                            disabled={busyId === version.id}
+                            title={active ? 'Continuer avec cette version' : 'Ouvrir cette version'}
+                            aria-label={active ? 'Continuer avec cette version' : 'Ouvrir cette version'}
+                          >
+                            {busyId === version.id ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <ExternalLink size={14} />}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(event) => { event.stopPropagation(); duplicateVersion(version) }}
+                            style={{ ...iconBtn(), width: 32, height: 32 }}
+                            disabled={busyId === `dup-${version.id}`}
+                            title="Créer une version fille"
+                            aria-label="Créer une version fille"
+                          >
+                            {busyId === `dup-${version.id}` ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <Copy size={14} />}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(event) => { event.stopPropagation(); deleteVersion(version) }}
+                            style={{ ...iconBtn(), width: 32, height: 32, color: '#dc2626', borderColor: 'rgba(220,38,38,0.35)' }}
+                            disabled={versions.length <= 1 || busyId === `del-${version.id}`}
+                            title={versions.length <= 1 ? 'Conservez au moins une version' : 'Supprimer récursivement cette version'}
+                            aria-label={versions.length <= 1 ? 'Conservez au moins une version' : 'Supprimer récursivement cette version'}
+                          >
+                            {busyId === `del-${version.id}` ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <Trash2 size={14} />}
+                          </button>
+                      </div>
+                      <div style={{ border: '1px solid var(--color-border)', borderRadius: 8, background: 'var(--color-bg)', padding: 9, minWidth: 0 }} onClick={(event) => event.stopPropagation()}>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: isEditingComment ? 7 : 0 }}>
+                            <div style={{ fontSize: 10, fontWeight: 900, color: 'var(--color-text-3)', textTransform: 'uppercase' }}>Commentaire</div>
+                            <button type="button" onClick={() => startEditingComment(version)} style={iconBtn()} title="Modifier le commentaire" aria-label="Modifier le commentaire">
                               <Pencil size={12} />
                             </button>
                           </div>
-                        )}
-                        <div style={{ fontSize: 10, color: 'var(--color-text-3)' }}>
-                          {statusLabel(version.status)} · {Number(version.total_ht || 0).toLocaleString('fr-FR')} € HT · {version.comments?.length || 0} commentaire{(version.comments?.length || 0) > 1 ? 's' : ''}
-                        </div>
+                          {isEditingComment ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+                              <textarea
+                                value={editingCommentText}
+                                onChange={(event) => setEditingCommentText(event.target.value)}
+                                rows={3}
+                                autoFocus
+                                placeholder="Commentaire de version..."
+                                style={{ width: '100%', boxSizing: 'border-box', border: '1px solid var(--color-border)', borderRadius: 7, background: 'var(--color-input-bg, var(--color-surface))', color: 'var(--color-text)', padding: 8, fontSize: 12, resize: 'vertical', outline: 'none', fontFamily: 'var(--font-body)' }}
+                              />
+                              <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                                <button type="button" onClick={cancelEditingComment} style={ghostBtn()} disabled={savingCommentVersionId === version.id}>
+                                  Annuler
+                                </button>
+                                <button type="button" onClick={() => saveVersionComment(version)} style={{ ...ghostBtn(), color: 'var(--color-primary)', borderColor: 'var(--color-primary)' }} disabled={savingCommentVersionId === version.id}>
+                                  {savingCommentVersionId === version.id ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Check size={12} />}
+                                  Enregistrer
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div style={{ marginTop: 5, minHeight: 20, fontSize: 12, lineHeight: 1.45, color: latestCommentText ? 'var(--color-text-2)' : 'var(--color-text-3)', whiteSpace: 'pre-wrap' }}>
+                              {latestCommentText || 'Aucun commentaire'}
+                            </div>
+                          )}
                       </div>
-                      {version.locked && <span style={{ fontSize: 10, color: '#f59e0b', fontWeight: 700 }}>verrouillée</span>}
-                    </div>
-                    {sourceLabel && (
-                      <div style={{ marginTop: 8, fontSize: 11, color: 'var(--color-text-2)', borderLeft: '2px solid var(--color-border)', paddingLeft: 8 }}>
-                        {sourceLabel}
-                      </div>
-                    )}
-                    {showLatestComment && (
-                      <div style={{ marginTop: 8, fontSize: 11, color: 'var(--color-text-2)', borderLeft: '2px solid var(--color-border)', paddingLeft: 8 }}>
-                        {latestComment}
-                      </div>
-                    )}
-                    <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
-                      <button type="button" onClick={(event) => { event.stopPropagation(); activateVersion(version) }} style={ghostBtn()} disabled={busyId === version.id || active}>
-                        {busyId === version.id ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Check size={12} />}
-                        {active ? 'Active' : 'Ouvrir'}
-                      </button>
-                      <button type="button" onClick={(event) => { event.stopPropagation(); duplicateVersion(version) }} style={ghostBtn()} disabled={busyId === `dup-${version.id}`}>
-                        {busyId === `dup-${version.id}` ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Copy size={12} />}
-                        Nouvelle version
-                      </button>
                     </div>
                   </div>
                 </div>
@@ -1344,42 +2151,6 @@ function StepVersions({ devisId, currentVersionId, onVersionSelected, onContinue
                 Aucune version trouvée. Une version V1 sera créée automatiquement.
               </div>
             )}
-          </div>
-
-          <div style={{ border: '1px solid var(--color-border)', borderRadius: 8, background: 'var(--color-surface)', padding: 14, alignSelf: 'start' }}>
-            <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 4 }}>Version active</div>
-            <div style={{ fontSize: 12, color: 'var(--color-text-2)', marginBottom: 12 }}>
-              {activeVersion ? `${activeVersion.version_label} · ${statusLabel(activeVersion.status)}` : 'Aucune version active'}
-            </div>
-            <textarea
-              value={comment}
-              onChange={e => handleCommentChange(e.target.value)}
-              rows={4}
-              placeholder="Commentaire interne / raison de la branche…"
-              style={{ width: '100%', boxSizing: 'border-box', border: '1px solid var(--color-border)', borderRadius: 8, background: 'var(--color-input-bg, var(--color-bg))', color: 'var(--color-text)', padding: 10, fontSize: 12, resize: 'vertical', outline: 'none', fontFamily: 'var(--font-body)' }}
-            />
-            <div style={{ marginTop: 6, minHeight: 14, fontSize: 10, color: 'var(--color-text-3)' }}>
-              {commentSavedAt
-                ? `Commentaire enregistré à ${commentSavedAt}`
-                : draftSavedAt
-                  ? `Brouillon ${draftSavedAt === 'restauré' ? 'restauré' : `auto-enregistré à ${draftSavedAt}`}`
-                  : 'Le texte est gardé en brouillon local pendant la saisie.'}
-            </div>
-            <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
-              <button type="button" onClick={saveComment} style={{ ...ghostBtn(), color: 'var(--color-primary)', borderColor: 'var(--color-primary)' }} disabled={!activeVersion || !comment.trim() || busyId === `comment-${activeVersion?.id}`}>
-                {busyId === `comment-${activeVersion?.id}` ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Check size={12} />}
-                Enregistrer
-              </button>
-            </div>
-            <button
-              type="button"
-              onClick={() => activeVersion && onContinue?.()}
-              disabled={!activeVersion}
-              style={{ marginTop: 16, width: '100%', display: 'inline-flex', justifyContent: 'center', alignItems: 'center', gap: 6, padding: '9px 12px', borderRadius: 8, border: 'none', background: 'var(--color-primary)', color: '#fff', fontWeight: 800, cursor: activeVersion ? 'pointer' : 'default', opacity: activeVersion ? 1 : 0.5 }}
-            >
-              Continuer avec cette version <ArrowRight size={14} />
-            </button>
-          </div>
         </div>
       </div>
     </div>
@@ -1607,6 +2378,7 @@ function StepEditor({
   onContinuePdf,
   defaultTransportAddress = '',
   askAIEditor,
+  assistantHighlights = null,
 }) {
   const [saving, setSaving] = useState(null)
   const [visibleGridRows, setVisibleGridRows] = useState([])
@@ -1703,6 +2475,7 @@ function StepEditor({
         <DevisGridWorkspace
           embedded
           initialRows={gridRows}
+          assistantHighlights={assistantHighlights}
           defaultTransportAddress={defaultTransportAddress}
           startWithBlank
           onRowsChange={setVisibleGridRows}
@@ -2482,7 +3255,6 @@ function StepHubSpot({ devisId, versionId, selectedCompany, selectedDeal, onDeal
 // ══════════════════════════════════════════════════════════════════════════════
 export default function DevisStepper() {
   const navigate = useNavigate()
-  const { darkMode, toggleDarkMode } = useThemeStore()
 
   // Stepper state
   const [step, setStep] = useState(1)
@@ -2508,6 +3280,8 @@ export default function DevisStepper() {
   const [existingDevis, setExistingDevis] = useState([])
   const [currentDevisId, setCurrentDevisId] = useState(null)
   const [currentVersionId, setCurrentVersionId] = useState(null)
+  const [assistantHighlights, setAssistantHighlights] = useState(null)
+  const assistantHighlightTimerRef = useRef(null)
 
   // Step 3: analysis
   const [results, setResults] = useState([])
@@ -2527,9 +3301,10 @@ export default function DevisStepper() {
   const [editorAiMessages, setEditorAiMessages] = useState([])
   const [editorAiInput, setEditorAiInput] = useState('')
   const [editorAiLoading, setEditorAiLoading] = useState(false)
-  const [linkCopied, setLinkCopied] = useState(false)
+  const [editorAiHistoryLoading, setEditorAiHistoryLoading] = useState(false)
   const editorAiEndRef = useRef(null)
   const editorAiInputRef = useRef(null)
+  const editorAiLoadSeqRef = useRef(0)
   const selectedCompanyId = selectedCompany?.id
   const [companyDetailRefreshKey, setCompanyDetailRefreshKey] = useState(0)
   const restoringUrlRef = useRef(false)
@@ -2649,33 +3424,168 @@ export default function DevisStepper() {
   useEffect(() => { aiEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [aiMessages])
   useEffect(() => { editorAiEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [editorAiMessages])
 
+  useEffect(() => {
+    if (!currentDevisId) {
+      editorAiLoadSeqRef.current += 1
+      setEditorAiMessages([])
+      setEditorAiHistoryLoading(false)
+      return
+    }
+    const loadSeq = editorAiLoadSeqRef.current + 1
+    editorAiLoadSeqRef.current = loadSeq
+    let active = true
+    setEditorAiMessages([])
+    setEditorAiHistoryLoading(true)
+    api.get('/devis/ai-messages', {
+      params: { devis_id: currentDevisId, version_id: currentVersionId || undefined },
+    })
+      .then((messages) => {
+        if (!active || editorAiLoadSeqRef.current !== loadSeq) return
+        setEditorAiMessages(Array.isArray(messages) ? messages : [])
+        window.setTimeout(() => editorAiEndRef.current?.scrollIntoView({ behavior: 'auto' }), 0)
+      })
+      .catch(() => {
+        if (!active || editorAiLoadSeqRef.current !== loadSeq) return
+        setEditorAiMessages([])
+      })
+      .finally(() => {
+        if (active && editorAiLoadSeqRef.current === loadSeq) setEditorAiHistoryLoading(false)
+      })
+    return () => { active = false }
+  }, [currentDevisId, currentVersionId])
+
+  const saveGemmaMessage = useCallback(async ({ role, content, images = [], agent_slug = null }) => {
+    if (!currentDevisId || !content?.trim()) return null
+    return api.post('/devis/ai-messages', {
+      devis_id: currentDevisId,
+      version_id: currentVersionId || null,
+      role,
+      content,
+      images,
+      agent_slug,
+    })
+  }, [currentDevisId, currentVersionId])
+
+  const editGemmaMessage = useCallback(async (messageId, content) => {
+    const updated = await api.put(`/devis/ai-messages/${messageId}`, { content })
+    setEditorAiMessages(prev => prev.map(message => String(message.id) === String(messageId) ? updated : message))
+  }, [])
+
+  const clearGemmaMessages = useCallback(async () => {
+    if (!currentDevisId) return
+    await api.delete('/devis/ai-messages', {
+      data: { devis_id: currentDevisId, version_id: currentVersionId || null },
+    })
+    setEditorAiMessages([])
+  }, [currentDevisId, currentVersionId])
+
+  const refreshLines = useCallback(() => {
+    if (!currentDevisId) return Promise.resolve([])
+    return api.get(`/devis/${currentDevisId}/lines`)
+      .then((nextLines) => {
+        setLines(nextLines)
+        return nextLines
+      })
+      .catch(() => [])
+  }, [currentDevisId])
+
+  const flashAssistantRows = useCallback((rowsToFlash = [], message = 'Modifié par Gemma') => {
+    const indexes = []
+    const ids = []
+    for (const item of rowsToFlash) {
+      if (Number.isInteger(item?.index)) indexes.push(item.index)
+      if (item?.id != null) ids.push(String(item.id))
+    }
+    if (!indexes.length && !ids.length) return
+    clearTimeout(assistantHighlightTimerRef.current)
+    setAssistantHighlights({ indexes, ids, message, token: Date.now() })
+    assistantHighlightTimerRef.current = window.setTimeout(() => setAssistantHighlights(null), 6500)
+  }, [])
+
+  useEffect(() => () => clearTimeout(assistantHighlightTimerRef.current), [])
+
+  const applyAssistantLineCommand = useCallback(async (question) => {
+    const text = String(question || '').trim()
+    if (!text || !currentDevisId) return null
+    const performanceCommand = parsePerformanceChangeCommand(text)
+    if (performanceCommand) {
+      const scopedLineMatch = text.match(/(?:ligne|line)\s*([a-z]|\d+)/i)
+      const targetIndexes = scopedLineMatch
+        ? [(/^\d+$/.test(scopedLineMatch[1]) ? Number(scopedLineMatch[1]) - 1 : scopedLineMatch[1].toUpperCase().charCodeAt(0) - 65)]
+        : lines.map((line, index) => lineContainsPerformance(line, performanceCommand.fromLevel) ? index : -1).filter(index => index >= 0)
+      const validIndexes = targetIndexes.filter(index => lines[index])
+      if (!validIndexes.length) return `Je ne trouve aucune ligne ${performanceCommand.fromToken} dans le tableau actuel.`
+
+      const nextLines = lines.map((line, index) => validIndexes.includes(index) ? applyPerformanceChangeToLine(line, performanceCommand) : line)
+      setLines(nextLines)
+      flashAssistantRows(validIndexes.map(index => ({ index, id: nextLines[index]?.id })), `${performanceCommand.fromToken} → ${performanceCommand.toToken}`)
+      await Promise.all(validIndexes.map((lineIndex) => {
+        const nextLine = nextLines[lineIndex]
+        if (!nextLine?.id) return Promise.resolve()
+        return api.put(`/devis/${currentDevisId}/lines/${nextLine.id}`, gridRowToLinePayload(dbLineToGridRow(nextLine), lineIndex))
+      }))
+      await refreshLines()
+      const labels = validIndexes.map(index => repLetter(index)).join(', ')
+      const pricingNote = performanceCommand.toLevel < performanceCommand.fromLevel
+        ? ` Le prix est conservé sur la base ${performanceCommand.fromToken}, conformément à la règle métier de surclassement.`
+        : ''
+      return `C'est fait : ${performanceCommand.fromToken} remplacé par ${performanceCommand.toToken} sur ${validIndexes.length} ligne${validIndexes.length > 1 ? 's' : ''} (${labels}).${pricingNote}`
+    }
+    const lineMatch = text.match(/(?:ligne|line)\s*([a-z]|\d+)/i)
+    if (!lineMatch) return null
+    const rawIndex = lineMatch[1]
+    const lineIndex = /^\d+$/.test(rawIndex) ? Number(rawIndex) - 1 : rawIndex.toUpperCase().charCodeAt(0) - 65
+    const line = lines[lineIndex]
+    if (!line) return `Je ne trouve pas la ligne ${rawIndex.toUpperCase()}.`
+
+    const afterLine = text.slice(lineMatch.index + lineMatch[0].length).trim()
+    const fieldPatterns = [
+      { key: 'localisation', label: 'localisation', re: /(?:localisation|local|position|rep[èe]re)\s*[:=]?\s*(.+)$/i },
+      { key: 'designation', label: 'désignation', re: /(?:d[ée]signation|libell[ée]|nom)\s*[:=]?\s*(.+)$/i },
+      { key: 'type_porte', label: 'type produit', re: /(?:type(?:\s+(?:produit|porte))?|produit)\s*[:=]?\s*(.+)$/i },
+      { key: 'qty', label: 'quantité', re: /(?:quantit[ée]|qte|qt[ée]|qty)\s*[:=]?\s*(\d+(?:[.,]\d+)?)$/i },
+    ]
+    let patch = null
+    let fieldLabel = ''
+    for (const item of fieldPatterns) {
+      const match = afterLine.match(item.re)
+      if (!match) continue
+      const value = match[1].trim().replace(/^['"]|['"]$/g, '')
+      if (!value) return `J'ai trouvé la ligne ${repLetter(lineIndex)}, mais pas la nouvelle valeur.`
+      patch = { [item.key]: item.key === 'qty' ? Number(value.replace(',', '.')) : value }
+      fieldLabel = item.label
+      break
+    }
+    if (!patch) return null
+
+    const nextLine = { ...line, ...patch }
+    const nextRows = lines.map((item, index) => index === lineIndex ? nextLine : item)
+    setLines(nextRows)
+    flashAssistantRows([{ index: lineIndex, id: line.id }], `${fieldLabel} modifiée`)
+    await api.put(`/devis/${currentDevisId}/lines/${line.id}`, gridRowToLinePayload(dbLineToGridRow(nextLine), lineIndex))
+    await refreshLines()
+    return `C'est fait : ligne ${repLetter(lineIndex)}, ${fieldLabel} mis à jour.`
+  }, [currentDevisId, flashAssistantRows, lines, refreshLines, setLines])
+
   const goStep = (n) => {
     setStep(n)
     if (n > maxReached) setMaxReached(n)
   }
 
-  const copyBookmarkLink = async () => {
-    try {
-      await navigator.clipboard.writeText(window.location.href)
-      setLinkCopied(true)
-      setTimeout(() => setLinkCopied(false), 1800)
-    } catch {
-      setLinkCopied(false)
-    }
-  }
-
   const currentStepperUrl = () => `${window.location.pathname}${window.location.search}`
 
   // Step 1 handlers
-  const handleNewDevis = async () => {
-    if (!selectedCompany || !selectedDeal) return
+  const handleNewDevis = async (targetDeal = null) => {
+    const deal = targetDeal || selectedDeal
+    if (!selectedCompany || !deal) return
     try {
       const devis = await api.post('/devis', {
         company_id: selectedCompany.id,
         client_name: selectedCompany.name,
-        deal_id: selectedDeal.id,
+        deal_id: deal.id,
         name: `Devis ${selectedCompany.name} — ${new Date().toLocaleDateString('fr-FR')}`,
       })
+      if (targetDeal) setSelectedDeal(targetDeal)
       setExistingDevis((prev) => [devis, ...prev.filter((d) => d.id !== devis.id)])
       setCurrentDevisId(devis.id)
       setCurrentVersionId(devis.current_version_id || devis.current_version?.id || null)
@@ -2746,6 +3656,19 @@ export default function DevisStepper() {
       goStep(2)
     } catch (err) {
       console.error('Open devis error:', err)
+    }
+  }
+
+  const handleDeleteDevis = async (devis) => {
+    if (!devis?.id) return
+    await api.delete(`/devis/${devis.id}`)
+    setExistingDevis((prev) => prev.filter((item) => String(item.id) !== String(devis.id)))
+    if (String(currentDevisId) === String(devis.id)) {
+      setCurrentDevisId(null)
+      setCurrentVersionId(null)
+      setLines([])
+      setResults([])
+      goStep(1)
     }
   }
 
@@ -2838,42 +3761,64 @@ export default function DevisStepper() {
   }
 
   // Step 4: editor AI
-  const askAIEditor = async (question = editorAiInput) => {
+  const askAIEditor = async (question = editorAiInput, images = []) => {
     const q = (question || editorAiInput).trim()
-    if (!q || editorAiLoading) return
-    setEditorAiMessages(prev => [...prev, { role: 'user', content: q }])
+    const pastedImages = Array.isArray(images) ? images : []
+    if ((!q && !pastedImages.length) || editorAiLoading) return
+    const tempUserId = `tmp-user-${Date.now()}`
+    const persistedQuestion = `${q || 'Pièce(s) jointe(s)'}${pastedImages.length ? `\n\n[${pastedImages.length} pièce${pastedImages.length > 1 ? 's' : ''} jointe${pastedImages.length > 1 ? 's' : ''}]` : ''}`
+    setEditorAiMessages(prev => [...prev, { id: tempUserId, role: 'user', content: persistedQuestion }])
     setEditorAiInput('')
     setEditorAiLoading(true)
     try {
+      const previousImages = editorAiMessages
+        .filter(message => message.role === 'user')
+        .flatMap(message => parseGemmaImages(message.images_json))
+        .filter(image => image?.dataUrl || image?.data_url)
+        .slice(-4)
+      const imagesForAI = [
+        ...previousImages.map(image => ({ dataUrl: image.dataUrl || image.data_url, type: image.type, name: image.name })),
+        ...pastedImages,
+      ].slice(-6)
+      const shortHistory = editorAiMessages
+        .filter(message => ['user', 'assistant'].includes(message.role) && String(message.content || '').trim())
+        .slice(-10)
+        .map(message => ({ role: message.role, content: String(message.content || '').trim().slice(0, 1200) }))
+      const savedUser = await saveGemmaMessage({ role: 'user', content: persistedQuestion, images: pastedImages }).catch(() => null)
+      if (savedUser) {
+        setEditorAiMessages(prev => prev.map(message => message.id === tempUserId ? savedUser : message))
+      }
+      const localAction = pastedImages.length ? null : await applyAssistantLineCommand(q)
+      if (localAction) {
+        const savedAssistant = await saveGemmaMessage({ role: 'assistant', content: localAction, agent_slug: 'Gemma 4 action' }).catch(() => null)
+        setEditorAiMessages(prev => [...prev, savedAssistant || { id: `tmp-assistant-${Date.now()}`, role: 'assistant', content: localAction }])
+        return
+      }
       // Send current lines as context
+      const imageOnlyQuestion = imagesForAI.length > 0 && /\b(image|capture|photo|screenshot|visuel|vois|voir|montre|regarde|pdf|document|fichier|pi[èe]ce jointe)\b/i.test(q)
+      const compactRows = imageOnlyQuestion ? [] : lines.slice(0, 120).map(compactLineForAI)
+      const compactDocs = [...new Set(compactRows.flatMap(row => Array.isArray(row.docs) ? row.docs : []))]
       const data = await api.post('/devis/ask', {
-        rows: lines.map(l => ({
-          gamme: l.gamme, vantail: l.vantail, type: l.type_porte,
-          dim_standard: { h: l.hauteur_mm, l: l.largeur_mm },
-          prix_base_ht: l.prix_base_ht, prix_total_min_ht: l.total_ligne_ht,
-          options: (() => { try { return JSON.parse(l.options_json || '[]') } catch { return [] } })(),
-          serrure: l.serrure_ref ? { ref: l.serrure_ref } : null,
-          ferme_porte: l.ferme_porte_ref ? { ref: l.ferme_porte_ref } : null,
-        })),
-        question: q,
-        mdFiles: ['GUIDE-DEVIS.md', 'BASE.md', 'CR4.md', 'CR5.md'],
+        devis_id: currentDevisId,
+        version_id: currentVersionId || null,
+        rows: compactRows,
+        question: !imageOnlyQuestion && lines.length > compactRows.length
+          ? `${q}\n\nContexte note: devis tronqué aux ${compactRows.length} premières lignes sur ${lines.length} pour rester sous la limite de contexte.`
+          : q,
+        scope: compactRows.length > 1 ? 'all' : 'line',
+        mdFiles: compactDocs,
+        history: shortHistory,
+        images: imagesForAI.map(image => ({ dataUrl: image.dataUrl || image.data_url, type: image.type, name: image.name })),
       })
-      setEditorAiMessages(prev => [...prev, { role: 'assistant', content: data.answer }])
+      const savedAssistant = await saveGemmaMessage({ role: 'assistant', content: data.answer, agent_slug: 'Gemma 4' }).catch(() => null)
+      setEditorAiMessages(prev => [...prev, savedAssistant || { id: `tmp-assistant-${Date.now()}`, role: 'assistant', content: data.answer }])
     } catch (err) {
-      setEditorAiMessages(prev => [...prev, { role: 'assistant', content: `❌ ${err.error || err.message}` }])
+      const content = `❌ ${err.error || err.message}`
+      const savedAssistant = await saveGemmaMessage({ role: 'assistant', content, agent_slug: 'Gemma 4 error' }).catch(() => null)
+      setEditorAiMessages(prev => [...prev, savedAssistant || { id: `tmp-assistant-${Date.now()}`, role: 'assistant', content }])
     } finally {
       setEditorAiLoading(false)
     }
-  }
-
-  const refreshLines = () => {
-    if (!currentDevisId) return Promise.resolve([])
-    return api.get(`/devis/${currentDevisId}/lines`)
-      .then((nextLines) => {
-        setLines(nextLines)
-        return nextLines
-      })
-      .catch(() => [])
   }
 
   // Step 4 → Step 5: navigate to HubSpot send step
@@ -2902,117 +3847,91 @@ export default function DevisStepper() {
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--color-bg)', color: 'var(--color-text)', fontFamily: 'var(--font-body)' }}>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } } @keyframes fadeInUp { from { opacity: 0; transform: translateX(-50%) translateY(10px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }`}</style>
 
-      {/* Topbar */}
-      <header className="admin-topbar" style={{ borderRadius: 0, flexShrink: 0, margin: 0 }}>
-        <div className="admin-topbar-brand">
-          <div className="admin-topbar-mark"><FileSpreadsheet size={18} strokeWidth={2} /></div>
-          <div className="admin-topbar-text">
-            <h1>Devis NEXUS</h1>
-            <p>
-              {selectedCompany ? `${selectedCompany.name}` : 'Chiffrage portes NEXUS 2026'}
-              {selectedDeal ? ` — ${selectedDeal.name}` : ''}
-            </p>
-          </div>
-        </div>
-        <div className="admin-topbar-actions">
-          {step > 1 && (
-            <button className="admin-btn-ghost" onClick={() => goStep(step - 1)} style={{ fontSize: '0.8125rem' }}>
-              <ArrowLeft size={14} /> Étape précédente
-            </button>
-          )}
-          <button
-            type="button"
-            className="admin-btn-ghost"
-            onClick={toggleDarkMode}
-            title={darkMode ? 'Passer en mode clair' : 'Passer en mode sombre'}
-            aria-label={darkMode ? 'Passer en mode clair' : 'Passer en mode sombre'}
-          >
-            {darkMode ? <Sun size={16} /> : <Moon size={16} />}
-            <span>{darkMode ? 'Mode clair' : 'Mode sombre'}</span>
-          </button>
-          <button type="button" className="admin-btn-ghost" onClick={copyBookmarkLink} title="Copier le lien direct vers ce contexte">
-            {linkCopied ? <Check size={16} /> : <Copy size={16} />}
-            <span>{linkCopied ? 'Lien copié' : 'Copier lien'}</span>
-          </button>
-          <button type="button" className="admin-btn-ghost" onClick={() => navigate('/experiences', { state: { returnTo: currentStepperUrl(), returnLabel: 'Retour au devis NEXUS' } })}>
-            <BookOpen size={16} />
-            <span>Expériences</span>
-          </button>
-          <button type="button" className="admin-btn-ghost" onClick={() => navigate('/rules', { state: { returnTo: currentStepperUrl(), returnLabel: 'Retour au devis NEXUS' } })}>
-            <Shield size={16} />
-            <span>Règles</span>
-          </button>
-          <button type="button" className="admin-btn-ghost" onClick={() => navigate('/chat')}>
-            <MessageCircleReply size={16} />
-            <span>Retour au chat</span>
-          </button>
-        </div>
-      </header>
-
-      {/* Stepper bar */}
-      <StepperBar step={step} maxReached={step >= 4 ? Math.max(maxReached, 5) : step >= 3 ? Math.max(maxReached, 4) : maxReached} onStep={goStep} />
-
-      <WorkflowContextBar
+      <CompactDevisHeader
+        step={step}
+        maxReached={step >= 4 ? Math.max(maxReached, 5) : step >= 3 ? Math.max(maxReached, 4) : maxReached}
+        onStep={goStep}
         selectedCompany={selectedCompany}
         selectedDeal={selectedDeal}
         currentDevis={currentDevis}
         currentVersionId={currentVersionId}
+        onOpenExperiences={() => navigate('/experiences', { state: { returnTo: currentStepperUrl(), returnLabel: 'Retour au devis NEXUS' } })}
+        onOpenRules={() => navigate('/rules', { state: { returnTo: currentStepperUrl(), returnLabel: 'Retour au devis NEXUS' } })}
+        onBackToChat={() => navigate('/chat')}
       />
 
-      {/* Step content */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
-        {step === 1 && (
-          <StepClient
-            selectedCompany={selectedCompany}
-            selectedDeal={selectedDeal}
-            existingDevis={existingDevis}
-            onSelect={handleSelectCompany}
-            onSelectDeal={handleSelectDeal}
-            onCreateDeal={handleCreateDeal}
-            onUpdateDeal={handleUpdateDeal}
-            onNewDevis={handleNewDevis}
-            onOpenDevis={handleOpenDevis}
-            detailRefreshKey={companyDetailRefreshKey}
-          />
-        )}
-        {step === 2 && (
-          <StepVersions
-            devisId={currentDevisId}
-            currentVersionId={currentVersionId}
-            onVersionSelected={setCurrentVersionId}
-            onContinue={() => goStep(3)}
-          />
-        )}
-        {step === 3 && (
-          <StepEditor
-            devisId={currentDevisId} versionId={currentVersionId} lines={lines} setLines={setLines}
-            onRefresh={refreshLines}
-            onContinuePdf={() => goStep(4)}
-            defaultTransportAddress={companyDeliveryAddress(selectedCompany)}
-            aiMessages={editorAiMessages} aiInput={editorAiInput} setAiInput={setEditorAiInput}
-            aiLoading={editorAiLoading} askAIEditor={askAIEditor}
-            aiEndRef={editorAiEndRef} aiInputRef={editorAiInputRef}
-            chatRatio={chatRatio} setChatRatio={setChatRatio}
-          />
-        )}
-        {step === 4 && (
-          <StepPDF
-            devisId={currentDevisId} versionId={currentVersionId} lines={lines} setLines={setLines}
-            clientName={selectedCompany?.name} dealName={selectedDeal?.name}
-            onSendHubSpot={handleSendHubSpot}
-          />
-        )}
-        {step === 5 && (
-          <StepHubSpot
-            devisId={currentDevisId}
-            versionId={currentVersionId}
-            selectedCompany={selectedCompany}
-            selectedDeal={selectedDeal}
-            onDealChange={handleSelectDeal}
-            onGoStep={goStep}
-            onCreateNewVersion={handleCreateVersionAfterHubSpot}
-          />
-        )}
+      {/* Step content + assistant */}
+      <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
+        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
+          {step === 1 && (
+            <StepClient
+              selectedCompany={selectedCompany}
+              selectedDeal={selectedDeal}
+              existingDevis={existingDevis}
+              onSelect={handleSelectCompany}
+              onSelectDeal={handleSelectDeal}
+              onCreateDeal={handleCreateDeal}
+              onUpdateDeal={handleUpdateDeal}
+              onNewDevis={handleNewDevis}
+              onOpenDevis={handleOpenDevis}
+              onDeleteDevis={handleDeleteDevis}
+              detailRefreshKey={companyDetailRefreshKey}
+            />
+          )}
+          {step === 2 && (
+            <StepVersions
+              devisId={currentDevisId}
+              currentVersionId={currentVersionId}
+              onVersionSelected={setCurrentVersionId}
+              onContinue={() => goStep(3)}
+            />
+          )}
+          {step === 3 && (
+            <StepEditor
+              devisId={currentDevisId} versionId={currentVersionId} lines={lines} setLines={setLines}
+              onRefresh={refreshLines}
+              onContinuePdf={() => goStep(4)}
+              defaultTransportAddress={companyDeliveryAddress(selectedCompany)}
+              askAIEditor={askAIEditor}
+              assistantHighlights={assistantHighlights}
+            />
+          )}
+          {step === 4 && (
+            <StepPDF
+              devisId={currentDevisId} versionId={currentVersionId} lines={lines} setLines={setLines}
+              clientName={selectedCompany?.name} dealName={selectedDeal?.name}
+              onSendHubSpot={handleSendHubSpot}
+            />
+          )}
+          {step === 5 && (
+            <StepHubSpot
+              devisId={currentDevisId}
+              versionId={currentVersionId}
+              selectedCompany={selectedCompany}
+              selectedDeal={selectedDeal}
+              onDealChange={handleSelectDeal}
+              onGoStep={goStep}
+              onCreateNewVersion={handleCreateVersionAfterHubSpot}
+            />
+          )}
+        </div>
+        <StepperAssistantPanel
+          step={step}
+          currentDevis={currentDevis}
+          selectedCompany={selectedCompany}
+          selectedDeal={selectedDeal}
+          lines={lines}
+          messages={editorAiMessages}
+          input={editorAiInput}
+          setInput={setEditorAiInput}
+          loading={editorAiLoading}
+          historyLoading={editorAiHistoryLoading}
+          onAsk={askAIEditor}
+          onEditMessage={editGemmaMessage}
+          onClearMessages={clearGemmaMessages}
+          inputRef={editorAiInputRef}
+          endRef={editorAiEndRef}
+        />
       </div>
     </div>
   )

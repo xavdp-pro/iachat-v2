@@ -4,8 +4,8 @@
  * Layout : gauche (import fichiers) | centre (grille) | droite (chat Gemma)
  * Phase MVP : lecture seule + expand/collapse sous-rows
  */
-import { useState, useCallback, useRef, useEffect, Fragment } from 'react'
-import { Upload, RefreshCw, ChevronRight, ChevronDown, AlertTriangle, MessageSquare, ArrowLeft, PanelLeftClose, PanelLeftOpen, Plus, Minus, X, Check, Loader2, Settings, Trash2, Calculator, Truck, Package, EyeOff, Eye, BookOpen, ShieldCheck, Sparkles, FileText } from 'lucide-react'
+import { useState, useCallback, useRef, useEffect, useMemo, Fragment } from 'react'
+import { Upload, RefreshCw, ChevronRight, ChevronDown, AlertTriangle, MessageSquare, ArrowLeft, PanelLeftClose, PanelLeftOpen, Plus, Minus, X, Check, Loader2, Settings, Trash2, Calculator, Truck, Package, EyeOff, Eye, BookOpen, ShieldCheck, FileText } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import api from '../api/index.js'
 import Select from 'react-select'
@@ -414,7 +414,7 @@ function Td({ children, palette = 'normal', style = {}, ...props }) {
 
 // ─── Badge gamme ─────────────────────────────────────────────────────────────
 const GAMME_COLORS = {
-  'CR3': ['#2a4a7f','#a8c8ff'], 'CR4': ['#4a2060','#d8a8ff'],
+  'CR2': ['#164e63','#a5f3fc'], 'CR3': ['#2a4a7f','#a8c8ff'], 'CR4': ['#4a2060','#d8a8ff'],
   'CR5': ['#5a1a1a','#ffb0b0'], 'CR6': ['#1a3020','#80d080'],
   'FB4': ['#2a3050','#8898d8'], 'FB6': ['#2a3050','#8898d8'],
   'FB7': ['#2a3050','#6688cc'], 'EI60': ['#2a3a1a','#aacc70'],
@@ -758,7 +758,7 @@ function VerifyRulesModal({ row, onClose }) {
 }
 
 // ─── Composant ligne principale ──────────────────────────────────────────────
-function MainRow({ row, index, displayIndex = index, expanded, onToggle, change, tva, multGlobal, editMode, onUpdate, onRecompute, onDelete, onSaveAsRule, onVerifyRules, onSuggestDesignation, suggestingDesignation = false, hiddenCols = new Set(), hiddenDimensionCols = new Set() }) {
+function MainRow({ row, index, displayIndex = index, expanded, onToggle, change, tva, multGlobal, editMode, onUpdate, onRecompute, onDelete, onSaveAsRule, onVerifyRules, assistantHighlight = null, hiddenCols = new Set(), hiddenDimensionCols = new Set() }) {
   const r = resolveRow(row, change, tva, multGlobal)
   const qty = Number.isFinite(r.qty) ? r.qty : 1
   const isAmountSection = sectionOf(row) !== 'products'
@@ -773,13 +773,19 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
     : perfKeys)
   const hiddenPerfCount = perfKeys.length - visiblePerfKeys.length
   const canCollapseEmptyPerfs = editMode && !isAmountSection && showEmptyPerfs && !row._manualBlank && hiddenPerfCount === 0
+  const assistantActive = Boolean(assistantHighlight)
   return (
     <tr
       onClick={onToggle}
       style={{
         cursor: 'pointer',
-        background: expanded ? 'color-mix(in srgb, var(--color-primary) 5%, var(--color-surface))' : undefined,
-        transition: 'background 0.1s',
+        background: assistantActive
+          ? 'linear-gradient(90deg, rgba(34,197,94,0.24), rgba(34,197,94,0.08) 55%, transparent)'
+          : expanded ? 'color-mix(in srgb, var(--color-primary) 5%, var(--color-surface))' : undefined,
+        boxShadow: assistantActive ? 'inset 4px 0 0 #22c55e, inset 0 1px 0 rgba(34,197,94,0.65), inset 0 -1px 0 rgba(34,197,94,0.45)' : undefined,
+        outline: assistantActive ? '1px solid rgba(34,197,94,0.55)' : undefined,
+        outlineOffset: -1,
+        transition: 'background 0.25s, box-shadow 0.25s, outline 0.25s',
       }}
     >
       {/* # */}
@@ -788,6 +794,7 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
           {expanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
           {rowLetterLabel(displayIndex)}
           {r._recomputing && <RefreshCw size={9} style={{ animation: 'spin 1s linear infinite' }} />}
+          {assistantActive && <span title={assistantHighlight.message || 'Modifié par Gemma'} style={{ marginLeft: 2, padding: '1px 4px', borderRadius: 999, background: '#22c55e', color: '#052e16', fontSize: 8, fontWeight: 950, lineHeight: 1.2 }}>Gemma</span>}
           {row._ruleChecking && <ShieldCheck size={9} style={{ animation: 'spin 1s linear infinite', color: 'var(--color-primary)' }} />}
           {!row._ruleChecking && ruleSummary && (
             <ShieldCheck size={9} style={{ color: ruleSummary.violation ? '#dc2626' : ruleSummary.warning ? '#b45309' : '#16a34a' }} />
@@ -806,36 +813,12 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
                   placeholder={sectionOf(row) === 'transport' ? 'Frais de port…' : 'Avis / note…'}
                 />
               ) : (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 4, paddingRight: 3 }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <EditableSelect
-                      value={r.type}
-                      options={TYPE_OPTIONS}
-                      onCommit={(v) => onRecompute?.({ type: v })}
-                      placeholder="Type…"
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); onSuggestDesignation?.() }}
-                    title="Suggérer un libellé PDF depuis les devis historiques (Qdrant)"
-                    disabled={suggestingDesignation}
-                    style={{
-                      width: 24,
-                      height: 24,
-                      borderRadius: 6,
-                      border: '1px solid var(--color-border)',
-                      background: 'var(--color-surface)',
-                      color: 'var(--color-text-2)',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      cursor: suggestingDesignation ? 'default' : 'pointer',
-                    }}
-                  >
-                    {suggestingDesignation ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Sparkles size={12} />}
-                  </button>
-                </div>
+                <EditableSelect
+                  value={r.type}
+                  options={TYPE_OPTIONS}
+                  onCommit={(v) => onRecompute?.({ type: v })}
+                  placeholder="Type…"
+                />
               )}
             </div>
           ) : (
@@ -874,19 +857,20 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
       <Td style={{ minWidth: 430, width: 430, fontSize: 10, color: 'var(--color-text-2)' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'stretch' }}>
           {editMode ? (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center', minHeight: 30 }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'flex-end', minHeight: 35 }}>
               {visiblePerfKeys.map(key => {
                 const rawIdx = rawIndexByPerf[key]
                 const cur = performanceValue(row, r, key)
                 const isSet = cur != null
-                const controlWidth = Math.max(PERF_CONTROL_WIDTH[key] || 58, 64)
+                const controlWidth = Math.max(PERF_CONTROL_WIDTH[key] || 58, 76)
                 return (
                   <div key={key} onClick={e => e.stopPropagation()} style={{ position: 'relative', flex: `0 0 ${controlWidth}px`, display: 'flex', flexDirection: 'column', gap: 1 }}>
                     <span style={{ fontSize: 8, lineHeight: 1, color: 'var(--color-text-3)', fontWeight: 900, textTransform: 'uppercase', textAlign: 'center' }}>{PERF_LABELS[key]}</span>
-                    <select
+                    <PrettyCellSelect
                       value={cur ?? ''}
-                      onChange={e => {
-                        const v = e.target.value || null
+                      options={PERF_OPTIONS[key]}
+                      onCommit={value => {
+                        const v = value || null
                         if (key === 'acoustic') {
                           // Rebuild _raw[16] with or without the acoustic value so the
                           // server recomputes the price (acoustic treatment is priced server-side).
@@ -899,46 +883,37 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
                         }
                       }}
                       title={key === 'acoustic' ? 'Acoustique' : key.toUpperCase()}
-                      style={{
-                        width: controlWidth,
-                        height: 26,
-                        fontSize: 10,
-                        fontWeight: 900,
-                        padding: '0 20px 0 7px',
-                        cursor: 'pointer',
-                        background: isSet ? '#fbbf24' : 'var(--color-surface)',
-                        color: isSet ? '#111827' : 'var(--color-text-2)',
-                        border: isSet ? '1px solid #d97706' : '1px solid var(--color-border)',
-                        borderRadius: 6,
-                        outline: 'none',
-                      }}
-                    >
-                      {PERF_OPTIONS[key].map(o => (
-                        <option key={String(o.value)} value={o.value ?? ''}>{o.label}</option>
-                      ))}
-                    </select>
+                      width={controlWidth}
+                      active={isSet}
+                    />
                   </div>
                 )
               })}
               {!isAmountSection && hiddenPerfCount > 0 && (
-                <button
-                  type="button"
-                  onClick={e => { e.stopPropagation(); setShowEmptyPerfs(true) }}
-                  title={`Afficher ${hiddenPerfCount} performance${hiddenPerfCount > 1 ? 's' : ''} vide${hiddenPerfCount > 1 ? 's' : ''}`}
-                  style={perfActionButtonStyle}
-                >
-                  <Plus size={13} strokeWidth={2.5} />
-                </button>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 1, flex: '0 0 28px' }}>
+                  <span style={{ height: 8, lineHeight: 1 }} />
+                  <button
+                    type="button"
+                    onClick={e => { e.stopPropagation(); setShowEmptyPerfs(true) }}
+                    title={`Afficher ${hiddenPerfCount} performance${hiddenPerfCount > 1 ? 's' : ''} vide${hiddenPerfCount > 1 ? 's' : ''}`}
+                    style={perfActionButtonStyle}
+                  >
+                    <Plus size={13} strokeWidth={2.5} />
+                  </button>
+                </div>
               )}
               {canCollapseEmptyPerfs && (
-                <button
-                  type="button"
-                  onClick={e => { e.stopPropagation(); setShowEmptyPerfs(false) }}
-                  title="Masquer les performances vides"
-                  style={perfActionButtonStyle}
-                >
-                  <Minus size={13} strokeWidth={2.5} />
-                </button>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 1, flex: '0 0 28px' }}>
+                  <span style={{ height: 8, lineHeight: 1 }} />
+                  <button
+                    type="button"
+                    onClick={e => { e.stopPropagation(); setShowEmptyPerfs(false) }}
+                    title="Masquer les performances vides"
+                    style={perfActionButtonStyle}
+                  >
+                    <Minus size={13} strokeWidth={2.5} />
+                  </button>
+                </div>
               )}
             </div>
           ) : (
@@ -984,22 +959,21 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
       <Td style={{ width: 74, textAlign: 'center', padding: 0 }}>
         {isAmountSection ? <span style={{ fontSize: 9, color: 'var(--color-text-3)' }}>—</span> : editMode ? (
           <div onClick={e => e.stopPropagation()} style={{ display: 'flex', flexDirection: 'column', gap: 1, alignItems: 'center', padding: '2px 3px' }}>
-            <select
+            {r._thermolaquageRef && <span style={{ fontSize: 8, color: 'var(--color-text-3)', fontWeight: 700 }}>réf.{r._thermolaquageRef}</span>}
+            <PrettyCellSelect
               value={r._thermolaquageType || ''}
-              onChange={e => {
+              options={[{ value: '', label: '—' }, { value: 'RAL', label: 'RAL' }, { value: 'NCS', label: 'NCS' }]}
+              onCommit={value => {
                 const raw = Array.isArray(row._raw) ? [...row._raw] : new Array(17).fill(null)
                 while (raw.length < 17) raw.push(null)
-                raw[16] = setThermolaquageInRawValue(raw[16], e.target.value || null)
+                raw[16] = setThermolaquageInRawValue(raw[16], value || null)
                 onRecompute?.({ _raw_override: raw })
               }}
               title="Thermolaquage"
-              style={{ width: 62, height: 24, fontSize: 10, fontWeight: 800, borderRadius: 5, border: '1px solid var(--color-border)', background: r.thermolaquage ? '#fbbf24' : 'var(--color-surface)', color: r.thermolaquage ? '#000' : 'var(--color-text-3)', outline: 'none' }}
-            >
-              <option value="">—</option>
-              <option value="RAL">RAL</option>
-              <option value="NCS">NCS</option>
-            </select>
-            {r._thermolaquageRef && <span style={{ fontSize: 8, color: 'var(--color-text-3)', fontWeight: 700 }}>réf.{r._thermolaquageRef}</span>}
+              width={74}
+              height={24}
+              active={!!r.thermolaquage}
+            />
           </div>
         ) : (
           <span title={r._thermolaquageLabel || ''} style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 1, fontSize: 9, fontWeight: 800, color: r.thermolaquage ? '#b45309' : 'var(--color-text-3)' }}>
@@ -1110,7 +1084,7 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
         <EditableNumber value={qty} onCommit={v => onUpdate?.({ qty: v })} step={1} min={1} max={9999} width="100%" />
       </Td>
       {/* Total HT */}
-      <Td palette="blue" style={{ textAlign: 'right', fontWeight: 800, whiteSpace: 'nowrap', fontSize: 12 }}>
+      <Td palette="blue" style={{ textAlign: 'right', fontWeight: 800, whiteSpace: 'nowrap', fontSize: 12, minWidth: 116 }}>
         {r._pu > 0 ? r._totalHt.toLocaleString('fr-FR') + ' €' : '—'}
       </Td>
       <Td style={{ width: editMode ? 72 : 32, textAlign: 'center', padding: 0 }}>
@@ -1164,13 +1138,13 @@ function AmountSectionColumns({ section, hiddenDimensionCount = 0 }) {
       <td style={{ ...amountHeaderCellStyle, ...CELL.gray, textAlign: 'right' }}>PU HT</td>
       <td style={{ ...amountHeaderCellStyle, ...CELL.yellow, textAlign: 'center' }}>Remise</td>
       <td style={{ ...amountHeaderCellStyle, ...CELL.yellow, textAlign: 'center' }}>Q.</td>
-      <td style={{ ...amountHeaderCellStyle, ...CELL.blue, textAlign: 'right' }}>Total HT</td>
+      <td style={{ ...amountHeaderCellStyle, ...CELL.blue, textAlign: 'right', minWidth: 116, whiteSpace: 'nowrap' }}>Total HT</td>
       <td style={{ ...amountHeaderCellStyle, width: 32 }}></td>
     </tr>
   )
 }
 
-function AmountRow({ row, index, displayIndex = index, change, tva, multGlobal, editMode, defaultTransportAddress = '', onUpdate, onTransportAddressCommit, onDelete, hiddenDimensionCount = 0 }) {
+function AmountRow({ row, index, displayIndex = index, change, tva, multGlobal, editMode, defaultTransportAddress = '', onUpdate, onTransportAddressCommit, onDelete, assistantHighlight = null, hiddenDimensionCount = 0 }) {
   const r = resolveRow(row, change, tva, multGlobal)
   const section = sectionOf(row)
   const isTransport = section === 'transport'
@@ -1181,13 +1155,21 @@ function AmountRow({ row, index, displayIndex = index, change, tva, multGlobal, 
     ? (row.tranche_count ? `${row.tranche_count} tranche${row.tranche_count > 1 ? 's' : ''}` : 'recalcul auto')
     : (row._generatedFrom || '—')
   const detailSpan = Math.max(1, 5 - hiddenDimensionCount)
+  const assistantActive = Boolean(assistantHighlight)
 
   return (
-    <tr style={{ background: 'color-mix(in srgb, var(--color-primary) 2%, transparent)' }}>
+    <tr style={{
+      background: assistantActive ? 'linear-gradient(90deg, rgba(34,197,94,0.24), rgba(34,197,94,0.08) 55%, transparent)' : 'color-mix(in srgb, var(--color-primary) 2%, transparent)',
+      boxShadow: assistantActive ? 'inset 4px 0 0 #22c55e, inset 0 1px 0 rgba(34,197,94,0.65), inset 0 -1px 0 rgba(34,197,94,0.45)' : undefined,
+      outline: assistantActive ? '1px solid rgba(34,197,94,0.55)' : undefined,
+      outlineOffset: -1,
+      transition: 'background 0.25s, box-shadow 0.25s, outline 0.25s',
+    }}>
       <Td style={{ color: 'var(--color-text-3)', fontWeight: 700, width: 36 }}>
         <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
           <ChevronRight size={11} style={{ opacity: 0.25 }} />
           {rowLetterLabel(displayIndex)}
+          {assistantActive && <span title={assistantHighlight.message || 'Modifié par Gemma'} style={{ marginLeft: 2, padding: '1px 4px', borderRadius: 999, background: '#22c55e', color: '#052e16', fontSize: 8, fontWeight: 950, lineHeight: 1.2 }}>Gemma</span>}
         </span>
       </Td>
       <Td colSpan={6} style={{ minWidth: 220, fontWeight: 700, padding: 0 }}>
@@ -1241,7 +1223,7 @@ function AmountRow({ row, index, displayIndex = index, change, tva, multGlobal, 
       <Td palette="yellow" style={{ textAlign: 'center', width: 36, padding: 0 }}>
         <EditableNumber value={qty} onCommit={value => onUpdate?.({ qty: value })} step={1} min={1} max={9999} width="100%" />
       </Td>
-      <Td palette="blue" style={{ textAlign: 'right', fontWeight: 800, whiteSpace: 'nowrap', fontSize: 12 }}>
+      <Td palette="blue" style={{ textAlign: 'right', fontWeight: 800, whiteSpace: 'nowrap', fontSize: 12, minWidth: 116 }}>
         {amountEuro(r._totalHt)}
       </Td>
       <Td style={{ width: 32, textAlign: 'center', padding: 0 }}>
@@ -1592,6 +1574,78 @@ const selectCellStyles = {
     background: state.isFocused ? 'color-mix(in srgb, var(--color-primary) 15%, transparent)' : 'transparent',
     color: 'var(--color-text)',
   }),
+}
+
+const prettyCellSelectStyles = ({ width = 64, height = 26, active = false } = {}) => ({
+  control: (base, state) => ({
+    ...base,
+    width,
+    minWidth: width,
+    minHeight: height,
+    height,
+    borderRadius: 6,
+    border: state.isFocused
+      ? '1px solid var(--color-primary)'
+      : active ? '1px solid #d97706' : '1px solid var(--color-border)',
+    background: active ? '#fbbf24' : 'var(--color-surface)',
+    boxShadow: 'none',
+    cursor: 'pointer',
+    fontSize: 10,
+    fontWeight: 900,
+  }),
+  valueContainer: (base) => ({ ...base, height, padding: '0 2px 0 7px' }),
+  input: (base) => ({ ...base, margin: 0, padding: 0, color: active ? '#111827' : 'var(--color-text)' }),
+  singleValue: (base) => ({ ...base, color: active ? '#111827' : 'var(--color-text-2)', fontSize: 10, fontWeight: 900, overflow: 'visible', maxWidth: 'none' }),
+  placeholder: (base) => ({ ...base, color: 'var(--color-text-3)', fontSize: 10, fontWeight: 900 }),
+  indicatorsContainer: (base) => ({ ...base, height }),
+  indicatorSeparator: () => ({ display: 'none' }),
+  dropdownIndicator: (base) => ({ ...base, padding: '0 4px 0 1px', color: active ? '#111827' : 'var(--color-text-3)' }),
+  clearIndicator: () => ({ display: 'none' }),
+  menu: (base) => ({
+    ...base,
+    width: Math.max(width, 112),
+    minWidth: Math.max(width, 112),
+    fontSize: 12,
+    zIndex: 9999,
+    background: '#263034',
+    border: '1px solid var(--color-border)',
+    overflow: 'hidden',
+    boxShadow: '0 8px 22px rgba(0,0,0,0.32)',
+  }),
+  menuPortal: (base) => ({ ...base, zIndex: 9999 }),
+  option: (base, state) => ({
+    ...base,
+    fontSize: 12,
+    fontWeight: 800,
+    lineHeight: 1.25,
+    padding: '8px 10px',
+    cursor: 'pointer',
+    background: state.isSelected
+      ? 'color-mix(in srgb, var(--color-primary) 22%, transparent)'
+      : state.isFocused ? 'color-mix(in srgb, var(--color-primary) 13%, transparent)' : 'transparent',
+    color: 'var(--color-text)',
+  }),
+})
+
+function PrettyCellSelect({ value, options, onCommit, title, width = 64, height = 26, active = false }) {
+  const normalizedOptions = (options || []).map(option => (
+    typeof option === 'string' ? { value: option, label: option } : { value: option.value ?? '', label: option.label ?? option.value ?? '—' }
+  ))
+  const selected = normalizedOptions.find(option => String(option.value ?? '') === String(value ?? '')) || normalizedOptions[0] || null
+  return (
+    <div title={title} onClick={event => event.stopPropagation()} style={{ width, height }}>
+      <Select
+        value={selected}
+        options={normalizedOptions}
+        onChange={(option) => onCommit(option ? option.value : null)}
+        isSearchable={false}
+        isClearable={false}
+        styles={prettyCellSelectStyles({ width, height, active })}
+        menuPortalTarget={typeof document !== 'undefined' ? document.body : null}
+        menuPosition="fixed"
+      />
+    </div>
+  )
 }
 
 // ─── Cellule éditable Select2 (recherche + clear) ────────────────────────────
@@ -2168,6 +2222,7 @@ function SettingsModal({ change, multGlobal, tva, onClose, onApply }) {
 export function DevisGridWorkspace({
   embedded = false,
   initialRows = null,
+  assistantHighlights = null,
   defaultTransportAddress = '',
   startWithBlank = false,
   onRowsChange = null,
@@ -2194,7 +2249,6 @@ export function DevisGridWorkspace({
   const [error, setError] = useState(null)
   const [validatingImport, setValidatingImport] = useState(false)
   const [importValidationSummary, setImportValidationSummary] = useState(null)
-  const [suggestingRowId, setSuggestingRowId] = useState(null)
   const [toast, setToast] = useState(null) // { msg, kind: 'success'|'error', id }
   const toastTimerRef = useRef(null)
   const showToast = useCallback((msg, kind = 'success') => {
@@ -2217,6 +2271,8 @@ export function DevisGridWorkspace({
     try { return localStorage.getItem('devisGridEditMode') !== '0' } catch { return true }
   })
   const [showSettings, setShowSettings] = useState(false)
+  const assistantHighlightIds = useMemo(() => new Set((assistantHighlights?.ids || []).map(String)), [assistantHighlights])
+  const assistantHighlightIndexes = useMemo(() => new Set(assistantHighlights?.indexes || []), [assistantHighlights])
   useEffect(() => { try { localStorage.setItem('devisGridChange', String(change)) } catch { /* noop */ } }, [change])
   useEffect(() => { try { localStorage.setItem('devisGridTva', String(tva)) } catch { /* noop */ } }, [tva])
   useEffect(() => { try { localStorage.setItem('devisGridMultGlobal', String(multGlobal)) } catch { /* noop */ } }, [multGlobal])
@@ -2390,7 +2446,7 @@ export function DevisGridWorkspace({
       const k = `_raw_${idx}`
       if (Object.prototype.hasOwnProperty.call(patch, k)) raw[idx] = patch[k]
     }
-    const { qty, multiple, change_override, _lineId, _dbPosition, _manualBlank } = cur
+    const { qty, multiple, change_override, _lineId, _dbPosition, _manualBlank, localisation } = cur
     // Maj optimiste immédiate
     setRows(prev => prev.map((r, idx) => idx === i ? {
       ...r,
@@ -2411,10 +2467,11 @@ export function DevisGridWorkspace({
           _lineId,
           _dbPosition,
           _manualBlank,
+          localisation,
           qty, multiple, change_override,
           _recomputing: false,
         } : r))
-        onRowsCommit?.({ ...result, _lineId, _dbPosition, _manualBlank, qty, multiple, change_override }, i, { _recomputed: true })
+        onRowsCommit?.({ ...result, _lineId, _dbPosition, _manualBlank, localisation, qty, multiple, change_override }, i, { _recomputed: true })
         showToast('Recalculé et enregistré', 'success')
       })
       .catch(err => {
@@ -2597,26 +2654,6 @@ export function DevisGridWorkspace({
     if (!row) return
     setVerifyRulesModal(row)
   }, [])
-  const suggestDesignationForRow = useCallback(async (rowIdx) => {
-    const row = rowsRef.current[rowIdx]
-    if (!row || sectionOf(row) !== 'products') return
-    setSuggestingRowId(rowIdx)
-    try {
-      const payloadRow = resolveRow(row)
-      const data = await api.post('/devis/suggest-designation', { line: payloadRow }, { timeout: 90000 })
-      const designation = String(data?.designation || '').trim()
-      if (!designation) {
-        showToast('Aucune suggestion de libellé', 'error')
-        return
-      }
-      updateRow(rowIdx, { designation, type: row.type || designation })
-      showToast(data?.examples?.length ? `Libellé IA appliqué (${data.examples.length} exemples)` : 'Libellé IA appliqué', 'success')
-    } catch (err) {
-      showToast(err?.error || err?.message || 'Erreur suggestion IA', 'error')
-    } finally {
-      setSuggestingRowId(null)
-    }
-  }, [showToast, updateRow])
   const totalPU  = rows.reduce((s, r) => s + (resolveRow(r, change, tva, multGlobal)._pu), 0)
   const totalHT = rows.reduce((s, r) => s + (resolveRow(r, change, tva, multGlobal)._totalHt || 0), 0)
 
@@ -2948,7 +2985,7 @@ export function DevisGridWorkspace({
                   <Th style={{ ...CELL.gray, width: 90 }}>PU HT</Th>
                   <Th style={{ ...CELL.yellow, width: 90 }}>Remise</Th>
                   <Th style={{ ...CELL.yellow, width: 90 }}>Q.</Th>
-                  <Th style={{ ...CELL.blue, width: 90 }}>Total HT</Th>
+                  <Th style={{ ...CELL.blue, width: 116, minWidth: 116, whiteSpace: 'nowrap' }}>Total HT</Th>
                   <Th style={{ width: 32 }}></Th>
                 </tr>
               </thead>
@@ -2990,13 +3027,14 @@ export function DevisGridWorkspace({
                         onUpdate={(patch) => updateRow(i, patch)}
                         onTransportAddressCommit={(address) => commitTransportAddress(i, address)}
                         onDelete={() => deleteRow(i)}
+                        assistantHighlight={(assistantHighlightIds.has(String(row._lineId)) || assistantHighlightIndexes.has(i)) ? assistantHighlights : null}
                         hiddenDimensionCount={hiddenDimensionCols.size}
                       />
                     )
                   }
                   return (
                   <Fragment key={`row-${i}-${entryIndex}`}>
-                    <MainRow row={row} index={i} displayIndex={entry.displayIndex} expanded={expandedRows.has(i)} onToggle={() => toggleRow(i)} change={change} tva={tva} multGlobal={multGlobal} editMode={editMode} onUpdate={(patch) => updateRow(i, patch)} onRecompute={(patch) => recomputeRow(i, patch)} onDelete={() => deleteRow(i)} onSaveAsRule={() => handleSaveAsRule(i)} onVerifyRules={() => handleVerifyRules(i)} onSuggestDesignation={() => suggestDesignationForRow(i)} suggestingDesignation={suggestingRowId === i} hiddenCols={hiddenCols} hiddenDimensionCols={hiddenDimensionCols} />
+                    <MainRow row={row} index={i} displayIndex={entry.displayIndex} expanded={expandedRows.has(i)} onToggle={() => toggleRow(i)} change={change} tva={tva} multGlobal={multGlobal} editMode={editMode} onUpdate={(patch) => updateRow(i, patch)} onRecompute={(patch) => recomputeRow(i, patch)} onDelete={() => deleteRow(i)} onSaveAsRule={() => handleSaveAsRule(i)} onVerifyRules={() => handleVerifyRules(i)} assistantHighlight={(assistantHighlightIds.has(String(row._lineId)) || assistantHighlightIndexes.has(i)) ? assistantHighlights : null} hiddenCols={hiddenCols} hiddenDimensionCols={hiddenDimensionCols} />
                     {expandedRows.has(i) && (
                       <Fragment>
                         <SubRowRefs row={row} editMode={editMode} onRefCommit={(colIdx, ref) => handleRefCommit(i, colIdx, ref)} hiddenCols={hiddenCols} visibleDimensionCount={visibleDimensionCount} />
@@ -3058,15 +3096,14 @@ export function DevisGridWorkspace({
                   <td colSpan={16 - hiddenDimensionCols.size} style={{ padding: '8px 16px', fontWeight: 700, fontSize: 12, borderTop: '2px solid var(--color-border)' }}>
                     💶 Total général estimé
                   </td>
-                  <td style={{ padding: '8px 8px', fontWeight: 700, fontSize: 12, textAlign: 'right', borderTop: '2px solid var(--color-border)', background: CELL.gray.background }}>
+                  <td style={{ padding: '8px 8px', fontWeight: 700, fontSize: 12, textAlign: 'right', borderTop: '2px solid var(--color-border)', background: CELL.gray.background, whiteSpace: 'nowrap', minWidth: 116 }}>
                     {totalPU.toLocaleString('fr-FR')} €
                   </td>
                   <td style={{ borderTop: '2px solid var(--color-border)' }}></td>
                   <td style={{ borderTop: '2px solid var(--color-border)' }}></td>
-                  <td style={{ padding: '8px 8px', fontWeight: 800, fontSize: 14, textAlign: 'right', borderTop: '2px solid var(--color-border)', background: CELL.blue.background }}>
+                  <td colSpan={2} style={{ padding: '8px 12px', fontWeight: 800, fontSize: 14, textAlign: 'right', borderTop: '2px solid var(--color-border)', background: CELL.blue.background, whiteSpace: 'nowrap', minWidth: 132 }}>
                     {totalHT.toLocaleString('fr-FR')} €
                   </td>
-                  <td style={{ borderTop: '2px solid var(--color-border)', background: CELL.blue.background }}></td>
                 </tr>
               </tfoot>
             </table>

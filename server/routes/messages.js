@@ -15,6 +15,55 @@ import { storeMemory, searchMemory, searchExperiences } from '../services/memory
 const router = Router()
 router.use(authenticate)
 
+const MAX_CONTEXT_CHARS = Number(process.env.OLLAMA_MAX_CONTEXT_CHARS || 80000)
+const MAX_MESSAGE_CHARS = Number(process.env.OLLAMA_MAX_MESSAGE_CHARS || 12000)
+const RECENT_MESSAGE_KEEP = Number(process.env.OLLAMA_RECENT_MESSAGE_KEEP || 24)
+const MAX_COMPLETION_TOKENS = Number(process.env.OLLAMA_MAX_COMPLETION_TOKENS || 1024)
+
+function textLength(content) {
+  if (typeof content === 'string') return content.length
+  if (Array.isArray(content)) return content.reduce((sum, part) => {
+    if (part?.type === 'text') return sum + String(part.text || '').length
+    if (part?.type === 'image_url') return sum + 1000
+    return sum + JSON.stringify(part || '').length
+  }, 0)
+  return JSON.stringify(content || '').length
+}
+
+function truncateText(text, maxChars) {
+  const raw = String(text || '')
+  if (raw.length <= maxChars) return raw
+  const head = raw.slice(0, Math.floor(maxChars * 0.35)).trimEnd()
+  const tail = raw.slice(raw.length - Math.floor(maxChars * 0.65)).trimStart()
+  return `${head}\n\n[...contenu tronque pour rester dans la fenetre de contexte...]\n\n${tail}`
+}
+
+function trimMessageContent(content) {
+  if (typeof content === 'string') return truncateText(content, MAX_MESSAGE_CHARS)
+  if (!Array.isArray(content)) return content
+  return content.map((part) => {
+    if (part?.type !== 'text') return part
+    return { ...part, text: truncateText(part.text, MAX_MESSAGE_CHARS) }
+  })
+}
+
+function estimateMessagesLength(messages) {
+  return messages.reduce((sum, msg) => sum + textLength(msg.content) + String(msg.role || '').length + 16, 0)
+}
+
+function fitMessagesForOllama(messages) {
+  const normalized = messages.map((msg) => ({ ...msg, content: trimMessageContent(msg.content) }))
+  const system = normalized.find((msg) => msg.role === 'system')
+  const conversation = normalized.filter((msg) => msg.role !== 'system')
+  let selected = conversation.slice(-RECENT_MESSAGE_KEEP)
+
+  while (selected.length > 2 && estimateMessagesLength([system, ...selected].filter(Boolean)) > MAX_CONTEXT_CHARS) {
+    selected = selected.slice(1)
+  }
+
+  return [system, ...selected].filter(Boolean)
+}
+
 async function fetchDiscussionTranscriptForOllama(discussionId) {
   const [messages] = await db.query(
     `SELECT m.id, m.role, m.content FROM messages m
@@ -50,7 +99,7 @@ async function fetchDiscussionTranscriptForOllama(discussionId) {
   const expHits = await searchExperiences({ text: lastUserMsg, topK: 3 }).catch(() => [])
   const expBlock = expHits.length
     ? `\n\n[Base de connaissances commerciale — expériences terrain pertinentes :]\n` +
-      expHits.map((h, i) => `${i + 1}. [${h.category || 'Général'}] ${h.title} — ${h.excerpt || ''}`).join('\n')
+    expHits.map((h, i) => `${i + 1}. [${h.category || 'Général'}] ${h.title} — ${h.excerpt || ''}`).join('\n')
     : ''
 
   const out = [{ role: 'system', content: systemPrompt() + memBlock + expBlock }]
@@ -81,7 +130,7 @@ async function fetchDiscussionTranscriptForOllama(discussionId) {
       out.push({ role: ollamaRole, content: text })
     }
   }
-  return out
+  return fitMessagesForOllama(out)
 }
 
 // GET /api/messages?discussion_id=X
@@ -173,6 +222,7 @@ router.post('/', async (req, res) => {
           model,
           messages: ollamaMessages,
           signal: controller.signal,
+          maxTokens: MAX_COMPLETION_TOKENS,
         })
         const [aiResult] = await db.query(
           'INSERT INTO messages (discussion_id, user_id, role, content, agent_slug) VALUES (?, NULL, ?, ?, ?)',
@@ -267,6 +317,7 @@ router.post('/stream', async (req, res) => {
         model,
         messages: ollamaMessages,
         signal: controller.signal,
+        maxTokens: MAX_COMPLETION_TOKENS,
         onChunk: (delta) => {
           res.write(`data: ${JSON.stringify({ type: 'chunk', delta })}\n\n`)
         },
@@ -274,7 +325,7 @@ router.post('/stream', async (req, res) => {
     } catch (e) {
       const msg = e.name === 'AbortError' ? 'Ollama request timed out' : (e.message || 'Ollama error')
       console.error('Ollama stream error:', msg)
-      try { res.write(`data: ${JSON.stringify({ type: 'error', error: msg })}\n\n`) } catch { }
+      try { res.write(`data: ${JSON.stringify({ type: 'error', error: msg })}\n\n`) } catch { /* client disconnected */ }
       return res.end()
     } finally {
       clearTimeout(timer)
@@ -297,8 +348,8 @@ router.post('/stream', async (req, res) => {
     res.write(`data: ${JSON.stringify({ type: 'done', assistant: assistantPayload })}\n\n`)
     res.end()
   } catch (err) {
-    try { res.write(`data: ${JSON.stringify({ type: 'error', error: err.message })}\n\n`) } catch { }
-    try { res.end() } catch { }
+    try { res.write(`data: ${JSON.stringify({ type: 'error', error: err.message })}\n\n`) } catch { /* client disconnected */ }
+    try { res.end() } catch { /* client disconnected */ }
   }
 })
 
