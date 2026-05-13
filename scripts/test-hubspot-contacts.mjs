@@ -8,21 +8,20 @@
  * This script only needs: crm.objects.contacts.read
  *
  * Setup:
- *   1. HubSpot: Settings → Integrations → Private Apps → Create (or Legacy private apps per HubSpot UI)
- *   2. Copy the access token, set in .env:
+ *   1. Use the existing HubSpot private app token configured in iachat-v2/.env:
  *        HUBSPOT_PRIVATE_APP_TOKEN=pat-na1-xxxx
- *   3. Run: npm run test:hubspot
+ *   2. Run: npm run test:hubspot
  *
  * Usage: cd iachat-v2 && npm run test:hubspot
  */
-import 'dotenv/config'
+import '../server/env.js'
 
 const BASE = 'https://api.hubapi.com'
 const PATH = '/crm/v3/objects/contacts'
 
 const token = process.env.HUBSPOT_PRIVATE_APP_TOKEN?.trim()
 if (!token) {
-  console.error('Missing HUBSPOT_PRIVATE_APP_TOKEN in environment (.env at project root or iachat-v2).')
+  console.error('Missing HUBSPOT_PRIVATE_APP_TOKEN in environment (iachat-v2/.env).')
   process.exit(1)
 }
 

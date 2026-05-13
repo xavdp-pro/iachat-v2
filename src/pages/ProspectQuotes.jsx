@@ -1,6 +1,6 @@
 /**
  * ProspectQuotes.jsx — Page de génération de devis NEXUS
- * Layout 3 colonnes : Fichiers | Devis | Chat Gemma
+ * Layout 3 colonnes : Fichiers | Devis | Chat Zerux IA
  */
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
@@ -331,7 +331,7 @@ function LeftPanel({
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ── COLONNE DROITE : Chat Gemma ───────────────────────────────────────────
+// ── COLONNE DROITE : Chat Zerux IA ─────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════════════════
 function RightPanel({
   row, aiRow, aiMessages, aiInput, setAiInput, aiLoading, askAI, aiEndRef, aiInputRef, conseils, onAnalyzeConseils, onApplyConseil,
@@ -372,7 +372,7 @@ function RightPanel({
       }}>
         <Bot size={16} color="var(--color-primary)" />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontWeight: 700, fontSize: '13px' }}>Assistant Gemma</div>
+          <div style={{ fontWeight: 700, fontSize: '13px' }}>Zerux IA</div>
           {row && (
             <div style={{ fontSize: '10px', color: 'var(--color-text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               Ligne {(aiRow ?? 0) + 1} — {row.gamme} {row.vantail} · {row.docs?.join(', ')}
@@ -534,7 +534,7 @@ function RightPanel({
             {aiLoading && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--color-text-3)', fontSize: '12px' }}>
                 <Loader2 size={14} style={{ animation: 'spin 0.8s linear infinite' }} />
-                Gemma réfléchit…
+                Zerux IA réfléchit…
               </div>
             )}
             <div ref={aiEndRef} />
@@ -795,7 +795,7 @@ export default function ProspectQuotes() {
     setTimeout(() => aiInputRef.current?.focus(), 100)
   }
 
-  // ── Envoyer question Gemma ─────────────────────────────────────────────
+  // ── Envoyer question Zerux IA ──────────────────────────────────────────
   const askAI = async (question = aiInput) => {
     const q = (question || aiInput).trim()
     if (!q || aiLoading) return

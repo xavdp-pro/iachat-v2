@@ -147,6 +147,26 @@ export async function ensureDbSchema() {
     `)
     console.log('✅ DB: devis table ready')
 
+    // ── devis.quote_number (business quote number, e.g. 605.0105) ───────
+    const [quoteNumberCols] = await db.query(
+      `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'devis' AND COLUMN_NAME = 'quote_number'`
+    )
+    if (!quoteNumberCols.length) {
+      await db.query('ALTER TABLE devis ADD COLUMN quote_number VARCHAR(20) DEFAULT NULL AFTER id')
+      await db.query('CREATE UNIQUE INDEX idx_devis_quote_number ON devis (quote_number)')
+      console.log('✅ DB: devis.quote_number column added')
+    }
+
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS quote_sequence (
+        id         TINYINT PRIMARY KEY,
+        next_value INT NOT NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `)
+    await db.query('INSERT IGNORE INTO quote_sequence (id, next_value) VALUES (1, 105)')
+    console.log('✅ DB: quote_sequence table ready')
+
     // ── devis.validation_json (idempotent patch) ──────────────────────────
     const [validationCols] = await db.query(
       `SELECT COLUMN_NAME FROM information_schema.COLUMNS
@@ -183,6 +203,7 @@ export async function ensureDbSchema() {
         largeur_mm        INT DEFAULT NULL,
         prix_base_ht      DECIMAL(12,2) DEFAULT NULL,
         ref_base          VARCHAR(50) DEFAULT NULL,
+        raw_json          JSON DEFAULT NULL,
         options_json      JSON DEFAULT NULL,
         serrure_ref       VARCHAR(255) DEFAULT NULL,
         serrure_prix      DECIMAL(12,2) DEFAULT NULL,
@@ -227,6 +248,16 @@ export async function ensureDbSchema() {
     if (!refBaseCols.length) {
       await db.query('ALTER TABLE devis_lines ADD COLUMN ref_base VARCHAR(50) DEFAULT NULL AFTER prix_base_ht')
       console.log('✅ DB: devis_lines.ref_base column added')
+    }
+
+    // ── devis_lines.raw_json (idempotent patch) ─────────────────────────
+    const [rawJsonCols] = await db.query(
+      `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'devis_lines' AND COLUMN_NAME = 'raw_json'`
+    )
+    if (!rawJsonCols.length) {
+      await db.query('ALTER TABLE devis_lines ADD COLUMN raw_json JSON DEFAULT NULL AFTER ref_base')
+      console.log('✅ DB: devis_lines.raw_json column added')
     }
 
     // ── devis_versions (tree-based quote versions) ───────────────────────
@@ -316,6 +347,26 @@ export async function ensureDbSchema() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `)
     console.log('✅ DB: devis_ai_messages table ready')
+
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS devis_grid_actions (
+        id           INT AUTO_INCREMENT PRIMARY KEY,
+        devis_id     INT NOT NULL,
+        version_id   INT DEFAULT NULL,
+        user_id      INT DEFAULT NULL,
+        origin       ENUM('manual','ai','system') NOT NULL DEFAULT 'manual',
+        label        VARCHAR(255) NOT NULL,
+        prompt       TEXT DEFAULT NULL,
+        changes_json JSON NOT NULL,
+        created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_dga_scope (devis_id, version_id, created_at),
+        INDEX idx_dga_user (user_id),
+        CONSTRAINT fk_dga_devis FOREIGN KEY (devis_id) REFERENCES devis(id) ON DELETE CASCADE,
+        CONSTRAINT fk_dga_version FOREIGN KEY (version_id) REFERENCES devis_versions(id) ON DELETE CASCADE,
+        CONSTRAINT fk_dga_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `)
+    console.log('✅ DB: devis_grid_actions table ready')
 
     const [devisAiImageCols] = await db.query(
       `SELECT COLUMN_NAME FROM information_schema.COLUMNS

@@ -186,7 +186,7 @@ function RuleEditor({ initial, onSave, onCancel, saving }) {
         <input value={form.rule_code} onChange={e => patch('rule_code', e.target.value)} placeholder="R001" style={inputStyle()} autoFocus />
         <input value={form.title} onChange={e => patch('title', e.target.value)} placeholder="Titre de règle" style={inputStyle()} />
       </div>
-      <textarea value={form.content} onChange={e => patch('content', e.target.value)} placeholder="Règle opérationnelle vérifiable par Gemma" rows={7} style={{ ...inputStyle(), resize: 'vertical', lineHeight: 1.5 }} />
+      <textarea value={form.content} onChange={e => patch('content', e.target.value)} placeholder="Règle opérationnelle vérifiable par Zerux IA" rows={7} style={{ ...inputStyle(), resize: 'vertical', lineHeight: 1.5 }} />
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 150px 150px', gap: 8 }}>
         <SelectField value={form.category} onChange={value => patch('category', value)} ariaLabel="Catégorie" options={CATEGORIES.map(category => ({ value: category, label: category }))} />
         <SelectField value={form.severity} onChange={value => patch('severity', value)} ariaLabel="Sévérité" options={[

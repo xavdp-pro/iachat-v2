@@ -57,6 +57,7 @@ export default function TransportTariffs() {
   const [saved, setSaved] = useState(false)
   const [matchForm, setMatchForm] = useState({ weight_kg: '', country: '', postal_code: '', canton: '', destination: '', leaf_count: '1' })
   const [matchResult, setMatchResult] = useState(null)
+  const [confirmDialog, setConfirmDialog] = useState(null)
 
   const activeCount = useMemo(() => tariffs.filter(row => row.active).length, [tariffs])
 
@@ -114,18 +115,24 @@ export default function TransportTariffs() {
   }
 
   const deleteTariff = async (row) => {
-    if (!window.confirm(`Supprimer le tarif ${row.label} ?`)) return
-    setSavingId(row.id)
-    setError('')
-    try {
-      await api.delete(`/transport-tariffs/${row.id}`)
-      setTariffs(prev => prev.filter(item => item.id !== row.id))
-      flashSaved()
-    } catch (err) {
-      setError(err.error || err.message || 'Suppression impossible')
-    } finally {
-      setSavingId(null)
-    }
+    setConfirmDialog({
+      title: 'Supprimer le tarif',
+      message: `Supprimer le tarif ${row.label} ?`,
+      confirmLabel: 'Supprimer',
+      onConfirm: async () => {
+        setSavingId(row.id)
+        setError('')
+        try {
+          await api.delete(`/transport-tariffs/${row.id}`)
+          setTariffs(prev => prev.filter(item => item.id !== row.id))
+          flashSaved()
+        } catch (err) {
+          setError(err.error || err.message || 'Suppression impossible')
+        } finally {
+          setSavingId(null)
+        }
+      },
+    })
   }
 
   const patchRow = (id, field, value) => {
@@ -267,6 +274,18 @@ export default function TransportTariffs() {
           </aside>
         </section>
       </main>
+      {confirmDialog && (
+        <div onClick={() => setConfirmDialog(null)} style={{ position: 'fixed', inset: 0, zIndex: 9500, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div onClick={event => event.stopPropagation()} style={{ width: 360, maxWidth: '92vw', borderRadius: 10, border: '1px solid var(--color-border)', background: 'var(--color-surface)', boxShadow: '0 14px 40px rgba(0,0,0,0.28)', padding: 16 }}>
+            <div style={{ fontSize: 14, fontWeight: 900, color: 'var(--color-text)', marginBottom: 8 }}>{confirmDialog.title}</div>
+            <div style={{ fontSize: 12, lineHeight: 1.5, color: 'var(--color-text-2)', marginBottom: 14 }}>{confirmDialog.message}</div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button type="button" onClick={() => setConfirmDialog(null)} style={{ padding: '7px 11px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-input-bg)', color: 'var(--color-text-2)', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}>Annuler</button>
+              <button type="button" onClick={async () => { const action = confirmDialog.onConfirm; setConfirmDialog(null); await action?.() }} style={{ padding: '7px 11px', borderRadius: 6, border: '1px solid transparent', background: '#dc2626', color: '#fff', fontSize: 12, fontWeight: 900, cursor: 'pointer' }}>{confirmDialog.confirmLabel || 'Confirmer'}</button>
+            </div>
+          </div>
+        </div>
+      )}
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   )

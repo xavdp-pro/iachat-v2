@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import {
   Plus, Pencil, Trash2, ShieldCheck, User, Loader2, Moon, Sun, MessageSquare, LogOut, Mic, Bot, RefreshCw, X,
   Headphones, Play, Square, Volume2, Menu, Undo2, CornerUpLeft, MessageCircleReply, BookOpen, CheckCircle2, XCircle, Clock,
+  Building2, Database, FileText, FileSpreadsheet, LayoutGrid, Shield, Truck,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useAuthStore } from '../store/useAuthStore.js'
@@ -14,7 +15,19 @@ const TAB_USERS = 'users'
 const TAB_STT = 'stt'
 const TAB_TTS = 'tts'
 const TAB_EXPERIENCES = 'experiences'
-const VALID_TABS = new Set([TAB_USERS, TAB_STT, TAB_TTS, TAB_EXPERIENCES])
+const TAB_MODULES = 'modules'
+const VALID_TABS = new Set([TAB_USERS, TAB_STT, TAB_TTS, TAB_EXPERIENCES, TAB_MODULES])
+
+const ADMIN_MODULE_LINKS = [
+  { label: 'Connaissance IA', description: 'Documentation et base consultable par Zerux IA.', to: '/knowledge', icon: Database },
+  { label: 'Expériences', description: 'Expériences terrain et validations commerciales.', to: '/experiences', icon: BookOpen },
+  { label: 'Devis NEXUS', description: 'Workflow complet de devis versionné.', to: '/devis', icon: FileSpreadsheet },
+  { label: 'Grid devis', description: 'Chiffrage rapide en grille.', to: '/devis/grid', icon: LayoutGrid },
+  { label: 'Devis classique', description: 'Ancienne interface de génération devis.', to: '/devis/legacy', icon: FileText },
+  { label: 'Tarifs transport', description: 'Gestion et vérification des frais de port.', to: '/devis/transport', icon: Truck },
+  { label: 'Prospects', description: 'Recherche client et affaires HubSpot.', to: '/prospects', icon: Building2 },
+  { label: 'Règles', description: 'Règles opérationnelles R001, R002, etc.', to: '/rules', icon: Shield },
+]
 
 export default function Admin() {
   const { t } = useTranslation()
@@ -346,7 +359,45 @@ export default function Admin() {
               </span>
             )}
           </button>
+          <button
+            type="button"
+            role="tab"
+            id="admin-tab-modules"
+            aria-selected={activeTab === TAB_MODULES}
+            aria-controls="admin-panel-modules"
+            className={`admin-tab ${activeTab === TAB_MODULES ? 'admin-tab--active' : ''}`}
+            onClick={() => setActiveTab(TAB_MODULES)}
+          >
+            <LayoutGrid size={17} strokeWidth={2} aria-hidden />
+            Modules
+          </button>
         </div>
+
+        {activeTab === TAB_MODULES && (
+          <section id="admin-panel-modules" role="tabpanel" aria-labelledby="admin-tab-modules" className="admin-ollama-panel">
+            <div className="admin-ollama-head">
+              <div className="admin-ollama-icon"><LayoutGrid size={22} strokeWidth={2} /></div>
+              <div>
+                <h2>Modules internes</h2>
+                <p className="admin-ollama-desc">Les accès techniques qui étaient dans la barre latérale sont regroupés ici en onglets d'administration.</p>
+              </div>
+            </div>
+            <div className="admin-module-grid">
+              {ADMIN_MODULE_LINKS.map((item) => {
+                const Icon = item.icon
+                return (
+                  <button key={item.to} type="button" className="admin-module-card" onClick={() => navigate(item.to)}>
+                    <Icon size={18} />
+                    <span>
+                      <strong>{item.label}</strong>
+                      <small>{item.description}</small>
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          </section>
+        )}
 
         {activeTab === TAB_STT && (
         <section

@@ -6,6 +6,7 @@ import { useThemeStore } from './store/useThemeStore.js'
 
 // Lazy loading the pages to reduce initial bundle size
 const Login = lazy(() => import('./pages/Login.jsx'))
+const Home = lazy(() => import('./pages/Home.jsx'))
 const Admin = lazy(() => import('./pages/Admin.jsx'))
 const Chat = lazy(() => import('./pages/Chat.jsx'))
 const Experiences = lazy(() => import('./pages/Experiences.jsx'))
@@ -13,6 +14,7 @@ const Devis = lazy(() => import('./pages/Devis.jsx'))
 const Prospects = lazy(() => import('./pages/Prospects.jsx'))
 const ProspectQuotes = lazy(() => import('./pages/ProspectQuotes.jsx'))
 const DevisStepper = lazy(() => import('./pages/DevisStepper.jsx'))
+const DevisSearch = lazy(() => import('./pages/DevisSearch.jsx'))
 const Knowledge = lazy(() => import('./pages/Knowledge.jsx'))
 const Rules = lazy(() => import('./pages/Rules.jsx'))
 const DevisGrid = lazy(() => import('./pages/DevisGrid.jsx'))
@@ -24,7 +26,7 @@ function PrivateRoute({ children, adminOnly = false }) {
   const { user, loading } = useAuthStore()
   if (loading) return null
   if (!user) return <Navigate to="/login" replace />
-  if (adminOnly && user.role !== 'admin') return <Navigate to="/chat" replace />
+  if (adminOnly && user.role !== 'admin') return <Navigate to="/home" replace />
   return children
 }
 
@@ -57,6 +59,11 @@ export default function App() {
                 <Admin />
               </PrivateRoute>
             } />
+            <Route path="/home" element={
+              <PrivateRoute>
+                <Home />
+              </PrivateRoute>
+            } />
             <Route path="/chat" element={
               <PrivateRoute>
                 <Chat />
@@ -80,6 +87,11 @@ export default function App() {
             <Route path="/devis" element={
               <PrivateRoute>
                 <DevisStepper />
+              </PrivateRoute>
+            } />
+            <Route path="/devis/search" element={
+              <PrivateRoute>
+                <DevisSearch />
               </PrivateRoute>
             } />
             <Route path="/devis/legacy" element={
@@ -112,8 +124,8 @@ export default function App() {
                 <ProspectQuotes />
               </PrivateRoute>
             } />
-            <Route path="/" element={<Navigate to="/chat" replace />} />
-            <Route path="*" element={<Navigate to="/chat" replace />} />
+            <Route path="/" element={<Navigate to="/home" replace />} />
+            <Route path="*" element={<Navigate to="/home" replace />} />
           </Routes>
         </Suspense>
       </BrowserRouter>

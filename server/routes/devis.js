@@ -12,7 +12,7 @@
  */
 import { Router } from 'express'
 import { authenticate } from '../middleware/auth.js'
-import { chatCompletion } from '../services/ollama.js'
+import { chatCompletion, fitChatMessages, maxCompletionTokens } from '../services/ollama.js'
 import { getGlobalOllamaModel } from '../services/appSettings.js'
 import { parseDocument } from '../services/document-parser.js'
 import { analyzeDocument } from '../services/document-analyzer.js'
@@ -22,18 +22,17 @@ import multer from 'multer'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { mkdtemp, readFile, rm, unlink, writeFile } from 'fs/promises'
-import { join, basename, dirname } from 'path'
-import { fileURLToPath } from 'url'
+import { join, basename } from 'path'
 import { existsSync } from 'fs'
 import os from 'os'
 import crypto from 'crypto'
 
 const execFileAsync = promisify(execFile)
-const __dirname = dirname(fileURLToPath(import.meta.url))
 
 // Répertoire des markdowns NEXUS
 const XLSX_DIR = '/apps/zeruxcom-v1/app/ressources/XLSX'
 const SCRIPT = join(XLSX_DIR, 'detect_nexus.py')
+const QUOTE_SEQUENCE_ID = 1
 
 const router = Router()
 router.use(authenticate)
@@ -41,9 +40,66 @@ router.use(authenticate)
 const VALID_LINE_SECTIONS = new Set(['products', 'calculations', 'transport'])
 const normalizeLineSection = (value) => VALID_LINE_SECTIONS.has(value) ? value : 'products'
 const RD_VALIDATION_CATEGORY = 'Validations individuelles R&D'
-const GEMMA_ATTACHMENT_MIMES = new Set(['application/pdf', 'image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif', 'image/tiff'])
+const AI_ATTACHMENT_MIMES = new Set(['application/pdf', 'image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif', 'image/tiff'])
 
-function normalizeGemmaAttachments(input = [], limit = 6) {
+function safePdfFilePart(value) {
+  return String(value || '')
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function buildDevisPdfFilename(devis, versionNumber = null) {
+  const baseNumber = devis?.quote_number || devis?.name || (devis?.id ? `D${devis.id}` : null)
+  const numberedName = [baseNumber, versionNumber].filter(Boolean).join('.')
+  const parts = [numberedName, devis?.client_name || 'Client'].map(safePdfFilePart).filter(Boolean)
+  return `${parts.length ? parts.join(' - ') : 'devis'}.pdf`
+}
+
+function buildDevisDisplayName(devis, versionNumber = null) {
+  const baseNumber = devis?.quote_number || devis?.name || (devis?.id ? `D${devis.id}` : null)
+  const numberedName = [baseNumber, versionNumber].filter(Boolean).join('.')
+  const parts = [numberedName, devis?.client_name || 'Client'].map(safePdfFilePart).filter(Boolean)
+  return parts.length ? parts.join(' - ') : 'devis'
+}
+
+function attachmentDisposition(filename) {
+  const safeName = filename || 'devis.pdf'
+  const asciiName = String(safeName).replace(/[^\x20-\x7E]/g, '_').replace(/"/g, "'")
+  return `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(safeName)}`
+}
+
+async function resolveDevisVersionNumber(devisId, requestedVersionId) {
+  const versionId = Number(requestedVersionId || 0)
+  if (!Number.isInteger(versionId) || versionId < 1) return null
+  const [versions] = await db.query(
+    'SELECT id, parent_version_id, version_label FROM devis_versions WHERE devis_id = ? ORDER BY id ASC',
+    [devisId]
+  )
+  const target = versions.find(version => Number(version.id) === versionId)
+  if (!target) return null
+  const childrenByParent = new Map()
+  for (const version of versions) {
+    const key = Number(version.parent_version_id || 0)
+    const list = childrenByParent.get(key) || []
+    list.push(version)
+    childrenByParent.set(key, list)
+  }
+  for (const list of childrenByParent.values()) list.sort((a, b) => Number(a.id) - Number(b.id))
+  const numbers = new Map()
+  const walk = (parentId, prefix) => {
+    for (const [index, version] of (childrenByParent.get(parentId) || []).entries()) {
+      const number = prefix ? `${prefix}.${index + 1}` : String(index + 1)
+      numbers.set(Number(version.id), number)
+      walk(Number(version.id), number)
+    }
+  }
+  walk(0, '')
+  return numbers.get(versionId) || String(target.version_label || '').replace(/^v/i, '') || null
+}
+
+function normalizeAiAttachments(input = [], limit = 6) {
   if (!Array.isArray(input)) return []
   return input
     .map((item) => {
@@ -51,7 +107,7 @@ function normalizeGemmaAttachments(input = [], limit = 6) {
       const match = dataUrl.match(/^data:([^;,]+);base64,(.+)$/i)
       if (!match) return null
       const type = String(item?.type || match[1] || '').toLowerCase()
-      if (!GEMMA_ATTACHMENT_MIMES.has(type)) return null
+      if (!AI_ATTACHMENT_MIMES.has(type)) return null
       return {
         name: String(item?.name || (type === 'application/pdf' ? 'document.pdf' : 'image')).slice(0, 140),
         type,
@@ -62,7 +118,7 @@ function normalizeGemmaAttachments(input = [], limit = 6) {
     .slice(0, limit)
 }
 
-async function analyzeGemmaDocuments(attachments, model) {
+async function analyzeAiDocuments(attachments, model) {
   const docs = attachments.filter(item => item.type === 'application/pdf')
   if (!docs.length) return ''
   const parts = []
@@ -119,6 +175,26 @@ function isBlockingUnpricedLine(line = {}) {
   return /hors catalogue|nous consulter|impossible|pas de prix de base|non chiffrable/i.test(text)
 }
 
+function quoteNumberPrefix(date = new Date()) {
+  const yearDigit = String(date.getFullYear()).slice(-1)
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  return `${yearDigit}${month}`
+}
+
+function formatQuoteNumber(sequenceValue, date = new Date()) {
+  const seq = String(Number(sequenceValue) || 0).padStart(4, '0')
+  return `${quoteNumberPrefix(date)}.${seq}`
+}
+
+async function nextQuoteNumber(connection) {
+  await connection.query('INSERT IGNORE INTO quote_sequence (id, next_value) VALUES (?, ?)', [QUOTE_SEQUENCE_ID, 105])
+  const [[row]] = await connection.query('SELECT next_value FROM quote_sequence WHERE id = ? FOR UPDATE', [QUOTE_SEQUENCE_ID])
+  const nextValue = Number(row?.next_value || 105)
+  const quoteNumber = formatQuoteNumber(nextValue)
+  await connection.query('UPDATE quote_sequence SET next_value = ? WHERE id = ?', [nextValue + 1, QUOTE_SEQUENCE_ID])
+  return quoteNumber
+}
+
 function parseMaybeJson(value, fallback = []) {
   if (Array.isArray(value)) return value
   if (value && typeof value === 'object') return value
@@ -127,7 +203,6 @@ function parseMaybeJson(value, fallback = []) {
 }
 
 const VANTAIL_LABELS = { '1V': 'UN VANTAIL', '2V': 'DEUX VANTAUX', 'SFX': 'SEMI-FIXE', '1VSFX': 'UN VANTAIL + SEMI-FIXE', '2VSFX': 'DEUX VANTAUX + SEMI-FIXE' }
-const TYPE_LABELS = { BP: 'BLOC-PORTE', CH: 'CHASSIS FIXE', GI: 'GUICHET', PT: 'PORTE' }
 const VANTAIL_CODE_RE = /\b(1V|2V|SFX|1VSFX|2VSFX)\b/gi
 
 function cleanCodedText(str) {
@@ -147,7 +222,6 @@ function designationSearchText(line = {}) {
   const options = parseMaybeJson(line.options ?? line.options_json, [])
   const equipments = parseMaybeJson(line.equip_extra ?? line.equipements_json, [])
   const alerts = parseMaybeJson(line.alertes ?? line.alertes_json, [])
-  const docs = parseMaybeJson(line.docs ?? line.docs_json, [])
   const vantailLabel = line.vantail ? (VANTAIL_LABELS[String(line.vantail).toUpperCase()] || line.vantail) : null
   const gammeClean = cleanCodedText(line.gamme)
   const typeClean = cleanCodedText(line.type)
@@ -178,6 +252,37 @@ function designationSearchText(line = {}) {
     // docs intentionally excluded: they are internal .md knowledge base refs, not commercial info
   ]
   return parts.filter(Boolean).join(' | ').replace(/\s+/g, ' ').trim()
+}
+
+function isCasualAssistantMessage(text) {
+  const normalized = String(text || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[?!.,;:]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!normalized) return false
+  if (normalized.length > 240) return false
+  const stopBusinessIntent = /\b(ne parle pas du devis|arrete le devis|conversation normale)\b/.test(normalized)
+  const hasBusinessIntent = /\b(tableau|devis|ligne|gamme|classement|total ht|prix|chiffr|option|alerte|dimension|hauteur|largeur|porte|chassis|cr[2-6]|rc[2-6]|ei\s?\d+|fb[4-7]|calcul|modifier|modifie|verifier|verifie|controle|audit)\b/.test(normalized)
+  if (hasBusinessIntent && !stopBusinessIntent) return false
+  return /^(salut|bonjour|bonsoir|hello|hey|coucou)\b/.test(normalized) ||
+    /\b(tu es la|t es la|tes la|t la|tu est la|vous etes la|ca va|comment ca va|tu vas bien|merci)\b/.test(normalized) ||
+    /\b(mon nom est|mon prenom est|je m appelle|je mappelle|appelle moi|moi c est|c est xavier|je suis xavier)\b/.test(normalized) ||
+    /\bmon\s+n(?:om|on|o)?\s+\w{0,8}\s*xavier\b/.test(normalized) ||
+    (/\bxavier\b/.test(normalized) && /\b(mon|nom|prenom|appelle|suis|memoire|souviens)\b/.test(normalized)) ||
+    /\b(comment je m appelle|quel est mon nom|tu connais mon nom|tu te souviens de mon nom|test de memoire|memoire)\b/.test(normalized) ||
+    /\b(discute avec moi|parle avec moi|conversation normale|on discute|ne parle pas du devis|arrete le devis)\b/.test(normalized) ||
+    (normalized.length <= 180 && !hasBusinessIntent)
+}
+
+function isBusinessDevisHistory(content) {
+  const text = String(content || '').toLowerCase()
+  if (text.length > 700) return true
+  return /\b(devis|ligne|gamme|classement|total ht|options|alertes|hauteur ht|largeur ht|cr3|cr4|cr5|cr6|chassis|tableau)\b/i.test(text) ||
+    /^\s*\|.+\|/m.test(text)
 }
 
 function cleanDesignationFact(value) {
@@ -262,7 +367,7 @@ router.post('/analyze', (req, res, next) => {
   try {
     await execFileAsync('python3', [SCRIPT, inPath, outPath], {
       cwd: XLSX_DIR,
-      timeout: 60_000,
+      timeout: 60000,
       env: await detectEnv(),
     })
     const raw = await readFile(outPath, 'utf-8')
@@ -370,7 +475,7 @@ router.post('/lookup-ref', async (req, res) => {
 router.post('/parse-line', async (req, res) => {
   const text = req.body?.text?.trim()
   if (!text) return res.status(400).json({ error: 'text requis' })
-  const model = process.env.OLLAMA_MODEL || 'google/gemma-4-E2B-it'
+  const model = await getGlobalOllamaModel()
   const systemPrompt = `Tu es un assistant spécialisé dans les portes coupe-feu/anti-effraction NEXUS.
 Tu dois extraire depuis une description libre les champs d'une ligne de devis et retourner UNIQUEMENT un objet JSON valide, sans texte autour.
 
@@ -415,7 +520,7 @@ Règles:
         { role: 'user', content: text },
       ],
       temperature: 0.1,
-      maxTokens: 512,
+      maxTokens: Math.min(512, maxCompletionTokens()),
       signal: ctrl.signal,
     }).finally(() => clearTimeout(timer))
 
@@ -577,7 +682,7 @@ Contraintes absolues :
       // Remove lines with Python "None" artifacts (null data from XLSX)
       .filter(l => !/\bNone\b/.test(l))
       // Remove alert/emoji items from KB alerts bleeding into equipment list
-      .filter(l => !/^-?\s*[ℹ❌⚠️🔴🟡🟢]/u.test(l.trim()))
+      .filter(l => !/^-?\s*(?:ℹ|❌|⚠️?|🔴|🟡|🟢)/u.test(l.trim()))
       // Remove template placeholder lines Gemma outputs verbatim from system prompt
       .filter(l => !/\bXdb\s+sur\s+attestation\b/i.test(l))
       .filter(l => !/\(si applicable\)/i.test(l))
@@ -636,7 +741,7 @@ router.post('/ai-messages', async (req, res) => {
   if (!devis_id) return res.status(400).json({ error: 'devis_id requis' })
   if (!['user', 'assistant'].includes(role)) return res.status(400).json({ error: 'role invalide' })
   if (!content?.trim()) return res.status(400).json({ error: 'content requis' })
-  const safeImages = normalizeGemmaAttachments(images, 6)
+  const safeImages = normalizeAiAttachments(images, 6)
   try {
     const [result] = await db.query(
       `INSERT INTO devis_ai_messages (devis_id, version_id, user_id, role, content, images_json, agent_slug, shared)
@@ -697,6 +802,106 @@ router.put('/ai-messages/:id', async (req, res) => {
   }
 })
 
+function parseActionChanges(value) {
+  if (Array.isArray(value)) return value
+  if (value && typeof value === 'object') return value
+  if (!value) return []
+  try { return JSON.parse(value) || [] } catch { return [] }
+}
+
+// ── Persisted reversible grid actions ──────────────────────────────────────
+router.get('/:id/grid-actions', async (req, res) => {
+  const devisId = Number(req.params.id)
+  const versionId = req.query.version_id || null
+  if (!Number.isInteger(devisId) || devisId < 1) return res.status(400).json({ error: 'ID devis invalide' })
+  try {
+    const [rows] = await db.query(
+      `SELECT id, devis_id, version_id, user_id, origin, label, prompt, changes_json, created_at
+         FROM devis_grid_actions
+        WHERE devis_id = ? AND (version_id <=> ?)
+        ORDER BY created_at ASC, id ASC`,
+      [devisId, versionId || null]
+    )
+    res.json(rows.map(row => ({
+      id: `db-grid-action-${row.id}`,
+      db_id: row.id,
+      devis_id: row.devis_id,
+      version_id: row.version_id,
+      user_id: row.user_id,
+      origin: row.origin,
+      label: row.label,
+      prompt: row.prompt,
+      changes: parseActionChanges(row.changes_json),
+      createdAt: row.created_at,
+    })))
+  } catch (err) {
+    console.error('grid-actions list error:', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.post('/:id/grid-actions', async (req, res) => {
+  const devisId = Number(req.params.id)
+  const versionId = req.body?.version_id || null
+  const origin = ['manual', 'ai', 'system'].includes(req.body?.origin) ? req.body.origin : 'manual'
+  const label = String(req.body?.label || 'Action grille').trim().slice(0, 255)
+  const prompt = req.body?.prompt ? String(req.body.prompt).slice(0, 5000) : null
+  const changes = Array.isArray(req.body?.changes) ? req.body.changes : []
+  if (!Number.isInteger(devisId) || devisId < 1) return res.status(400).json({ error: 'ID devis invalide' })
+  if (!changes.length) return res.status(400).json({ error: 'changes requis' })
+  try {
+    const [result] = await db.query(
+      `INSERT INTO devis_grid_actions (devis_id, version_id, user_id, origin, label, prompt, changes_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [devisId, versionId || null, req.user?.id || null, origin, label, prompt, JSON.stringify(changes)]
+    )
+    const [rows] = await db.query(
+      `SELECT id, devis_id, version_id, user_id, origin, label, prompt, changes_json, created_at
+         FROM devis_grid_actions
+        WHERE id = ?`,
+      [result.insertId]
+    )
+    const row = rows[0]
+    res.status(201).json({
+      id: `db-grid-action-${row.id}`,
+      db_id: row.id,
+      devis_id: row.devis_id,
+      version_id: row.version_id,
+      user_id: row.user_id,
+      origin: row.origin,
+      label: row.label,
+      prompt: row.prompt,
+      changes: parseActionChanges(row.changes_json),
+      createdAt: row.created_at,
+    })
+  } catch (err) {
+    console.error('grid-actions create error:', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.delete('/:id/grid-actions', async (req, res) => {
+  const devisId = Number(req.params.id)
+  const versionId = req.body?.version_id ?? req.query.version_id ?? null
+  const afterIdRaw = req.body?.after_id ?? req.query.after_id ?? null
+  const afterId = afterIdRaw == null || afterIdRaw === '' ? null : Number(afterIdRaw)
+  if (!Number.isInteger(devisId) || devisId < 1) return res.status(400).json({ error: 'ID devis invalide' })
+  if (afterIdRaw != null && (!Number.isInteger(afterId) || afterId < 1)) return res.status(400).json({ error: 'after_id invalide' })
+  try {
+    const params = [devisId, versionId || null]
+    let where = 'devis_id = ? AND (version_id <=> ?)'
+    if (afterId != null) {
+      where += ' AND id > ?'
+      params.push(afterId)
+    }
+    const [result] = await db.query(`DELETE FROM devis_grid_actions WHERE ${where}`, params)
+    res.json({ ok: true, deleted: result.affectedRows || 0 })
+  } catch (err) {
+    console.error('grid-actions clear error:', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
 // ── POST /api/devis/ask ─────────────────────────────────────────────────────
 // body: { rows: [...], question: string, mdFiles: [string], scope: 'line'|'all' }
 router.post('/ask', async (req, res) => {
@@ -708,17 +913,29 @@ router.post('/ask', async (req, res) => {
       .slice(-10)
       .map(item => ({ role: item.role, content: String(item.content || '').trim().slice(0, 1200) }))
     : []
-  const attachments = normalizeGemmaAttachments(images, 6)
+  const attachments = normalizeAiAttachments(images, 6)
   const pastedImages = attachments.filter(item => item.type.startsWith('image/')).map(item => item.dataUrl)
   if (!safeQuestion && !attachments.length) return res.status(400).json({ error: 'Question requise' })
+  const casualMessage = isCasualAssistantMessage(safeQuestion) && !attachments.length
+  const askLogBase = {
+    question: safeQuestion.slice(0, 140),
+    casualMessage,
+    rowsCount: Array.isArray(rows) ? rows.length : 0,
+    historyCount: incomingHistory.length,
+    mdFilesCount: Array.isArray(mdFiles) ? mdFiles.length : 0,
+    imagesCount: attachments.length,
+    scope,
+    devis_id,
+    version_id,
+  }
+  console.log('[devis/ask] received', askLogBase)
 
   // ── Enrichissement automatique des markdowns selon les caractéristiques de la ligne ──
   // Objectif : garantir que Gemma a toujours accès aux bons référentiels croisés,
   // même si detect_nexus.py ne les a pas listés explicitement.
   const ALWAYS_LOAD = ['GUIDE-DEVIS.md', 'BASE.md', 'EQUIP-COMMUN.md', 'SERRURES-GARNITURES.md', 'TABLEAUX-ADDITIONNELS.md']
   // En mode "all", on prend toutes les lignes pour extraire les gammes/options ; sinon row[0]
-  const contextRows = (scope === 'all' || rows.length > 1) ? rows : (rows[0] ? [rows[0]] : [])
-  const row = contextRows[0] || {}
+  const contextRows = casualMessage ? [] : ((scope === 'all' || rows.length > 1) ? rows : (rows[0] ? [rows[0]] : []))
 
   const crossRefs = new Set()
   for (const r of contextRows) {
@@ -755,7 +972,7 @@ router.post('/ask', async (req, res) => {
   }
 
   // Consolider : docs détectés + cross-refs + fichiers transverses systématiques
-  const requestedDocs = Array.isArray(mdFiles) ? mdFiles : []
+  const requestedDocs = casualMessage ? [] : (Array.isArray(mdFiles) ? mdFiles : [])
   const rowDocs = contextRows.flatMap(r => Array.isArray(r.docs) ? r.docs : [])
   const shouldLoadKnowledgeDocs = requestedDocs.length > 0 || contextRows.length > 0
   const allDocs = shouldLoadKnowledgeDocs ? [...new Set([
@@ -786,21 +1003,23 @@ router.post('/ask', async (req, res) => {
   // Les règles métier approuvées s'appliquent à CHAQUE analyse — ne pas les filtrer par similarité.
   let mandatoryRulesBlock = ''
   try {
-    const [rulesRows] = await db.query(
-      `SELECT id, title, content, category FROM experiences WHERE status = 'approved' AND category IN ('Règle métier', 'Chiffrage', 'Validations individuelles R&D') ORDER BY id ASC`
-    )
-    if (rulesRows.length) {
-      mandatoryRulesBlock =
-        `\n\n[RÈGLES MÉTIER ET CHIFFRAGE APPROUVÉES — À APPLIQUER SYSTÉMATIQUEMENT SUR CHAQUE LIGNE :]\n` +
-        `Ces règles s'appliquent à TOUTES les analyses, sans exception. Vérifie chacune d'elles pour chaque porte.\n` +
-        rulesRows.map((r, i) => `${i + 1}. [${r.category}] ${r.title}\n${r.content}`).join('\n\n')
+    if (!casualMessage) {
+      const [rulesRows] = await db.query(
+        `SELECT id, title, content, category FROM experiences WHERE status = 'approved' AND category IN ('Règle métier', 'Chiffrage', 'Validations individuelles R&D') ORDER BY id ASC`
+      )
+      if (rulesRows.length) {
+        mandatoryRulesBlock =
+          `\n\n[RÈGLES MÉTIER ET CHIFFRAGE APPROUVÉES — À APPLIQUER SYSTÉMATIQUEMENT SUR CHAQUE LIGNE :]\n` +
+          `Ces règles s'appliquent à TOUTES les analyses, sans exception. Vérifie chacune d'elles pour chaque porte.\n` +
+          rulesRows.map((r, i) => `${i + 1}. [${r.category}] ${r.title}\n${r.content}`).join('\n\n')
+      }
     }
   } catch { /* non-bloquant */ }
 
   // ── Expériences terrain : recherche sémantique (contexte-dépendant) ──
   const expKeywords = /expérience|commercial|précédent|collègue|équipe|terrain|cas vécu|autre(s)? commercial|ont traité|ont fait/i
   const expTopK = expKeywords.test(safeQuestion) ? 8 : 5
-  const expHitsRaw = await searchExperiences({ text: safeQuestion, topK: expTopK }).catch(() => [])
+  const expHitsRaw = casualMessage ? [] : await searchExperiences({ text: safeQuestion, topK: expTopK }).catch(() => [])
   // Exclure les règles métier déjà injectées ci-dessus (éviter doublons)
   const expHits = expHitsRaw.filter(h => !['Règle métier', 'Chiffrage', 'Validations individuelles R&D'].includes(h.category))
   const expBlock = expHits.length
@@ -813,7 +1032,7 @@ router.post('/ask', async (req, res) => {
     ...contextRows.slice(0, 40).map((r, i) => `Ligne ${i + 1}: ${r.gamme || ''} ${r.vantail || ''} ${r.type || r.designation || ''} ${r.dimensions || ''} options ${(r.options || []).join?.(', ') || ''} alertes ${(r.alertes || []).join?.(' | ') || ''}`),
   ].filter(Boolean).join('\n')
   const ruleTopK = /v[ée]rif|conforme|conformit|r[èe]gle|audit|contr[oô]le|conseil|attention|risque/i.test(safeQuestion) ? 12 : 7
-  const ruleHits = await searchDevisRules({ text: semanticRuleText || safeQuestion, topK: ruleTopK, minScore: 0.28 }).catch(() => [])
+  const ruleHits = casualMessage ? [] : await searchDevisRules({ text: semanticRuleText || safeQuestion, topK: ruleTopK, minScore: 0.28 }).catch(() => [])
   const rulesBlock = ruleHits.length
     ? `\n\n[RÈGLES DEVIS QDRANT PERTINENTES — À UTILISER POUR VÉRIFIER/CONSEILLER :]\n` +
     ruleHits.map((r, i) => `${i + 1}. ${r.rule_code || `R${r.rule_id}`} [${r.severity || 'warning'}] ${r.title}\n${r.excerpt}${r.source_ref ? `\nSource: ${r.source_type || 'source'} ${r.source_ref}` : ''}`).join('\n\n')
@@ -837,20 +1056,38 @@ router.post('/ask', async (req, res) => {
   }
   const historySeen = new Set()
   const shortHistory = [...storedHistory, ...incomingHistory]
+    .filter(item => !casualMessage || !isBusinessDevisHistory(item.content))
     .filter(item => {
       const key = `${item.role}:${item.content}`
       if (historySeen.has(key)) return false
       historySeen.add(key)
       return true
     })
-    .slice(-12)
+    .slice(casualMessage ? -6 : -12)
+  console.log('[devis/ask] mode', {
+    casualMessage,
+    contextRowsCount: contextRows.length,
+    loadedDocsCount: loadedDocs.length,
+    shortHistoryCount: shortHistory.length,
+    filteredHistoryCount: storedHistory.length + incomingHistory.length - shortHistory.length,
+  })
   const historyBlock = shortHistory.length
     ? `\n\n[MÉMOIRE COURTE DE LA CONVERSATION — contexte récent à conserver :]\n` +
-    shortHistory.map((m, i) => `${i + 1}. ${m.role === 'user' ? 'Utilisateur' : 'Gemma'}: ${m.content}`).join('\n')
+    shortHistory.map((m, i) => `${i + 1}. ${m.role === 'user' ? 'Utilisateur' : 'Zerux IA'}: ${String(m.content || '').slice(0, casualMessage ? 400 : 1200)}`).join('\n')
     : ''
 
-  const systemMsg = `Tu es un expert NEXUS en menuiserie sécurisée (portes blindées RC3-RC6, coupe-feu EI60/EI120, pare-balles FB4-FB7).
+  const casualSystemMsg = `Tu es Zerux IA, un assistant conversationnel naturel, direct et chaleureux.
+Réponds au dernier message de l'utilisateur comme dans une discussion normale.
+Si l'utilisateur donne son nom ou son prénom, mémorise-le dans la conversation et confirme simplement.
+Si l'utilisateur demande si tu te souviens de son nom, utilise uniquement la mémoire courte fournie.
+Ignore totalement les devis, tableaux, lignes, options ou anciens contenus techniques qui pourraient être dans un historique pollué.
+Ne parle pas de devis sauf si l'utilisateur le demande explicitement dans son dernier message.
+Réponds en français, brièvement, en Markdown si cela aide.`
+
+  const businessSystemMsg = `Tu es un expert NEXUS en menuiserie sécurisée (portes blindées RC3-RC6, coupe-feu EI60/EI120, pare-balles FB4-FB7).
 Tu es avant tout un assistant conversationnel et naturel. Si l'utilisateur te salue, te demande comment tu vas ou te dit "tu es là ?", réponds naturellement, brièvement et poliment, sans générer d'analyse de devis si cela n'est pas explicitement demandé ou pertinent.
+Si l'utilisateur donne son prénom, son nom ou teste ta mémoire, réponds comme dans une conversation normale et utilise uniquement la mémoire courte de conversation. Ne reparle pas du devis dans ce cas.
+Si le message est une conversation naturelle, ignore totalement les devis, tableaux, lignes et options qui pourraient apparaître dans l'historique ancien.
 Quand il s'agit d'analyser des demandes clients ou de générer des devis (en t'appuyant sur le tarif NEXUS 2026-01), tu deviens précis et tu vérifies la cohérence des gammes, dimensions, options et équipements. Tu signales les alertes importantes.
 
 MODE AGENT DE TABLEAU :
@@ -860,6 +1097,13 @@ MODE AGENT DE TABLEAU :
 - Pour une demande d'action, confirme l'action attendue ou appliquée en 1 à 3 phrases. Ne rédige pas de long préambule.
 - Pour un audit ou une vérification de conformité, utilise les règles Qdrant pertinentes et les expériences terrain. Donne d'abord le verdict par ligne, puis les corrections/conseils.
 - Pour les images/PDF/fichiers, commence par ce que tu vois ou lis dans la pièce jointe, puis relie-le au devis. Ne réponds pas uniquement avec les règles générales si une pièce jointe est présente.
+
+FORMAT DE RÉPONSE :
+- Réponds en Markdown GitHub clair : titres courts, listes, tableaux Markdown si plusieurs lignes ou montants doivent être comparés.
+- N'enferme pas une réponse complète dans un bloc de code.
+- Utilise les blocs de code uniquement pour du JSON, CSV ou une donnée brute explicitement demandée.
+- Pour un devis complet, préfère un tableau Markdown avec les colonnes Ligne, Gamme, Dimensions, Total HT, Options, Alertes.
+- Garde les montants et unités lisibles, sans paragraphes compacts.
 
 CONVENTION DE LECTURE DES TABLEAUX DE PRIX (IMPORTANT) :
 Les tableaux de prix fonctionnent par fourchettes de dimensions (hauteur HT en lignes, largeur HT en colonnes).
@@ -910,16 +1154,20 @@ CONVENTION DE LECTURE DES TABLEAUX DE PRIX (CRITIQUE) :
 Si deux markdowns se contredisent, privilégie le markdown de la gamme principale. Signale la contradiction.
 Les fichiers transverses (GUIDE-DEVIS, BASE, EQUIP-COMMUN) sont TOUJOURS chargés pour toi — consulte-les systématiquement.
 ${context ? `\n\nBase documentaire NEXUS 2026 mise à disposition (${loadedDocs.length} fichiers : ${loadedDocs.join(', ')}) :\n\n${context}` : ''}${mandatoryRulesBlock}${rulesBlock}${expBlock}${historyBlock}
-Réponds en français de façon structurée et professionnelle. Si une information manque ou est incohérente, indique-le clairement.`
+Réponds en français de façon structurée et professionnelle, en Markdown lisible. Si une information manque ou est incohérente, indique-le clairement.`
+
+  const systemMsg = casualMessage
+    ? `${casualSystemMsg}${historyBlock}`
+    : businessSystemMsg
 
   try {
     const model = await getGlobalOllamaModel()
-    const documentContext = await analyzeGemmaDocuments(attachments, model)
+    const documentContext = await analyzeAiDocuments(attachments, model)
     const userContent = (() => {
       const imageInstruction = attachments.length
         ? `Une ou plusieurs pieces jointes sont jointes a ce message ou reprises depuis le contexte recent de la conversation: ${attachments.map(item => `${item.name} (${item.type})`).join(', ')}. Elles font partie du contexte utilisateur au meme titre que le texte. Analyse-les et combine ce que tu vois/lis avec la question ecrite et, si present, avec le devis. Pour les PDF, utilise la synthese OCR/vision fournie ci-dessous. Si la question porte sur une image ou un PDF, reponds d'abord explicitement a ce que tu vois/lis dans la piece jointe. Si tu ne peux pas lire ou interpreter une piece jointe, dis-le clairement au lieu de repondre uniquement sur le contexte du devis.\n\n`
         : ''
-      if (!rows.length) return `${imageInstruction}${safeQuestion}${documentContext}`
+      if (casualMessage || !rows.length) return `${imageInstruction}${safeQuestion}${documentContext}`
 
       if (scope === 'all' || rows.length > 1) {
         // Résumé synthétique du devis complet
@@ -948,10 +1196,10 @@ Réponds en français de façon structurée et professionnelle. Si une informati
       : { role: 'user', content: userContent }
     const answer = await chatCompletion({
       model,
-      messages: [
+      messages: fitChatMessages([
         { role: 'system', content: systemMsg },
         userMessage,
-      ],
+      ]),
     })
     res.json({ answer })
   } catch (err) {
@@ -972,12 +1220,31 @@ router.get('/', async (req, res) => {
               (SELECT COUNT(*) FROM devis_versions dv WHERE dv.devis_id = d.id) AS versions_count
        FROM devis d
        WHERE d.created_by = ?
-       ORDER BY d.updated_at DESC`,
+       ORDER BY d.quote_number DESC, d.updated_at DESC, d.id DESC`,
       [req.user.id]
     )
-    res.json(rows)
+    const enrichedRows = await Promise.all(rows.map(async (row) => {
+      const versionNumber = await resolveDevisVersionNumber(row.id, row.current_version_id).catch(() => null)
+      return {
+        ...row,
+        current_version_number: versionNumber,
+        display_name: buildDevisDisplayName(row, versionNumber),
+      }
+    }))
+    res.json(enrichedRows)
   } catch (err) {
     console.error("CRASH:", err); res.status(500).json({ error: err.message })
+  }
+})
+
+// GET /api/devis/validation-knowledge — version de la base règles/expériences IA
+router.get('/validation-knowledge', async (_req, res) => {
+  try {
+    const { getValidationKnowledgeVersion } = await import('../services/rules-validator.js')
+    res.json(await getValidationKnowledgeVersion())
+  } catch (err) {
+    console.error('validation-knowledge error:', err)
+    res.status(500).json({ error: 'Erreur version connaissance IA', details: err.message })
   }
 })
 
@@ -1000,16 +1267,23 @@ router.get('/:id', async (req, res) => {
 // POST /api/devis — create a new devis
 router.post('/', async (req, res) => {
   const { deal_id, company_id, client_name, name, source_file } = req.body
+  const conn = await db.getConnection()
   try {
-    const [result] = await db.query(
-      `INSERT INTO devis (deal_id, company_id, client_name, name, source_file, created_by)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [deal_id || null, company_id || null, client_name || null, name || 'Nouveau devis', source_file || null, req.user.id]
+    await conn.beginTransaction()
+    const quoteNumber = await nextQuoteNumber(conn)
+    const [result] = await conn.query(
+      `INSERT INTO devis (quote_number, deal_id, company_id, client_name, name, source_file, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [quoteNumber, deal_id || null, company_id || null, client_name || null, name || 'Nouveau devis', source_file || null, req.user.id]
     )
-    const [rows] = await db.query('SELECT * FROM devis WHERE id = ?', [result.insertId])
+    const [rows] = await conn.query('SELECT * FROM devis WHERE id = ?', [result.insertId])
+    await conn.commit()
     res.status(201).json(rows[0])
   } catch (err) {
+    await conn.rollback().catch(() => { })
     console.error("CRASH:", err); res.status(500).json({ error: err.message })
+  } finally {
+    conn.release()
   }
 })
 
@@ -1089,15 +1363,16 @@ router.post('/:id/lines', async (req, res) => {
     const [result] = await db.query(
       `INSERT INTO devis_lines
        (devis_id, position, line_section, designation, localisation, type_porte, gamme, vantail,
-        hauteur_mm, largeur_mm, prix_base_ht, ref_base, options_json,
+        hauteur_mm, largeur_mm, prix_base_ht, ref_base, raw_json, options_json,
         serrure_ref, serrure_prix, ferme_porte_ref, ferme_porte_prix,
         equipements_json, total_ligne_ht, alertes_json, docs_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         req.params.id, pos, normalizeLineSection(d.line_section),
         d.designation || null, d.localisation || null, d.type_porte || null, d.gamme || null, d.vantail || null,
         d.hauteur_mm || null, d.largeur_mm || null, d.prix_base_ht || null,
         d.ref_base || null,
+        d.raw_json ? JSON.stringify(d.raw_json) : null,
         d.options_json ? JSON.stringify(d.options_json) : null,
         d.serrure_ref || null, d.serrure_prix || null,
         d.ferme_porte_ref || null, d.ferme_porte_prix || null,
@@ -1133,16 +1408,17 @@ router.post('/:id/lines/bulk', async (req, res) => {
       await db.query(
         `INSERT INTO devis_lines
           (devis_id, position, line_section, designation, localisation, type_porte, gamme, vantail,
-          hauteur_mm, largeur_mm, prix_base_ht, ref_base, options_json,
+          hauteur_mm, largeur_mm, prix_base_ht, ref_base, raw_json, options_json,
           serrure_ref, serrure_prix, ferme_porte_ref, ferme_porte_prix,
           equipements_json, total_ligne_ht, alertes_json, docs_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           req.params.id, i, normalizeLineSection(d.line_section),
           d.designation || d.type || null, d.localisation || null, d.type || null, d.gamme || null, d.vantail || null,
           d.haut_mm || d.hauteur_mm || null, d.larg_mm || d.largeur_mm || null,
           d.prix_base_ht || null,
           d.ref_base || null,
+          d.raw_json || d._raw ? JSON.stringify(d.raw_json || d._raw) : null,
           d.options ? JSON.stringify(d.options) : null,
           d.serrure?.ref || null, null,
           d.ferme_porte?.ref || null, null,
@@ -1168,7 +1444,7 @@ router.post('/:id/lines/bulk', async (req, res) => {
 
 // PUT /api/devis/:id/lines/:lineId — update a line
 router.put('/:id/lines/:lineId', async (req, res) => {
-  const allowed = ['position', 'line_section', 'designation', 'localisation', 'type_porte', 'gamme', 'vantail', 'hauteur_mm', 'largeur_mm', 'prix_base_ht', 'ref_base', 'options_json', 'serrure_ref', 'serrure_prix', 'ferme_porte_ref', 'ferme_porte_prix', 'equipements_json', 'total_ligne_ht', 'alertes_json', 'docs_json']
+  const allowed = ['position', 'line_section', 'designation', 'localisation', 'type_porte', 'gamme', 'vantail', 'hauteur_mm', 'largeur_mm', 'prix_base_ht', 'ref_base', 'raw_json', 'options_json', 'serrure_ref', 'serrure_prix', 'ferme_porte_ref', 'ferme_porte_prix', 'equipements_json', 'total_ligne_ht', 'alertes_json', 'docs_json']
   const sets = []
   const vals = []
   for (const key of allowed) {
@@ -1223,14 +1499,16 @@ router.get('/:id/pdf', async (req, res) => {
       'SELECT * FROM devis_lines WHERE devis_id = ? ORDER BY FIELD(line_section, "products", "calculations", "transport"), position ASC, id ASC',
       [id]
     )
+    const versionNumber = await resolveDevisVersionNumber(id, req.query.version_id || devis.current_version_id)
+    const pdfFilename = buildDevisPdfFilename(devis, versionNumber)
 
     // Lazy-load PDF builder to avoid Playwright startup on every server boot
     const { buildDevisNexusPdf } = await import('../devis-pdf.js')
-    const { buffer, filename } = await buildDevisNexusPdf({ devis, lines })
+    const { buffer, filename } = await buildDevisNexusPdf({ devis: { ...devis, pdf_filename: pdfFilename }, lines })
 
     res.set({
       'Content-Type': 'application/pdf',
-      'Content-Disposition': `attachment; filename="${filename}"`,
+      'Content-Disposition': attachmentDisposition(filename),
       'Content-Length': buffer.length,
     })
     res.end(buffer)
@@ -1311,6 +1589,45 @@ router.post('/:id/validate-rules', async (req, res) => {
   }
 })
 
+// ── POST /api/devis/:id/rule-checks ────────────────────────────────────────
+// Persiste un bilan de validation IA produit par la grille progressive.
+router.post('/:id/rule-checks', async (req, res) => {
+  const id = Number(req.params.id)
+  const versionId = Number(req.body?.version_id)
+  const report = req.body?.report
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'ID invalide' })
+  if (!Number.isInteger(versionId) || versionId < 1) return res.status(400).json({ error: 'version_id invalide' })
+  if (!report || typeof report !== 'object') return res.status(400).json({ error: 'report requis' })
+  try {
+    const reportWithMeta = { ...report, devis_id: id, version_id: versionId }
+    await db.query(
+      `INSERT INTO devis_rule_checks (version_id, report_json, summary_json, created_by)
+       VALUES (?, ?, ?, ?)`,
+      [versionId, JSON.stringify(reportWithMeta), JSON.stringify(reportWithMeta.summary || null), req.user?.id || null]
+    )
+    try {
+      await db.query('UPDATE devis SET validation_json = ? WHERE id = ?', [JSON.stringify(reportWithMeta), id])
+    } catch { /* colonne absente → ignorer */ }
+    res.status(201).json({ success: true })
+  } catch (err) {
+    console.error('rule-checks persist error:', err)
+    res.status(500).json({ error: 'Erreur persistance bilan IA', details: err.message })
+  }
+})
+
+async function runLimited(items, limit, worker) {
+  const results = new Array(items.length)
+  let cursor = 0
+  const count = Math.min(Math.max(Number(limit) || 1, 1), items.length || 1)
+  await Promise.all(Array.from({ length: count }, async () => {
+    while (cursor < items.length) {
+      const index = cursor++
+      results[index] = await worker(items[index], index)
+    }
+  }))
+  return results
+}
+
 // ── POST /api/devis/validate-lines ──────────────────────────────────────────
 // Variante stateless : audit d'un tableau de lignes fourni dans le body
 // (pratique juste après /analyze, avant persistance en DB).
@@ -1321,16 +1638,30 @@ router.post('/validate-lines', async (req, res) => {
     return res.status(400).json({ error: 'lines array required' })
   }
   try {
-    const { loadApprovedRules, validateLine } = await import('../services/rules-validator.js')
+    const { getValidationKnowledgeVersion, loadApprovedRules, validateLine } = await import('../services/rules-validator.js')
+    const generatedAt = new Date().toISOString()
+    const knowledge = await getValidationKnowledgeVersion()
     const rules = await loadApprovedRules()
     if (!rules.length) {
-      return res.json({ rules_count: 0, lines: [], summary: { ok: 0, warning: 0, violation: 0, na: 0 } })
+      return res.json({
+        generated_at: generatedAt,
+        rules_count: 0,
+        knowledge,
+        knowledge_version: knowledge.version,
+        knowledge_updated_at: knowledge.updated_at,
+        lines: lines.map((line, index) => ({
+          position: line.position ?? index,
+          designation: line.designation || line.type || null,
+          gamme: line.gamme || null,
+          vantail: line.vantail || null,
+          verdicts: [],
+        })),
+        summary: { ok: 0, warning: 0, violation: 0, na: 0 },
+      })
     }
     const model = await getGlobalOllamaModel()
-    const summary = { ok: 0, warning: 0, violation: 0, na: 0 }
-    const results = []
-    for (let i = 0; i < lines.length; i++) {
-      const l = lines[i]
+    const concurrency = Math.min(Math.max(Number(req.body?.concurrency || 3) || 3, 1), 5)
+    const results = await runLimited(lines, concurrency, async (l, i) => {
       // Adapter le format /analyze → format DB attendu par validateLine
       const lineLike = {
         id: l.id ?? null,
@@ -1342,27 +1673,41 @@ router.post('/validate-lines', async (req, res) => {
         vantail: l.vantail || null,
         hauteur_mm: l.haut_mm || l.hauteur_mm || null,
         largeur_mm: l.larg_mm || l.largeur_mm || null,
+        rc: l.rc || null,
+        pb: l.pb || null,
+        cf: l.cf || null,
+        blast: l.blast || null,
+        belier: l.belier || null,
+        prison: l.prison || null,
+        acoustic: l.acoustic || null,
         prix_base_ht: l.prix_base_ht ?? null,
         options_json: l.options ?? null,
         serrure_ref: l.serrure?.ref ?? null,
         ferme_porte_ref: l.ferme_porte?.ref ?? null,
         equipements_json: l.equip_extra ?? null,
+        equipements_resolus: l.equipements_resolus ?? null,
         alertes_json: l.alertes ?? null,
         total_ligne_ht: l.prix_total_min_ht ?? null,
       }
       const verdicts = await validateLine({ line: lineLike, rules, model }).catch(() => [])
-      for (const v of verdicts) summary[v.status] = (summary[v.status] || 0) + 1
-      results.push({
+      return {
         position: lineLike.position,
         designation: lineLike.designation,
         gamme: lineLike.gamme,
         vantail: lineLike.vantail,
         verdicts,
-      })
+      }
+    })
+    const summary = { ok: 0, warning: 0, violation: 0, na: 0 }
+    for (const result of results) {
+      for (const v of result?.verdicts || []) summary[v.status] = (summary[v.status] || 0) + 1
     }
     res.json({
-      generated_at: new Date().toISOString(),
+      generated_at: generatedAt,
       rules_count: rules.length,
+      knowledge,
+      knowledge_version: knowledge.version,
+      knowledge_updated_at: knowledge.updated_at,
       lines: results,
       summary,
     })
@@ -1762,13 +2107,9 @@ router.post('/:id/send-hubspot', async (req, res) => {
     )
 
     const { buildDevisNexusPdf } = await import('../devis-pdf.js')
-    // Enrich devis.name with version label for a more meaningful filename
-    const versionLabel = versionRow
-      ? (versionRow.title || versionRow.branch_label || versionRow.version_label)
-      : null
-    const enrichedDevis = versionLabel
-      ? { ...devis, name: `${devis.name || `D${devis.id}`} — ${versionLabel}` }
-      : devis
+    const versionNumber = await resolveDevisVersionNumber(id, targetVersionId)
+    const versionLabel = versionNumber ? `v${versionNumber}` : (versionRow?.version_label || null)
+    const enrichedDevis = { ...devis, pdf_filename: buildDevisPdfFilename(devis, versionNumber) }
     const { buffer, filename } = await buildDevisNexusPdf({ devis: enrichedDevis, lines })
 
     const { uploadPdfToDeal, isHubspotConfigured } = await import('../services/hubspot.js')
@@ -1778,7 +2119,7 @@ router.post('/:id/send-hubspot', async (req, res) => {
 
     const body = note_body
       || [
-        `Devis NEXUS — ${devis.client_name || ''} — ${devis.name || ''}${versionLabel ? ` — ${versionLabel}` : ''}`,
+        `Devis NEXUS — ${buildDevisDisplayName(devis, versionNumber)}`,
         versionComment ? `Commentaire version : ${versionComment}` : null,
       ].filter(Boolean).join('\n')
     const result = await uploadPdfToDeal({ buffer, filename, dealId: targetDealId, noteBody: body })

@@ -542,13 +542,29 @@ export async function renderDevisPdfBuffer(html, opts = {}) {
 }
 
 // ─── High-level builder ────────────────────────────────────────────────────
+function safePdfFilePart(value) {
+  return String(value || '')
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function fallbackPdfFilename(devis) {
+  const parts = [
+    devis?.quote_number || devis?.name || (devis?.id ? `D${devis.id}` : null),
+    devis?.client_name || null,
+  ].map(safePdfFilePart).filter(Boolean);
+  return `${parts.length ? parts.join(" - ") : "devis"}.pdf`;
+}
+
 /**
  * @param {{ devis: object, lines: object[], contactName?: string, contactPhone?: string, contactEmail?: string, companyLine1?: string, companyLine2?: string }} input
  * @returns {Promise<{ buffer: Buffer, filename: string }>}
  */
 export async function buildDevisNexusPdf(input) {
   const { devis, lines = [] } = input;
-  const number = devis.name || `D${devis.id}`;
+  const number = devis.quote_number || devis.name || `D${devis.id}`;
   const dateLabel = new Date(devis.created_at || Date.now()).toLocaleDateString("fr-FR");
   const grandTotal = Number(devis.total_ht) || lines.reduce((s, l) => s + (Number(l.total_ligne_ht) || 0), 0);
 
@@ -566,8 +582,7 @@ export async function buildDevisNexusPdf(input) {
     companyLine2: input.companyLine2,
   });
 
-  const slug = String(number).replace(/[^a-zA-Z0-9_-]/g, "_");
-  const filename = `Devis_NEXUS_${slug}.pdf`;
+  const filename = devis.pdf_filename || fallbackPdfFilename(devis);
 
   return { buffer, filename };
 }

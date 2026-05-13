@@ -14,16 +14,16 @@
  *
  * Docs: https://developers.hubspot.com/docs/api/crm/understanding-the-crm
  *
- * Setup: HUBSPOT_PRIVATE_APP_TOKEN in .env
+ * Setup: use the existing HUBSPOT_PRIVATE_APP_TOKEN in iachat-v2/.env
  * Usage: cd iachat-v2 && npm run test:hubspot:crm
  */
-import 'dotenv/config'
+import '../server/env.js'
 
 const BASE = 'https://api.hubapi.com'
 
 const token = process.env.HUBSPOT_PRIVATE_APP_TOKEN?.trim()
 if (!token) {
-  console.error('Missing HUBSPOT_PRIVATE_APP_TOKEN in environment (.env).')
+  console.error('Missing HUBSPOT_PRIVATE_APP_TOKEN in environment (iachat-v2/.env).')
   process.exit(1)
 }
 

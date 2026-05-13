@@ -1,6 +1,6 @@
 /**
  * Devis.jsx — Page de génération de devis NEXUS
- * Layout 3 colonnes : Fichiers | Devis | Chat Gemma
+ * Layout 3 colonnes : Fichiers | Devis | Chat Zerux IA
  */
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -399,7 +399,7 @@ function LeftPanel({
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ── COLONNE DROITE : Chat Gemma ───────────────────────────────────────────
+// ── COLONNE DROITE : Chat Zerux IA ─────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════════════════
 function RightPanel({
   row, aiRow, aiScope, setAiScope, aiMessages, aiInput, setAiInput, aiLoading, askAI, aiEndRef, aiInputRef, aiRecording, toggleAiMic, conseils, onAnalyzeConseils, onApplyConseil,
@@ -445,7 +445,7 @@ function RightPanel({
       }}>
         <Bot size={16} color="var(--color-primary)" />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontWeight: 700, fontSize: '13px' }}>Assistant Gemma</div>
+          <div style={{ fontWeight: 700, fontSize: '13px' }}>Zerux IA</div>
           {row && aiScope === 'line' && (
             <div style={{ fontSize: '10px', color: 'var(--color-text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               Ligne {(aiRow ?? 0) + 1} — {row.gamme} {row.vantail} · {row.docs?.join(', ')}
@@ -646,7 +646,7 @@ function RightPanel({
             {aiLoading && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--color-text-3)', fontSize: '12px' }}>
                 <Loader2 size={14} style={{ animation: 'spin 0.8s linear infinite' }} />
-                Gemma réfléchit…
+                Zerux IA réfléchit…
               </div>
             )}
             <div ref={aiEndRef} />
@@ -722,6 +722,7 @@ export default function Devis() {
   const [dragging, setDragging] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
   const [error, setError] = useState('')
+  const [infoDialog, setInfoDialog] = useState(null)
   const [expandedRow, setExpandedRow] = useState(null)
   const fileInputRef = useRef(null)
 
@@ -810,7 +811,10 @@ export default function Devis() {
 
   const toggleAiMic = () => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition
-    if (!SR) { alert('Reconnaissance vocale non supportée par ce navigateur.'); return }
+    if (!SR) {
+      setInfoDialog({ title: 'Reconnaissance vocale indisponible', message: 'Reconnaissance vocale non supportée par ce navigateur.' })
+      return
+    }
     if (aiRecording) {
       aiSpeechRef.current?.stop()
       setAiRecording(false)
@@ -978,7 +982,7 @@ export default function Devis() {
     setTimeout(() => aiInputRef.current?.focus(), 100)
   }
 
-  // ── Envoyer question Gemma ─────────────────────────────────────────────
+  // ── Envoyer question Zerux IA ──────────────────────────────────────────
   const askAI = async (question = aiInput) => {
     const q = (question || aiInput).trim()
     if (!q || aiLoading) return
@@ -1437,6 +1441,20 @@ export default function Devis() {
             </div>
             <div style={{ overflowY: 'auto', padding: '0 1.25rem 1.25rem', flex: 1 }}>
               <MarkdownRenderer content={devisText} />
+            </div>
+          </div>
+        </div>
+      )}
+      {infoDialog && (
+        <div className="chat-modal-backdrop" onClick={() => setInfoDialog(null)}>
+          <div className="chat-modal" onClick={event => event.stopPropagation()}>
+            <div className="chat-modal-header">
+              <h2 className="chat-modal-title">{infoDialog.title}</h2>
+              <button className="chat-modal-close" onClick={() => setInfoDialog(null)}><X size={16} /></button>
+            </div>
+            <p className="chat-modal-message">{infoDialog.message}</p>
+            <div className="chat-modal-actions">
+              <button type="button" className="chat-modal-btn chat-modal-btn--primary" onClick={() => setInfoDialog(null)}>Fermer</button>
             </div>
           </div>
         </div>

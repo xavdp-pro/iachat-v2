@@ -10,9 +10,9 @@ import {
   AlertTriangle, Bot, Send, X, FileText, Printer, Copy,
   Check, Info, Euro, Shield, Search, Building2,
   Wrench, Package, Sparkles, RefreshCw, Plus,
-  MessageCircleReply, Clock, FolderOpen, LayoutGrid,
+  Clock, FolderOpen, LayoutGrid,
   Briefcase, User, Hash, ExternalLink, Download, Columns3, Columns2, Columns,
-  Pencil, Trash2, BookOpen,
+  Pencil, Trash2, BookOpen, Undo2, Redo2,
 } from 'lucide-react'
 import { MarkdownRenderer } from '../components/MarkdownRenderer.jsx'
 import api from '../api/index.js'
@@ -61,6 +61,29 @@ function sanitizeCalculationAlerts(row) {
   return alertes.length === (row.alertes || []).length ? row : { ...row, alertes }
 }
 
+function isCasualAssistantMessage(text) {
+  const normalized = String(text || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[?!.,;:]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!normalized || normalized.length > 240) return false
+  const stopBusinessIntent = /\b(ne parle pas du devis|arrete le devis|conversation normale)\b/.test(normalized)
+  const hasBusinessIntent = /\b(tableau|devis|ligne|gamme|classement|total ht|prix|chiffr|option|alerte|dimension|hauteur|largeur|porte|chassis|cr[2-6]|rc[2-6]|ei\s?\d+|fb[4-7]|calcul|modifier|modifie|verifier|verifie|controle|audit)\b/.test(normalized)
+  if (hasBusinessIntent && !stopBusinessIntent) return false
+  return /^(salut|bonjour|bonsoir|hello|hey|coucou)\b/.test(normalized) ||
+    /\b(tu es la|t es la|tes la|t la|tu est la|vous etes la|ca va|comment ca va|tu vas bien|merci)\b/.test(normalized) ||
+    /\b(mon nom est|mon prenom est|je m appelle|je mappelle|appelle moi|moi c est|c est xavier|je suis xavier)\b/.test(normalized) ||
+    /\bmon\s+n(?:om|on|o)?\s+\w{0,8}\s*xavier\b/.test(normalized) ||
+    (/\bxavier\b/.test(normalized) && /\b(mon|nom|prenom|appelle|suis|memoire|souviens)\b/.test(normalized)) ||
+    /\b(comment je m appelle|quel est mon nom|tu connais mon nom|tu te souviens de mon nom|test de memoire|memoire)\b/.test(normalized) ||
+    /\b(discute avec moi|parle avec moi|conversation normale|on discute|ne parle pas du devis|arrete le devis)\b/.test(normalized) ||
+    (normalized.length <= 180 && !hasBusinessIntent)
+}
+
 function companyDeliveryAddress(company) {
   const properties = company?.properties || company || {}
   return [
@@ -81,6 +104,56 @@ function parseJsonArray(value) {
   if (Array.isArray(value)) return value
   if (!value) return []
   try { return JSON.parse(value) || [] } catch { return [] }
+}
+
+function quoteNumberSortValue(value) {
+  const match = String(value || '').match(/^(\d{3})\.(\d{4})$/)
+  if (!match) return -1
+  return Number(`${match[1]}${match[2]}`)
+}
+
+function sortDevisByQuoteNumber(items = [], direction = 'desc') {
+  const sign = direction === 'asc' ? 1 : -1
+  return [...items].sort((a, b) => {
+    const quoteDiff = quoteNumberSortValue(a.quote_number) - quoteNumberSortValue(b.quote_number)
+    if (quoteDiff) return quoteDiff * sign
+    const dateDiff = new Date(a.created_at || a.updated_at || 0).getTime() - new Date(b.created_at || b.updated_at || 0).getTime()
+    if (dateDiff) return dateDiff * sign
+    return (Number(a.id) || 0) - (Number(b.id) || 0)
+  })
+}
+
+function safePdfFilePart(value) {
+  return String(value || '')
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function devisPdfFilename({ quoteNumber, clientName, versionNumber }) {
+  const numberedName = [quoteNumber, versionNumber].filter(Boolean).join('.')
+  const parts = [numberedName, clientName]
+    .map(safePdfFilePart)
+    .filter(Boolean)
+  return parts.length ? `${parts.join(' - ')}.pdf` : 'devis.pdf'
+}
+
+function devisDisplayName({ quoteNumber, clientName, versionNumber }) {
+  const numberedName = [quoteNumber, versionNumber].filter(Boolean).join('.')
+  const parts = [numberedName, clientName]
+    .map(safePdfFilePart)
+    .filter(Boolean)
+  return parts.length ? parts.join(' - ') : 'devis'
+}
+
+function contentDispositionFilename(header) {
+  const value = String(header || '')
+  const utfMatch = value.match(/filename\*=UTF-8''([^;]+)/i)
+  if (utfMatch) {
+    try { return decodeURIComponent(utfMatch[1]) } catch { return utfMatch[1] }
+  }
+  return value.match(/filename="?([^";]+)"?/i)?.[1] || null
 }
 
 function dbLineToGridRow(line) {
@@ -129,6 +202,7 @@ function gridRowToLinePayload(row, position) {
     largeur_mm: row.larg_mm ?? row.largeur_mm ?? null,
     prix_base_ht: row.prix_base_ht ?? null,
     ref_base: row.ref_base || null,
+    raw_json: Array.isArray(row._raw) ? row._raw : null,
     options_json: row.options || [],
     serrure_ref: row.serrure?.ref || row._serrureLabel || null,
     serrure_prix: row.serrure?.prix ?? null,
@@ -164,16 +238,115 @@ function compactLineForAI(line, index) {
   }
 }
 
+function parseDimensionValue(text) {
+  const raw = String(text || '').toLowerCase().replace(',', '.').trim()
+  const meterMatch = raw.match(/(\d+(?:\.\d+)?)\s*m(?:\s*(\d{1,3}))?/) || raw.match(/(\d+)\s*m\s*(\d{1,3})/)
+  if (meterMatch) {
+    const meters = Number(meterMatch[1])
+    const centimeters = meterMatch[2] ? Number(String(meterMatch[2]).padEnd(2, '0').slice(0, 2)) : 0
+    return Math.round((meters * 1000) + (centimeters * 10))
+  }
+  const numberMatch = raw.match(/\b(\d{2,4})(?:\.\d+)?\b/)
+  if (!numberMatch) return null
+  const value = Number(numberMatch[1])
+  if (!Number.isFinite(value)) return null
+  if (value >= 100 && value <= 9999) return value
+  if (value >= 1 && value <= 9) return value * 1000
+  return null
+}
+
+function parseGridEditCommand(text) {
+  const value = parseDimensionValue(text)
+  const normalized = String(text || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+  if (!value) return null
+  const field = /\b(hauteur|haut|h\s*ht|h\b)/i.test(normalized)
+    ? 'hauteur_mm'
+    : /\b(largeur|larg|l\s*ht|l\b)/i.test(normalized)
+      ? 'largeur_mm'
+      : null
+  if (!field) return null
+  const scopedLineMatch = normalized.match(/(?:ligne|line)\s*([a-z]|\d+)/i)
+  const allProducts = /\b(toutes?|tous|chaque|ensemble|global|portes?|lignes?)\b/i.test(normalized)
+  if (!scopedLineMatch && !allProducts) return null
+  return {
+    field,
+    value,
+    scope: scopedLineMatch ? 'line' : 'products',
+    lineIndex: scopedLineMatch
+      ? (/^\d+$/.test(scopedLineMatch[1]) ? Number(scopedLineMatch[1]) - 1 : scopedLineMatch[1].toUpperCase().charCodeAt(0) - 65)
+      : null,
+    label: field === 'hauteur_mm' ? 'hauteur HT' : 'largeur HT',
+  }
+}
+
+function lineValueForField(line, field) {
+  if (field === 'hauteur_mm') return line?.hauteur_mm ?? null
+  if (field === 'largeur_mm') return line?.largeur_mm ?? null
+  return line?.[field]
+}
+
+const GRID_HISTORY_FIELDS = [
+  ['localisation', 'localisation'],
+  ['designation', 'désignation'],
+  ['type_porte', 'type produit'],
+  ['gamme', 'gamme'],
+  ['vantail', 'vantail'],
+  ['hauteur_mm', 'hauteur HT'],
+  ['largeur_mm', 'largeur HT'],
+  ['prix_base_ht', 'prix base HT'],
+  ['total_ligne_ht', 'total HT'],
+]
+
+function normalizeHistoryValue(value) {
+  if (value == null || value === '') return null
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null
+  if (typeof value === 'string') return value.trim() || null
+  return JSON.stringify(value)
+}
+
+function buildGridLineChanges({ beforeLine, afterLine, index, source = 'manual' }) {
+  if (!beforeLine?.id || !afterLine?.id) return []
+  return GRID_HISTORY_FIELDS
+    .map(([field, fieldLabel]) => {
+      const oldValue = normalizeHistoryValue(beforeLine[field])
+      const newValue = normalizeHistoryValue(afterLine[field])
+      if (String(oldValue ?? '') === String(newValue ?? '')) return null
+      return {
+        index,
+        lineId: beforeLine.id,
+        field,
+        fieldLabel,
+        oldValue,
+        newValue,
+        beforeLine,
+        afterLine,
+        source,
+      }
+    })
+    .filter(Boolean)
+}
+
+function withLineField(line, field, value) {
+  if (field === 'hauteur_mm') return { ...line, hauteur_mm: value }
+  if (field === 'largeur_mm') return { ...line, largeur_mm: value }
+  return { ...line, [field]: value }
+}
+
 function parsePerformanceChangeCommand(value) {
   const text = String(value || '')
   const token = '(C\\s*R|R\\s*C)\\s*([2-6])'
-  const connector = '(?:en|e\\s*n|vers|par|a|à|->|=>)'
+  const connector = '(?:en|e\s*n|vers|par|apr|apres|après|a|à|->|=>)'
   const match = text.match(new RegExp(`${token}[\\s,;:._-]*(?:${connector})[\\s,;:._-]*${token}`, 'i'))
-  if (!match) return null
-  const fromPrefix = String(match[1] || '').replace(/\s+/g, '').toUpperCase()
-  const toPrefix = String(match[3] || '').replace(/\s+/g, '').toUpperCase()
-  const fromLevel = Number(match[2])
-  const toLevel = Number(match[4])
+  const fuzzyIntent = /\b(remplace|replace|changer?|change|passe|passer|transforme|converti[rs]?|mettre|mets|met|modifie)\b/i.test(text)
+  const fuzzyMatches = match ? [] : [...text.matchAll(new RegExp(token, 'gi'))]
+  if (!match && (!fuzzyIntent || fuzzyMatches.length < 2)) return null
+  const fromPrefix = String(match?.[1] || fuzzyMatches[0]?.[1] || '').replace(/\s+/g, '').toUpperCase()
+  const toPrefix = String(match?.[3] || fuzzyMatches[1]?.[1] || '').replace(/\s+/g, '').toUpperCase()
+  const fromLevel = Number(match?.[2] || fuzzyMatches[0]?.[2])
+  const toLevel = Number(match?.[4] || fuzzyMatches[1]?.[2])
   if (!['CR', 'RC'].includes(fromPrefix) || !['CR', 'RC'].includes(toPrefix)) return null
   if (!Number.isFinite(fromLevel) || !Number.isFinite(toLevel) || fromLevel === toLevel) return null
   return { fromPrefix, toPrefix, fromLevel, toLevel, fromToken: `${fromPrefix}${fromLevel}`, toToken: `${toPrefix}${toLevel}` }
@@ -405,6 +578,12 @@ function StepperAssistantPanel({
   onAsk,
   onEditMessage,
   onClearMessages,
+  gridActionHistory = [],
+  gridHistoryCursor = 0,
+  onUndoGridAction,
+  onRedoGridAction,
+  onRestoreGridHistoryTo,
+  onClearGridHistory,
   inputRef,
   endRef,
 }) {
@@ -412,6 +591,11 @@ function StepperAssistantPanel({
   const [editingContent, setEditingContent] = useState('')
   const [draft, setDraft] = useState(input || '')
   const [pastedImages, setPastedImages] = useState([])
+  const [activeTab, setActiveTab] = useState(() => {
+    try { return localStorage.getItem('devis_stepper_assistant_tab') === 'ia-verif' ? 'ia-verif' : 'chat' } catch { return 'chat' }
+  })
+  // Stocke la dernière explication IA
+  const [lastIaVerification, setLastIaVerification] = useState(null)
   const attachmentInputRef = useRef(null)
   const assistantMinWidth = () => 260
   const assistantDefaultWidth = () => 420
@@ -428,6 +612,8 @@ function StepperAssistantPanel({
     } catch { return clampAssistantWidth(assistantDefaultWidth()) }
   })
   const activeStep = STEP_LABELS.find(item => item.num === step)
+  const canUndoGrid = gridHistoryCursor > 0
+  const canRedoGrid = gridHistoryCursor < gridActionHistory.length
   const submit = (value = draft) => {
     const text = String(value || '').trim()
     if ((!text && pastedImages.length === 0) || loading) return
@@ -500,6 +686,10 @@ function StepperAssistantPanel({
     try { localStorage.setItem('devis_stepper_assistant_width', String(panelWidth)) } catch { /* noop */ }
   }, [panelWidth])
 
+  useEffect(() => {
+    try { localStorage.setItem('devis_stepper_assistant_tab', activeTab) } catch { /* noop */ }
+  }, [activeTab])
+
   useEffect(() => { resizeDraft() }, [draft])
 
   useEffect(() => {
@@ -527,10 +717,10 @@ function StepperAssistantPanel({
   if (collapsed) {
     return (
       <aside style={{ width: 44, minWidth: 44, flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', height: '100%', borderLeft: '1px solid var(--color-border)', background: 'var(--color-surface)' }}>
-        <button type="button" onClick={() => setCollapsed(false)} title="Ouvrir Gemma 4" style={{ marginTop: 10, width: 30, height: 30, borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-input-bg)', color: 'var(--color-primary)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
+        <button type="button" onClick={() => setCollapsed(false)} title="Ouvrir Zerux IA" style={{ marginTop: 10, width: 30, height: 30, borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-input-bg)', color: 'var(--color-primary)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
           <Bot size={15} />
         </button>
-        <div style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)', marginTop: 12, fontSize: 11, fontWeight: 800, color: 'var(--color-text-3)', letterSpacing: '0.02em' }}>Gemma 4</div>
+        <div style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)', marginTop: 12, fontSize: 11, fontWeight: 800, color: 'var(--color-text-3)', letterSpacing: '0.02em' }}>Zerux IA</div>
       </aside>
     )
   }
@@ -539,31 +729,58 @@ function StepperAssistantPanel({
     <aside style={{ width: panelWidth, minWidth: panelWidth, maxWidth: panelWidth, flexShrink: 0, display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, borderLeft: '1px solid var(--color-border)', background: 'var(--color-surface)', position: 'relative' }}>
       <div
         role="separator"
-        aria-label="Redimensionner Gemma 4"
+        aria-label="Redimensionner Zerux IA"
         onMouseDown={startResize}
-        title="Glisser pour agrandir ou réduire Gemma 4"
+        title="Glisser pour agrandir ou réduire Zerux IA"
         style={{ position: 'absolute', left: -4, top: 0, bottom: 0, width: 8, cursor: 'col-resize', zIndex: 2 }}
       />
       <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
         <Bot size={16} color="var(--color-primary)" />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontWeight: 800, fontSize: 13 }}>Gemma 4</div>
+          <div style={{ fontWeight: 800, fontSize: 13 }}>Zerux IA</div>
           <div style={{ fontSize: 10, color: 'var(--color-text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {activeStep?.label || `Étape ${step}`} · {currentDevis?.title || currentDevis?.name || 'devis NEXUS'}
           </div>
         </div>
-        <button type="button" onClick={onClearMessages} title="Vider le chat" style={{ ...iconBtn(), border: '1px solid var(--color-border)', color: '#dc2626' }}>
-          <Trash2 size={13} />
-        </button>
         <button type="button" onClick={() => setPanelWidth(clampAssistantWidth(assistantDefaultWidth()))} title="Largeur par défaut" style={{ ...iconBtn(), border: '1px solid var(--color-border)' }}>
           <Columns2 size={13} />
         </button>
-        <button type="button" onClick={() => setCollapsed(true)} title="Rétracter Gemma 4" style={{ ...iconBtn(), border: '1px solid var(--color-border)' }}>
+        <button type="button" onClick={() => setCollapsed(true)} title="Rétracter Zerux IA" style={{ ...iconBtn(), border: '1px solid var(--color-border)' }}>
           <ChevronRight size={14} />
         </button>
       </div>
 
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 12 }}>
+      <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+        <button type="button" onClick={() => setActiveTab('chat')} style={{ ...ghostBtn(), flex: 1, justifyContent: 'center', background: activeTab === 'chat' ? 'var(--color-input-bg)' : 'transparent', color: activeTab === 'chat' ? 'var(--color-text)' : 'var(--color-text-2)' }} title="Chatbot">
+          <Bot size={16} />
+        </button>
+        <button type="button" onClick={() => setActiveTab('ia-verif')} style={{ ...ghostBtn(), flex: 1, justifyContent: 'center', background: activeTab === 'ia-verif' ? 'var(--color-input-bg)' : 'transparent', color: activeTab === 'ia-verif' ? 'var(--color-text)' : 'var(--color-text-2)' }} title="Vérification IA">
+          <Sparkles size={16} />
+        </button>
+      </div>
+
+      {activeTab === 'ia-verif' ? (
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
+            <div style={{ fontWeight: 800, fontSize: 14 }}><Sparkles size={14} style={{ marginRight: 6, marginBottom: -2 }} />Vérification IA</div>
+            <button type="button" onClick={() => setLastIaVerification(null)} disabled={!lastIaVerification} title="Vider les vérifications IA" style={{ ...iconBtn(), border: '1px solid var(--color-border)', color: '#dc2626', opacity: lastIaVerification ? 1 : 0.45 }}>
+              <Trash2 size={13} />
+            </button>
+          </div>
+          {lastIaVerification ? (
+            <div style={{ padding: 14, borderRadius: 8, border: '1px solid var(--color-border)', background: lastIaVerification.ok ? 'rgba(34,197,94,0.08)' : 'rgba(220,38,38,0.08)', color: lastIaVerification.ok ? '#15803d' : '#dc2626', fontSize: 13, fontWeight: 700 }}>
+              {lastIaVerification.ok ? '✅ Ligne IA validée' : '❌ Ligne IA rejetée'}
+              <div style={{ fontWeight: 400, color: 'var(--color-text-2)', marginTop: 8, fontSize: 12 }}>{lastIaVerification.explanation}</div>
+            </div>
+          ) : <div style={{ color: 'var(--color-text-3)', fontSize: 12 }}>Aucune vérification IA récente.</div>}
+        </div>
+      ) : activeTab === 'chat' ? <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+          <strong style={{ fontSize: 13, color: 'var(--color-text)', display: 'inline-flex', alignItems: 'center', gap: 6 }}><Bot size={14} />Chatbot</strong>
+          <button type="button" onClick={onClearMessages} disabled={!messages.length || loading} title="Vider le chat" style={{ ...iconBtn(), border: '1px solid var(--color-border)', color: '#dc2626', opacity: messages.length && !loading ? 1 : 0.45 }}>
+            <Trash2 size={13} />
+          </button>
+        </div>
         {historyLoading && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--color-text-3)', fontSize: 12, padding: '6px 2px' }}>
             <Loader2 size={14} style={{ animation: 'spin 0.8s linear infinite' }} /> Chargement des dernières conversations…
@@ -620,13 +837,69 @@ function StepperAssistantPanel({
         ))}
         {loading && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--color-text-3)', fontSize: 12 }}>
-            <Loader2 size={14} style={{ animation: 'spin 0.8s linear infinite' }} /> Gemma 4 travaille…
+            <Loader2 size={14} style={{ animation: 'spin 0.8s linear infinite' }} /> Zerux IA travaille…
           </div>
         )}
         <div ref={endRef} />
-      </div>
+      </div> : <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+          <strong style={{ fontSize: 13, color: 'var(--color-text)' }}>Historique</strong>
+          <button type="button" onClick={onClearGridHistory} disabled={!gridActionHistory.length || loading} title="Vider l'historique" style={{ ...iconBtn(), border: '1px solid var(--color-border)', color: '#dc2626', opacity: gridActionHistory.length && !loading ? 1 : 0.45 }}>
+            <Trash2 size={13} />
+          </button>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+          <button type="button" onClick={onUndoGridAction} disabled={!canUndoGrid || loading} style={{ ...ghostBtn(), justifyContent: 'center', opacity: canUndoGrid && !loading ? 1 : 0.45 }}>
+            <Undo2 size={13} /> Retour arrière
+          </button>
+          <button type="button" onClick={onRedoGridAction} disabled={!canRedoGrid || loading} style={{ ...ghostBtn(), justifyContent: 'center', opacity: canRedoGrid && !loading ? 1 : 0.45 }}>
+            <Redo2 size={13} /> Rétablir
+          </button>
+        </div>
+        <div style={{ padding: 10, borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-input-bg)', fontSize: 11, lineHeight: 1.45, color: 'var(--color-text-2)' }}>
+          Chaque action IA conserve l’ancienne valeur et la nouvelle valeur. Le retour arrière restaure aussi la base, puis surligne les lignes touchées.
+        </div>
+        {!gridActionHistory.length ? (
+          <div style={{ padding: 18, textAlign: 'center', color: 'var(--color-text-3)', fontSize: 12 }}>Aucune modification IA enregistrée pour cette grille.</div>
+        ) : [...gridActionHistory].map((action, index) => ({ action, index })).reverse().map(({ action, index }) => {
+          const undone = index >= gridHistoryCursor
+          return (
+            <div key={action.id || index} style={{ border: `1px solid ${undone ? 'var(--color-border)' : 'var(--color-primary)'}`, borderRadius: 8, padding: '10px 10px 12px', background: undone ? 'var(--color-surface)' : 'color-mix(in srgb, var(--color-primary) 7%, var(--color-surface))', opacity: undone ? 0.65 : 1, display: 'flex', flexDirection: 'column', minHeight: 90 }}>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+                  <strong style={{ fontSize: 12, color: 'var(--color-text)' }}>{action.label || 'Action IA'}</strong>
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                    <button
+                      type="button"
+                      onClick={() => onRestoreGridHistoryTo?.(index)}
+                      disabled={loading}
+                      title="Revenir à ce point et oublier les modifications suivantes"
+                      style={{ ...iconBtn(), width: 24, height: 24, border: '1px solid var(--color-border)', color: 'var(--color-primary)', opacity: loading ? 0.45 : 1 }}
+                    >
+                      <Undo2 size={12} />
+                    </button>
+                    <span style={{ fontSize: 9, fontWeight: 900, color: undone ? 'var(--color-text-3)' : 'var(--color-primary)', textTransform: 'uppercase' }}>{undone ? 'annulée' : 'active'}</span>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {(action.changes || []).slice(0, 8).map((change, changeIndex) => (
+                    <div key={`${action.id || index}-${changeIndex}`} style={{ fontSize: 11, color: 'var(--color-text-2)' }}>
+                      Ligne {repLetter(change.index)} · {change.fieldLabel || change.field} : <strong>{change.oldValue ?? '—'}</strong> → <strong>{change.newValue ?? '—'}</strong>
+                    </div>
+                  ))}
+                  {(action.changes || []).length > 8 && <div style={{ fontSize: 10, color: 'var(--color-text-3)' }}>+ {(action.changes || []).length - 8} autre(s) ligne(s)</div>}
+                </div>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', flexWrap: 'wrap', gap: '3px 10px', marginTop: 10, paddingTop: 8, borderTop: '1px solid color-mix(in srgb, var(--color-border) 65%, transparent)', lineHeight: 1.25 }}>
+                <span style={{ fontSize: 9, color: 'var(--color-text-3)', fontWeight: 700, whiteSpace: 'nowrap' }}>{action.user || 'Utilisateur'}</span>
+                <span style={{ fontSize: 9, color: 'var(--color-text-3)', whiteSpace: 'nowrap' }}>{new Date(action.createdAt || Date.now()).toLocaleString('fr-FR')}</span>
+              </div>
+            </div>
+          )
+        })}
+      </div>}
 
-      <div style={{ padding: 10, borderTop: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', gap: 7, flexShrink: 0 }}>
+      {activeTab === 'chat' && <div style={{ padding: 10, borderTop: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', gap: 7, flexShrink: 0 }}>
         {pastedImages.length > 0 && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
             {pastedImages.map(image => {
@@ -666,7 +939,7 @@ function StepperAssistantPanel({
             onChange={handleDraftChange}
             onPaste={handleDraftPaste}
             onKeyDown={(event) => event.key === 'Enter' && !event.shiftKey && (event.preventDefault(), submit())}
-            placeholder="Dis à Gemma 4 quoi modifier…"
+            placeholder="Dis à Zerux IA quoi modifier…"
             disabled={loading}
             rows={1}
             style={{ flex: 1, minWidth: 0, height: 36, maxHeight: 118, resize: 'none', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-input-bg)', color: 'var(--color-text)', fontSize: 12, lineHeight: '20px', outline: 'none', fontFamily: 'var(--font-body)' }}
@@ -676,7 +949,7 @@ function StepperAssistantPanel({
           </button>
         </div>
         {pastedImages.length > 0 && <div style={{ fontSize: 10, color: 'var(--color-text-3)' }}>{pastedImages.length} pièce{pastedImages.length > 1 ? 's' : ''} jointe{pastedImages.length > 1 ? 's' : ''}</div>}
-      </div>
+      </div>}
     </aside>
   )
 }
@@ -694,7 +967,7 @@ function CompactDevisHeader({
   currentVersionId,
   onOpenExperiences,
   onOpenRules,
-  onBackToChat,
+  onBackHome,
 }) {
   const [infoOpen, setInfoOpen] = useState(false)
   const infoPopoverRef = useRef(null)
@@ -836,8 +1109,8 @@ function CompactDevisHeader({
         <button type="button" onClick={onOpenRules} style={actionStyle} title="Règles" aria-label="Règles">
           <Shield size={15} />
         </button>
-        <button type="button" onClick={onBackToChat} style={actionStyle} title="Retour au chat" aria-label="Retour au chat">
-          <MessageCircleReply size={15} />
+        <button type="button" onClick={onBackHome} style={actionStyle} title="Accueil" aria-label="Accueil">
+          <ArrowLeft size={15} />
         </button>
       </div>
     </header>
@@ -959,7 +1232,7 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
   const devisForSelectedDeal = useMemo(() => {
     if (!selectedDeal?.id) return []
     const key = String(selectedDeal.id)
-    return (existingDevis || []).filter(d => String(d.deal_id) === key)
+    return sortDevisByQuoteNumber((existingDevis || []).filter(d => String(d.deal_id) === key))
   }, [existingDevis, selectedDeal?.id])
 
   const createDeal = async () => {
@@ -1313,7 +1586,7 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
                     const isEditing = editingDealId === dId
                     const dealName = d.properties?.dealname || `Deal #${dId}`
                     const dealPayload = { id: dId, name: dealName, amount: d.properties?.amount }
-                    const dealDevis = (existingDevis || []).filter(devis => String(devis.deal_id) === String(dId))
+                    const dealDevis = sortDevisByQuoteNumber((existingDevis || []).filter(devis => String(devis.deal_id) === String(dId)))
                     const devisCount = dealDevis.length || dealDevisCount.get(String(dId)) || 0
                     const createdDate = d.properties?.createdate
                       ? new Date(d.properties.createdate).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })
@@ -1476,7 +1749,9 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
                                         </button>
                                       </span>
                                     ) : (
-                                      <span style={{ display: 'block', fontSize: 11, fontWeight: 800, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{devis.name}</span>
+                                      <span title={devis.name || devis.quote_number || ''} style={{ display: 'block', fontSize: 11, fontWeight: 800, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                        {devis.quote_number || devis.name}
+                                      </span>
                                     )}
                                     <span style={{ display: 'block', fontSize: 9, color: 'var(--color-text-3)', marginTop: 1 }}>
                                       {devis.status} · {new Date(devis.updated_at).toLocaleDateString('fr-FR')} · {Number(devis.versions_count || 0)} version{Number(devis.versions_count || 0) > 1 ? 's' : ''} · {rowCount} ligne{rowCount > 1 ? 's' : ''} · {totalHt.toLocaleString('fr-FR')} € HT
@@ -1633,14 +1908,11 @@ function RowCard({ row, index, active, expanded, onToggle, onSelect }) {
 // ══════════════════════════════════════════════════════════════════════════════
 // ── STEP 2: VERSION TREE ───────────────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════════════════
-function StepVersions({ devisId, currentVersionId, onVersionSelected, onContinue }) {
+function StepVersions({ devisId, currentVersionId, currentDevis = null, selectedCompany = null, selectedDeal = null, onVersionSelected, onContinue }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [data, setData] = useState(null)
   const [busyId, setBusyId] = useState(null)
-  const [editingVersionId, setEditingVersionId] = useState(null)
-  const [editingVersionTitle, setEditingVersionTitle] = useState('')
-  const [savingVersionId, setSavingVersionId] = useState(null)
   const [editingCommentVersionId, setEditingCommentVersionId] = useState(null)
   const [editingCommentText, setEditingCommentText] = useState('')
   const [savingCommentVersionId, setSavingCommentVersionId] = useState(null)
@@ -1753,6 +2025,23 @@ function StepVersions({ devisId, currentVersionId, onVersionSelected, onContinue
     versions.filter(version => (childrenByParent.get(version.id) || []).length > 0).map(version => version.id)
   ), [childrenByParent, versions])
 
+  const toggleVersionCollapsed = (versionId) => {
+    setCollapsedVersionIds(previous => {
+      const next = new Set(previous)
+      if (next.has(versionId)) next.delete(versionId)
+      else next.add(versionId)
+      return next
+    })
+  }
+
+  const collapseAllVersions = () => {
+    setCollapsedVersionIds(new Set(parentVersionIds))
+  }
+
+  const expandAllVersions = () => {
+    setCollapsedVersionIds(new Set())
+  }
+
   const activateVersion = async (version) => {
     if (!version || !devisId) return
     if (String(version.id) === String(activeVersionId)) return true
@@ -1779,36 +2068,9 @@ function StepVersions({ devisId, currentVersionId, onVersionSelected, onContinue
     onContinue?.()
   }
 
-  const startEditingVersion = (version) => {
-    setEditingVersionId(version.id)
-    setEditingVersionTitle(versionDisplayName(version))
-  }
-
-  const cancelEditingVersion = () => {
-    setEditingVersionId(null)
-    setEditingVersionTitle('')
-  }
-
-  const saveVersionTitle = async (version) => {
-    const title = editingVersionTitle.trim()
-    if (!version || !title || savingVersionId) return
-    setSavingVersionId(version.id)
-    try {
-      await api.patch(`/devis/${devisId}/versions/${version.id}`, { title })
-      setEditingVersionId(null)
-      setEditingVersionTitle('')
-      await loadVersions()
-    } catch (err) {
-      setError(err?.error || err?.message || 'Erreur renommage version')
-    } finally {
-      setSavingVersionId(null)
-    }
-  }
-
   const startEditingComment = (version) => {
-    const comment = versionComment(version)
     setEditingCommentVersionId(version.id)
-    setEditingCommentText(comment?.content || '')
+    setEditingCommentText(versionComment(version)?.content || '')
   }
 
   const cancelEditingComment = () => {
@@ -1816,21 +2078,9 @@ function StepVersions({ devisId, currentVersionId, onVersionSelected, onContinue
     setEditingCommentText('')
   }
 
-  const toggleVersionCollapsed = (versionId) => {
-    setCollapsedVersionIds((previous) => {
-      const next = new Set(previous)
-      if (next.has(versionId)) next.delete(versionId)
-      else next.add(versionId)
-      return next
-    })
-  }
-
-  const collapseAllVersions = () => setCollapsedVersionIds(new Set(parentVersionIds))
-  const expandAllVersions = () => setCollapsedVersionIds(new Set())
-
   const saveVersionComment = async (version) => {
-    if (!version || savingCommentVersionId) return
     const content = editingCommentText.trim()
+    if (!version || savingCommentVersionId) return
     setSavingCommentVersionId(version.id)
     const existingComment = versionComment(version)
     try {
@@ -1910,6 +2160,9 @@ function StepVersions({ devisId, currentVersionId, onVersionSelected, onContinue
     sent_hubspot: 'Envoyé HubSpot',
     archived: 'Archivé',
   }[status] || status || 'Brouillon')
+  const contextClientName = currentDevis?.client_name || selectedCompany?.name || 'Client non renseigné'
+  const contextProjectName = selectedDeal?.name || currentDevis?.deal_name || currentDevis?.project_name || (currentDevis?.deal_id ? `Projet #${currentDevis.deal_id}` : 'Projet non renseigné')
+  const contextQuoteNumber = currentDevis?.quote_number || currentDevis?.name || (devisId ? `D${devisId}` : 'Référence devis non attribuée')
 
   return (
     <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '26px 32px' }}>
@@ -1957,6 +2210,17 @@ function StepVersions({ devisId, currentVersionId, onVersionSelected, onContinue
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, marginBottom: 18 }}>
           <div>
             <h2 style={{ margin: '0 0 4px', fontSize: 20 }}>Versions du devis</h2>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '4px 9px', borderRadius: 6, background: 'var(--color-surface)', border: '1px solid var(--color-border)', color: 'var(--color-text)', fontSize: 12, fontWeight: 800 }}>
+                <User size={12} /> {contextClientName}
+              </span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '4px 9px', borderRadius: 6, background: 'var(--color-surface)', border: '1px solid var(--color-border)', color: 'var(--color-text)', fontSize: 12, fontWeight: 800 }}>
+                <Briefcase size={12} /> {contextProjectName}
+              </span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '4px 9px', borderRadius: 6, background: 'color-mix(in srgb, var(--color-primary) 9%, var(--color-surface))', border: '1px solid var(--color-primary)', color: 'var(--color-primary)', fontSize: 12, fontWeight: 900 }}>
+                <Hash size={12} /> {contextQuoteNumber}
+              </span>
+            </div>
             <p style={{ margin: 0, color: 'var(--color-text-2)', fontSize: 13 }}>
               Ouvrez une version existante, créez une nouvelle version depuis celle-ci, puis continuez vers la grille.
             </p>
@@ -1996,7 +2260,6 @@ function StepVersions({ devisId, currentVersionId, onVersionSelected, onContinue
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {orderedVersions.map(version => {
               const active = version.id === activeVersionId
-              const isEditingVersion = editingVersionId === version.id
               const versionNumber = versionNumberById.get(version.id) || String(version.version_label || '').replace(/^v/i, '') || '1'
               const parentVersion = version.parent_version_id ? versionById.get(version.parent_version_id) : null
               const parentNumber = parentVersion ? versionNumberById.get(parentVersion.id) : null
@@ -2030,45 +2293,6 @@ function StepVersions({ devisId, currentVersionId, onVersionSelected, onContinue
                             {versionNumber}
                           </span>
                           <div style={{ minWidth: 0, flex: 1 }}>
-                            {isEditingVersion ? (
-                              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }} onClick={(event) => event.stopPropagation()}>
-                                <input
-                                  value={editingVersionTitle}
-                                  onChange={(event) => setEditingVersionTitle(event.target.value)}
-                                  onKeyDown={(event) => {
-                                    if (event.key === 'Enter') {
-                                      event.preventDefault()
-                                      saveVersionTitle(version)
-                                    }
-                                    if (event.key === 'Escape') {
-                                      event.preventDefault()
-                                      cancelEditingVersion()
-                                    }
-                                  }}
-                                  autoFocus
-                                  style={{
-                                    flex: 1, minWidth: 0, padding: '5px 8px', borderRadius: 6,
-                                    border: '1px solid var(--color-border)', background: 'var(--color-input-bg, var(--color-bg))',
-                                    color: 'var(--color-text)', fontSize: 12, fontWeight: 700, fontFamily: 'var(--font-body)',
-                                  }}
-                                />
-                                <button type="button" onClick={(event) => { event.stopPropagation(); saveVersionTitle(version) }} disabled={savingVersionId === version.id || !editingVersionTitle.trim()} style={{ ...iconBtn(), color: 'var(--color-primary)' }} title="Valider le titre">
-                                  {savingVersionId === version.id ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Check size={13} />}
-                                </button>
-                                <button type="button" onClick={(event) => { event.stopPropagation(); cancelEditingVersion() }} style={iconBtn()} title="Annuler">
-                                  <X size={13} />
-                                </button>
-                              </div>
-                            ) : (
-                              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                <div style={{ fontWeight: 800, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                  {versionDisplayName(version)}
-                                </div>
-                                <button type="button" onClick={(event) => { event.stopPropagation(); startEditingVersion(version) }} style={iconBtn()} title="Renommer cette version">
-                                  <Pencil size={12} />
-                                </button>
-                              </div>
-                            )}
                             <div style={{ fontSize: 10, color: 'var(--color-text-3)' }}>
                               {statusLabel(version.status)} · {rowCount} ligne{rowCount > 1 ? 's' : ''} · {totalHt.toLocaleString('fr-FR')} € HT · {version.comments?.length || 0} commentaire{(version.comments?.length || 0) > 1 ? 's' : ''}{childCount ? ` · ${childCount} fille${childCount > 1 ? 's' : ''}${collapsed ? ' repliée' : ''}` : ''}
                             </div>
@@ -2260,7 +2484,7 @@ function StepAnalysis({
         )}
       </div>
 
-      {/* Right: Gemma chat */}
+      {/* Right: Zerux IA chat */}
       <div style={{
         width: chatWidth, minWidth: chatWidth, flexShrink: 0, display: 'flex', flexDirection: 'column',
         height: '100%', overflow: 'hidden', borderLeft: '1px solid var(--color-border)', background: 'var(--color-surface)',
@@ -2268,7 +2492,7 @@ function StepAnalysis({
         <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
           <Bot size={16} color="var(--color-primary)" />
           <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 700, fontSize: '13px' }}>Assistant Gemma</div>
+            <div style={{ fontWeight: 700, fontSize: '13px' }}>Zerux IA</div>
             {aiRowData && (
               <div style={{ fontSize: '10px', color: 'var(--color-text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 Ligne {(aiRow ?? 0) + 1} — {aiRowData.gamme} {aiRowData.vantail}
@@ -2338,7 +2562,7 @@ function StepAnalysis({
               ))}
               {aiLoading && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--color-text-3)', fontSize: '12px' }}>
-                  <Loader2 size={14} style={{ animation: 'spin 0.8s linear infinite' }} /> Gemma réfléchit…
+                  <Loader2 size={14} style={{ animation: 'spin 0.8s linear infinite' }} /> Zerux IA réfléchit…
                 </div>
               )}
               <div ref={aiEndRef} />
@@ -2379,6 +2603,8 @@ function StepEditor({
   defaultTransportAddress = '',
   askAIEditor,
   assistantHighlights = null,
+  onGridAction,
+  onGridHistoryInvalidated,
 }) {
   const [saving, setSaving] = useState(null)
   const [visibleGridRows, setVisibleGridRows] = useState([])
@@ -2393,10 +2619,26 @@ function StepEditor({
     setSaving(row._lineId || `new-${index}`)
     try {
       const payload = gridRowToLinePayload(row, index)
+      const beforeLine = row._lineId ? lines.find(line => String(line.id) === String(row._lineId)) : null
+      const afterLine = beforeLine ? { ...beforeLine, ...payload, id: beforeLine.id } : null
       if (row._lineId) {
         await api.put(`/devis/${devisId}/lines/${row._lineId}`, payload)
       } else {
         await api.post(`/devis/${devisId}/lines`, payload)
+      }
+      if (beforeLine && afterLine) {
+        const changes = buildGridLineChanges({ beforeLine, afterLine, index, source: 'manual' })
+        if (changes.length) {
+          onGridAction?.({
+            label: `Modification manuelle · ligne ${repLetter(index)}`,
+            prompt: 'Modification directe dans la grille',
+            origin: 'manual',
+            changes,
+          })
+          if (changes.some(change => ['gamme', 'hauteur_mm', 'largeur_mm', 'type_porte'].includes(change.field))) {
+            setVisibleGridRows(current => current.map((item, rowIndex) => rowIndex === index ? { ...item } : item))
+          }
+        }
       }
       await onRefresh()
     } catch (err) {
@@ -2404,18 +2646,19 @@ function StepEditor({
     } finally {
       setSaving(null)
     }
-  }, [devisId, onRefresh])
+  }, [devisId, lines, onGridAction, onRefresh])
 
   const deleteGridRow = useCallback(async (row) => {
     if (!devisId || !row?._lineId) return
     try {
       await api.delete(`/devis/${devisId}/lines/${row._lineId}`)
+      await onGridHistoryInvalidated?.('delete-line')
       onRefresh()
     } catch (err) {
       console.error('Grid line delete error:', err)
       onRefresh()
     }
-  }, [devisId, onRefresh])
+  }, [devisId, onGridHistoryInvalidated, onRefresh])
 
   const checkpointVersion = useCallback(async () => {
     if (!devisId || !versionId) return
@@ -2474,6 +2717,8 @@ function StepEditor({
       <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
         <DevisGridWorkspace
           embedded
+          devisId={devisId}
+          versionId={versionId}
           initialRows={gridRows}
           assistantHighlights={assistantHighlights}
           defaultTransportAddress={defaultTransportAddress}
@@ -2655,8 +2900,8 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
     setDownloading(true); setStatusMsg('')
     try {
       await saveAllDesignations()
-      await runFinalCheck({ silent: true })
-      const res = await fetch(`/api/devis/${devisId}/pdf`, {
+      const pdfUrl = `/api/devis/${devisId}/pdf${versionId ? `?version_id=${encodeURIComponent(versionId)}` : ''}`
+      const res = await fetch(pdfUrl, {
         headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
       })
       if (!res.ok) throw new Error(`PDF HTTP ${res.status}`)
@@ -2664,7 +2909,7 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `devis-${devisId}.pdf`
+      a.download = contentDispositionFilename(res.headers.get('Content-Disposition')) || `devis-${devisId}.pdf`
       document.body.appendChild(a)
       a.click()
       a.remove()
@@ -2926,6 +3171,7 @@ function StepHubSpot({ devisId, versionId, selectedCompany, selectedDeal, onDeal
   const [loadingDeals, setLoadingDeals] = useState(false)
   const [devisInfo, setDevisInfo] = useState(null)   // { name, status, hubspot_note_id }
   const [versionInfo, setVersionInfo] = useState(null) // { version_label, title, branch_label, hubspot_note_id, hubspot_file_id }
+  const [versionsInfo, setVersionsInfo] = useState([])
   const [loadingMeta, setLoadingMeta] = useState(false)
   const [sending, setSending] = useState(false)
   const [creatingVersion, setCreatingVersion] = useState(false)
@@ -2937,13 +3183,15 @@ function StepHubSpot({ devisId, versionId, selectedCompany, selectedDeal, onDeal
   useEffect(() => {
     if (!devisId) return
     setLoadingMeta(true)
+    setVersionsInfo([])
     Promise.all([
       api.get(`/devis/${devisId}`).catch(() => null),
       versionId
         ? api.get(`/devis/${devisId}/versions`).then(d => {
+            setVersionsInfo(d.versions || [])
             const v = (d.versions || []).find(v => String(v.id) === String(versionId))
             return v || null
-          }).catch(() => null)
+          }).catch(() => { setVersionsInfo([]); return null })
         : Promise.resolve(null),
     ]).then(([devis, version]) => {
       setDevisInfo(devis)
@@ -2982,11 +3230,33 @@ function StepHubSpot({ devisId, versionId, selectedCompany, selectedDeal, onDeal
     return comments.length ? comments[comments.length - 1].content.trim() : ''
   }, [versionInfo?.comments])
 
-  // Compute PDF filename preview (mirrors buildDevisNexusPdf slug logic)
-  const baseName = devisInfo?.name || (devisId ? `D${devisId}` : null)
-  const enrichedName = baseName && versionDisplayLabel ? `${baseName} — ${versionDisplayLabel}` : baseName
-  const slug = enrichedName ? enrichedName.replace(/[^a-zA-Z0-9_-]/g, '_') : null
-  const pdfFilename = slug ? `Devis_NEXUS_${slug}.pdf` : null
+  const versionNumber = useMemo(() => {
+    if (!versionInfo?.id) return null
+    const childrenByParent = new Map()
+    for (const version of versionsInfo || []) {
+      const key = Number(version.parent_version_id || 0)
+      const list = childrenByParent.get(key) || []
+      list.push(version)
+      childrenByParent.set(key, list)
+    }
+    for (const list of childrenByParent.values()) list.sort((a, b) => (a.id || 0) - (b.id || 0))
+    const numbers = new Map()
+    const walk = (parentId, prefix) => {
+      for (const [index, version] of (childrenByParent.get(parentId) || []).entries()) {
+        const number = prefix ? `${prefix}.${index + 1}` : String(index + 1)
+        numbers.set(version.id, number)
+        walk(version.id, number)
+      }
+    }
+    walk(0, '')
+    return numbers.get(versionInfo.id) || String(versionInfo.version_label || '').replace(/^v/i, '') || null
+  }, [versionInfo, versionsInfo])
+
+  const pdfFilename = devisInfo ? devisPdfFilename({
+    quoteNumber: devisInfo.quote_number || devisInfo.name || (devisId ? `D${devisId}` : null),
+    clientName: devisInfo.client_name || selectedCompany?.name,
+    versionNumber,
+  }) : null
 
   // Already sent indicator (from version or devis)
   const alreadySentNoteId = result?.noteId || versionInfo?.hubspot_note_id || devisInfo?.hubspot_note_id || null
@@ -2994,7 +3264,7 @@ function StepHubSpot({ devisId, versionId, selectedCompany, selectedDeal, onDeal
   const currentDeal = deals.find(d => String(d.id) === String(selectedDeal?.id)) || null
   const existingAttachments = currentDeal?.attachments || []
   const noteBodyPreview = [
-    `Devis NEXUS — ${devisInfo?.client_name || selectedCompany?.name || ''} — ${devisInfo?.name || ''}${versionDisplayLabel ? ` — ${versionDisplayLabel}` : ''}`,
+    `Devis NEXUS — ${devisDisplayName({ quoteNumber: devisInfo?.quote_number || devisInfo?.name || (devisId ? `D${devisId}` : null), clientName: devisInfo?.client_name || selectedCompany?.name, versionNumber })}`,
     versionComment ? `Commentaire version : ${versionComment}` : null,
   ].filter(Boolean).join('\n')
 
@@ -3013,6 +3283,7 @@ function StepHubSpot({ devisId, versionId, selectedCompany, selectedDeal, onDeal
       // Refresh version info to reflect new hubspot_note_id
       if (versionId) {
         api.get(`/devis/${devisId}/versions`).then(d => {
+          setVersionsInfo(d.versions || [])
           const v = (d.versions || []).find(v => String(v.id) === String(versionId))
           if (v) setVersionInfo(v)
         }).catch(() => {})
@@ -3282,6 +3553,9 @@ export default function DevisStepper() {
   const [currentVersionId, setCurrentVersionId] = useState(null)
   const [assistantHighlights, setAssistantHighlights] = useState(null)
   const assistantHighlightTimerRef = useRef(null)
+  const [gridActionHistory, setGridActionHistory] = useState([])
+  const [gridHistoryCursor, setGridHistoryCursor] = useState(0)
+  const [confirmDialog, setConfirmDialog] = useState(null)
 
   // Step 3: analysis
   const [results, setResults] = useState([])
@@ -3402,6 +3676,30 @@ export default function DevisStepper() {
     lastUrlRef.current = nextUrl
   }, [currentDevisId, currentVersionId, selectedCompany?.id, selectedDeal?.id, step])
 
+  useEffect(() => {
+    if (!currentDevisId) {
+      setGridActionHistory([])
+      setGridHistoryCursor(0)
+      return
+    }
+    let active = true
+    api.get(`/devis/${currentDevisId}/grid-actions`, {
+      params: { version_id: currentVersionId || undefined },
+    })
+      .then((actions) => {
+        if (!active) return
+        const safeActions = Array.isArray(actions) ? actions : []
+        setGridActionHistory(safeActions)
+        setGridHistoryCursor(safeActions.length)
+      })
+      .catch(() => {
+        if (!active) return
+        setGridActionHistory([])
+        setGridHistoryCursor(0)
+      })
+    return () => { active = false }
+  }, [currentDevisId, currentVersionId])
+
   // Load existing devis when company changes
   useEffect(() => {
     if (!selectedCompanyId) { setExistingDevis([]); return }
@@ -3489,7 +3787,7 @@ export default function DevisStepper() {
       .catch(() => [])
   }, [currentDevisId])
 
-  const flashAssistantRows = useCallback((rowsToFlash = [], message = 'Modifié par Gemma') => {
+  const flashAssistantRows = useCallback((rowsToFlash = [], message = 'Modifié par Zerux IA') => {
     const indexes = []
     const ids = []
     for (const item of rowsToFlash) {
@@ -3504,9 +3802,202 @@ export default function DevisStepper() {
 
   useEffect(() => () => clearTimeout(assistantHighlightTimerRef.current), [])
 
+  const recordGridAction = useCallback((entry) => {
+    if (!entry?.changes?.length) return
+    const localEntry = {
+      ...entry,
+      id: entry.id || `grid-action-${Date.now()}`,
+      createdAt: entry.createdAt || new Date().toISOString(),
+    }
+    setGridActionHistory(previous => {
+      const kept = previous.slice(0, gridHistoryCursor)
+      const next = [...kept, localEntry]
+      setGridHistoryCursor(next.length)
+      return next
+    })
+    if (currentDevisId && !entry.db_id) {
+      api.post(`/devis/${currentDevisId}/grid-actions`, {
+        version_id: currentVersionId || null,
+        origin: entry.origin || 'manual',
+        label: entry.label || 'Action grille',
+        prompt: entry.prompt || null,
+        changes: entry.changes,
+      }).then((saved) => {
+        if (!saved?.id) return
+        setGridActionHistory(previous => previous.map(action => action.id === localEntry.id ? saved : action))
+      }).catch((err) => {
+        console.error('grid action persist error:', err)
+      })
+    }
+  }, [currentDevisId, currentVersionId, gridHistoryCursor])
+
+  const recordManualGridAction = useCallback((entry) => {
+    recordGridAction(entry)
+    flashAssistantRows((entry?.changes || []).map(change => ({ index: change.index, id: change.lineId })), 'Modification historisée')
+  }, [flashAssistantRows, recordGridAction])
+
+  const clearGridActionHistory = useCallback(async () => {
+    if (!currentDevisId || !gridActionHistory.length) return
+    setConfirmDialog({
+      title: 'Vider l’historique',
+      message: 'Vider tout l’historique des modifications de cette grille ? Cette action supprime aussi les entrées enregistrées en base.',
+      danger: true,
+      confirmLabel: 'Vider',
+      onConfirm: async () => {
+        try {
+          await api.delete(`/devis/${currentDevisId}/grid-actions`, {
+            params: { version_id: currentVersionId || null },
+            data: { version_id: currentVersionId || null },
+          })
+          setGridActionHistory([])
+          setGridHistoryCursor(0)
+        } catch (err) {
+          console.error('grid action clear error:', err)
+        }
+      },
+    })
+  }, [currentDevisId, currentVersionId, gridActionHistory.length])
+
+  const invalidateGridActionHistory = useCallback(async () => {
+    if (!currentDevisId) return
+    try {
+      await api.delete(`/devis/${currentDevisId}/grid-actions`, {
+        params: { version_id: currentVersionId || null },
+        data: { version_id: currentVersionId || null },
+      })
+    } catch (err) {
+      console.error('grid action invalidate error:', err)
+    } finally {
+      setGridActionHistory([])
+      setGridHistoryCursor(0)
+    }
+  }, [currentDevisId, currentVersionId])
+
+  const applyGridHistoryEntry = useCallback(async (entry, direction = 'undo') => {
+    if (!entry?.changes?.length || !currentDevisId) return false
+    const useBefore = direction === 'undo'
+    const targets = entry.changes.map(change => ({
+      ...change,
+      targetLine: useBefore ? change.beforeLine : change.afterLine,
+    })).filter(change => change.targetLine?.id)
+    if (!targets.length) return false
+    const lineById = new Map(lines.map((line, index) => [String(line.id), { line, index }]))
+    const nextLines = lines.map(line => {
+      const change = targets.find(item => String(item.targetLine.id) === String(line.id))
+      return change ? { ...change.targetLine } : line
+    })
+    setLines(nextLines)
+    flashAssistantRows(targets.map(change => {
+      const current = lineById.get(String(change.targetLine.id))
+      return { index: current?.index ?? change.index, id: change.targetLine.id }
+    }), useBefore ? 'Retour arrière IA' : 'Rétabli par IA')
+    await Promise.all(targets.map(change => {
+      const current = lineById.get(String(change.targetLine.id))
+      const index = current?.index ?? change.index ?? 0
+      return api.put(`/devis/${currentDevisId}/lines/${change.targetLine.id}`, gridRowToLinePayload(dbLineToGridRow(change.targetLine), index))
+    }))
+    await refreshLines()
+    return true
+  }, [currentDevisId, flashAssistantRows, lines, refreshLines])
+
+  const undoGridAction = useCallback(async () => {
+    if (gridHistoryCursor <= 0) return
+    const entry = gridActionHistory[gridHistoryCursor - 1]
+    const ok = await applyGridHistoryEntry(entry, 'undo')
+    if (ok) setGridHistoryCursor(value => Math.max(0, value - 1))
+  }, [applyGridHistoryEntry, gridActionHistory, gridHistoryCursor])
+
+  const redoGridAction = useCallback(async () => {
+    if (gridHistoryCursor >= gridActionHistory.length) return
+    const entry = gridActionHistory[gridHistoryCursor]
+    const ok = await applyGridHistoryEntry(entry, 'redo')
+    if (ok) setGridHistoryCursor(value => Math.min(gridActionHistory.length, value + 1))
+  }, [applyGridHistoryEntry, gridActionHistory, gridHistoryCursor])
+
+  const restoreGridHistoryTo = useCallback(async (targetIndex) => {
+    if (!currentDevisId || !gridActionHistory.length) return
+    const targetCursor = targetIndex + 1
+    if (targetCursor < 0 || targetCursor > gridActionHistory.length) return
+    setConfirmDialog({
+      title: 'Revenir à ce point',
+      message: 'Restaurer la grille à cet état et oublier toutes les modifications enregistrées après cette carte ? Cette action supprime aussi ces entrées en base.',
+      danger: true,
+      confirmLabel: 'Revenir ici',
+      onConfirm: async () => {
+        try {
+          if (gridHistoryCursor > targetCursor) {
+            for (let cursor = gridHistoryCursor; cursor > targetCursor; cursor -= 1) {
+              const ok = await applyGridHistoryEntry(gridActionHistory[cursor - 1], 'undo')
+              if (!ok) return
+            }
+          } else if (gridHistoryCursor < targetCursor) {
+            for (let cursor = gridHistoryCursor; cursor < targetCursor; cursor += 1) {
+              const ok = await applyGridHistoryEntry(gridActionHistory[cursor], 'redo')
+              if (!ok) return
+            }
+          }
+
+          const targetAction = gridActionHistory[targetIndex]
+          if (targetAction?.db_id) {
+            await api.delete(`/devis/${currentDevisId}/grid-actions`, {
+              params: { version_id: currentVersionId || null, after_id: targetAction.db_id },
+              data: { version_id: currentVersionId || null, after_id: targetAction.db_id },
+            })
+          }
+          setGridActionHistory(previous => previous.slice(0, targetCursor))
+          setGridHistoryCursor(targetCursor)
+        } catch (err) {
+          console.error('grid history restore error:', err)
+        }
+      },
+    })
+  }, [applyGridHistoryEntry, currentDevisId, currentVersionId, gridActionHistory, gridHistoryCursor])
+
   const applyAssistantLineCommand = useCallback(async (question) => {
     const text = String(question || '').trim()
     if (!text || !currentDevisId) return null
+    const gridEditCommand = parseGridEditCommand(text)
+    if (gridEditCommand) {
+      const targetIndexes = gridEditCommand.scope === 'line'
+        ? [gridEditCommand.lineIndex]
+        : lines.map((line, index) => ((line.line_section || 'products') === 'products' ? index : -1)).filter(index => index >= 0)
+      const validIndexes = targetIndexes.filter(index => lines[index]?.id)
+      if (!validIndexes.length) return 'Je ne trouve aucune ligne produit à modifier dans la grille actuelle.'
+      const changes = []
+      const nextLines = lines.map((line, index) => {
+        if (!validIndexes.includes(index)) return line
+        const oldValue = lineValueForField(line, gridEditCommand.field)
+        if (Number(oldValue) === Number(gridEditCommand.value)) return line
+        const afterLine = withLineField(line, gridEditCommand.field, gridEditCommand.value)
+        changes.push({
+          index,
+          lineId: line.id,
+          field: gridEditCommand.field,
+          fieldLabel: gridEditCommand.label,
+          oldValue,
+          newValue: gridEditCommand.value,
+          beforeLine: line,
+          afterLine,
+        })
+        return afterLine
+      })
+      if (!changes.length) return `Rien à changer : ${gridEditCommand.label} vaut déjà ${gridEditCommand.value} mm sur les lignes ciblées.`
+      setLines(nextLines)
+      flashAssistantRows(changes.map(change => ({ index: change.index, id: change.lineId })), `${gridEditCommand.label} → ${gridEditCommand.value} mm`)
+      await Promise.all(changes.map(change => api.put(
+        `/devis/${currentDevisId}/lines/${change.lineId}`,
+        gridRowToLinePayload(dbLineToGridRow(change.afterLine), change.index)
+      )))
+      recordGridAction({
+        label: `${gridEditCommand.label} → ${gridEditCommand.value} mm`,
+        prompt: text,
+        origin: 'ai',
+        changes,
+      })
+      await refreshLines()
+      const scopeLabel = gridEditCommand.scope === 'line' ? `ligne ${repLetter(changes[0].index)}` : `${changes.length} ligne${changes.length > 1 ? 's' : ''} produit`
+      return `C'est fait : ${gridEditCommand.label} passée à ${gridEditCommand.value} mm sur ${scopeLabel}. Action enregistrée dans l'historique, retour arrière possible.`
+    }
     const performanceCommand = parsePerformanceChangeCommand(text)
     if (performanceCommand) {
       const scopedLineMatch = text.match(/(?:ligne|line)\s*([a-z]|\d+)/i)
@@ -3517,6 +4008,16 @@ export default function DevisStepper() {
       if (!validIndexes.length) return `Je ne trouve aucune ligne ${performanceCommand.fromToken} dans le tableau actuel.`
 
       const nextLines = lines.map((line, index) => validIndexes.includes(index) ? applyPerformanceChangeToLine(line, performanceCommand) : line)
+      const changes = validIndexes.map(index => ({
+        index,
+        lineId: lines[index]?.id,
+        field: 'performance',
+        fieldLabel: 'performance',
+        oldValue: performanceCommand.fromToken,
+        newValue: performanceCommand.toToken,
+        beforeLine: lines[index],
+        afterLine: nextLines[index],
+      })).filter(change => change.lineId)
       setLines(nextLines)
       flashAssistantRows(validIndexes.map(index => ({ index, id: nextLines[index]?.id })), `${performanceCommand.fromToken} → ${performanceCommand.toToken}`)
       await Promise.all(validIndexes.map((lineIndex) => {
@@ -3524,6 +4025,12 @@ export default function DevisStepper() {
         if (!nextLine?.id) return Promise.resolve()
         return api.put(`/devis/${currentDevisId}/lines/${nextLine.id}`, gridRowToLinePayload(dbLineToGridRow(nextLine), lineIndex))
       }))
+      recordGridAction({
+        label: `${performanceCommand.fromToken} → ${performanceCommand.toToken}`,
+        prompt: text,
+        origin: 'ai',
+        changes,
+      })
       await refreshLines()
       const labels = validIndexes.map(index => repLetter(index)).join(', ')
       const pricingNote = performanceCommand.toLevel < performanceCommand.fromLevel
@@ -3560,12 +4067,28 @@ export default function DevisStepper() {
 
     const nextLine = { ...line, ...patch }
     const nextRows = lines.map((item, index) => index === lineIndex ? nextLine : item)
+    const changes = [{
+      index: lineIndex,
+      lineId: line.id,
+      field: Object.keys(patch)[0],
+      fieldLabel,
+      oldValue: line[Object.keys(patch)[0]],
+      newValue: patch[Object.keys(patch)[0]],
+      beforeLine: line,
+      afterLine: nextLine,
+    }]
     setLines(nextRows)
     flashAssistantRows([{ index: lineIndex, id: line.id }], `${fieldLabel} modifiée`)
     await api.put(`/devis/${currentDevisId}/lines/${line.id}`, gridRowToLinePayload(dbLineToGridRow(nextLine), lineIndex))
+    recordGridAction({
+      label: `${fieldLabel} modifiée`,
+      prompt: text,
+      origin: 'ai',
+      changes,
+    })
     await refreshLines()
     return `C'est fait : ligne ${repLetter(lineIndex)}, ${fieldLabel} mis à jour.`
-  }, [currentDevisId, flashAssistantRows, lines, refreshLines, setLines])
+  }, [currentDevisId, flashAssistantRows, lines, recordGridAction, refreshLines, setLines])
 
   const goStep = (n) => {
     setStep(n)
@@ -3790,13 +4313,14 @@ export default function DevisStepper() {
       }
       const localAction = pastedImages.length ? null : await applyAssistantLineCommand(q)
       if (localAction) {
-        const savedAssistant = await saveGemmaMessage({ role: 'assistant', content: localAction, agent_slug: 'Gemma 4 action' }).catch(() => null)
+        const savedAssistant = await saveGemmaMessage({ role: 'assistant', content: localAction, agent_slug: 'Zerux IA action' }).catch(() => null)
         setEditorAiMessages(prev => [...prev, savedAssistant || { id: `tmp-assistant-${Date.now()}`, role: 'assistant', content: localAction }])
         return
       }
       // Send current lines as context
+      const casualQuestion = isCasualAssistantMessage(q) && imagesForAI.length === 0
       const imageOnlyQuestion = imagesForAI.length > 0 && /\b(image|capture|photo|screenshot|visuel|vois|voir|montre|regarde|pdf|document|fichier|pi[èe]ce jointe)\b/i.test(q)
-      const compactRows = imageOnlyQuestion ? [] : lines.slice(0, 120).map(compactLineForAI)
+      const compactRows = (casualQuestion || imageOnlyQuestion) ? [] : lines.slice(0, 120).map(compactLineForAI)
       const compactDocs = [...new Set(compactRows.flatMap(row => Array.isArray(row.docs) ? row.docs : []))]
       const data = await api.post('/devis/ask', {
         devis_id: currentDevisId,
@@ -3810,11 +4334,11 @@ export default function DevisStepper() {
         history: shortHistory,
         images: imagesForAI.map(image => ({ dataUrl: image.dataUrl || image.data_url, type: image.type, name: image.name })),
       })
-      const savedAssistant = await saveGemmaMessage({ role: 'assistant', content: data.answer, agent_slug: 'Gemma 4' }).catch(() => null)
+      const savedAssistant = await saveGemmaMessage({ role: 'assistant', content: data.answer, agent_slug: 'Zerux IA' }).catch(() => null)
       setEditorAiMessages(prev => [...prev, savedAssistant || { id: `tmp-assistant-${Date.now()}`, role: 'assistant', content: data.answer }])
     } catch (err) {
       const content = `❌ ${err.error || err.message}`
-      const savedAssistant = await saveGemmaMessage({ role: 'assistant', content, agent_slug: 'Gemma 4 error' }).catch(() => null)
+      const savedAssistant = await saveGemmaMessage({ role: 'assistant', content, agent_slug: 'Zerux IA error' }).catch(() => null)
       setEditorAiMessages(prev => [...prev, savedAssistant || { id: `tmp-assistant-${Date.now()}`, role: 'assistant', content }])
     } finally {
       setEditorAiLoading(false)
@@ -3857,7 +4381,7 @@ export default function DevisStepper() {
         currentVersionId={currentVersionId}
         onOpenExperiences={() => navigate('/experiences', { state: { returnTo: currentStepperUrl(), returnLabel: 'Retour au devis NEXUS' } })}
         onOpenRules={() => navigate('/rules', { state: { returnTo: currentStepperUrl(), returnLabel: 'Retour au devis NEXUS' } })}
-        onBackToChat={() => navigate('/chat')}
+        onBackHome={() => navigate('/home')}
       />
 
       {/* Step content + assistant */}
@@ -3882,6 +4406,9 @@ export default function DevisStepper() {
             <StepVersions
               devisId={currentDevisId}
               currentVersionId={currentVersionId}
+              currentDevis={currentDevis}
+              selectedCompany={selectedCompany}
+              selectedDeal={selectedDeal}
               onVersionSelected={setCurrentVersionId}
               onContinue={() => goStep(3)}
             />
@@ -3894,6 +4421,8 @@ export default function DevisStepper() {
               defaultTransportAddress={companyDeliveryAddress(selectedCompany)}
               askAIEditor={askAIEditor}
               assistantHighlights={assistantHighlights}
+              onGridAction={recordManualGridAction}
+              onGridHistoryInvalidated={invalidateGridActionHistory}
             />
           )}
           {step === 4 && (
@@ -3929,9 +4458,27 @@ export default function DevisStepper() {
           onAsk={askAIEditor}
           onEditMessage={editGemmaMessage}
           onClearMessages={clearGemmaMessages}
+          gridActionHistory={gridActionHistory}
+          gridHistoryCursor={gridHistoryCursor}
+          onUndoGridAction={undoGridAction}
+          onRedoGridAction={redoGridAction}
+          onRestoreGridHistoryTo={restoreGridHistoryTo}
+          onClearGridHistory={clearGridActionHistory}
           inputRef={editorAiInputRef}
           endRef={editorAiEndRef}
         />
+        {confirmDialog && (
+          <div onClick={() => setConfirmDialog(null)} style={{ position: 'fixed', inset: 0, zIndex: 9500, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+            <div onClick={event => event.stopPropagation()} style={{ width: 360, maxWidth: '92vw', borderRadius: 10, border: '1px solid var(--color-border)', background: 'var(--color-surface)', boxShadow: '0 14px 40px rgba(0,0,0,0.28)', padding: 16 }}>
+              <div style={{ fontSize: 14, fontWeight: 900, color: 'var(--color-text)', marginBottom: 8 }}>{confirmDialog.title}</div>
+              <div style={{ fontSize: 12, lineHeight: 1.5, color: 'var(--color-text-2)', marginBottom: 14 }}>{confirmDialog.message}</div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                <button type="button" onClick={() => setConfirmDialog(null)} style={{ ...ghostBtn(), background: 'var(--color-input-bg)' }}>Annuler</button>
+                <button type="button" onClick={async () => { const action = confirmDialog.onConfirm; setConfirmDialog(null); await action?.() }} style={{ ...ghostBtn(), background: confirmDialog.danger ? '#dc2626' : 'var(--color-primary)', color: '#fff', borderColor: 'transparent' }}>{confirmDialog.confirmLabel || 'Confirmer'}</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

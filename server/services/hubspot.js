@@ -46,6 +46,15 @@ const DEAL_PROPS = [
   'hs_priority',
 ]
 
+const USER_PROPS = [
+  'hs_email',
+  'hs_given_name',
+  'hs_family_name',
+  'hs_job_title',
+  'hs_role',
+  'hs_avatar_filemanager_key',
+]
+
 function getToken() {
   return process.env.HUBSPOT_PRIVATE_APP_TOKEN?.trim() || null
 }
@@ -271,6 +280,22 @@ export async function updateDeal(dealId, { dealname = null, amount = null, pipel
 export async function deleteDeal(dealId) {
   await hubspotFetch(`/crm/v3/objects/deals/${dealId}`, { method: 'DELETE' })
   return { success: true, id: String(dealId) }
+}
+
+/**
+ * List HubSpot CRM user objects.
+ * Required private app scope: crm.objects.users.read
+ */
+export async function listUsers({ after, limit = 25 } = {}) {
+  const lim = Math.min(Math.max(Number(limit) || 25, 1), 100)
+  const query = {
+    limit: lim,
+    archived: 'false',
+    properties: USER_PROPS,
+  }
+  if (after) query.after = after
+
+  return hubspotFetch('/crm/v3/objects/users', { query })
 }
 
 function associationIds(company, type) {

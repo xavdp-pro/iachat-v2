@@ -5,8 +5,7 @@ import {
   Send, Bot, Sparkles, Settings,
   MoreVertical, Archive, ArchiveRestore,
   Menu, X, Paperclip, Mic, MicOff, FileText, ZoomIn,
-  Users, UserPlus, Database, BookOpen, FileSpreadsheet, LayoutGrid,
-  Building2, Shield, Truck,
+  Users, UserPlus, House,
 } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/useAuthStore.js'
@@ -47,6 +46,7 @@ export default function Chat() {
   const [editingMessageId, setEditingMessageId] = useState(null)
   const [editingMessageContent, setEditingMessageContent] = useState('')
   const [confirmDeleteMessage, setConfirmDeleteMessage] = useState(null)
+  const [infoDialog, setInfoDialog] = useState(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [layoutDesktop, setLayoutDesktop] = useState(
     () => typeof window !== 'undefined' && window.matchMedia('(min-width: 1024px)').matches
@@ -310,7 +310,7 @@ export default function Chat() {
     const toAdd = []
     for (const file of files) {
       if (file.size > MAX_ATTACH_BYTES) {
-        alert(`${file.name} : fichier trop volumineux (max 5 Mo)`)
+        setInfoDialog({ title: 'Fichier trop volumineux', message: `${file.name} : fichier trop volumineux (max 5 Mo)` })
         continue
       }
       const data = await readFileAsDataURL(file)
@@ -349,7 +349,7 @@ export default function Chat() {
   const toggleMic = useCallback(() => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition
     if (!SR) {
-      alert('La reconnaissance vocale n\'est pas supportée par ce navigateur.')
+      setInfoDialog({ title: 'Reconnaissance vocale indisponible', message: 'La reconnaissance vocale n\'est pas supportée par ce navigateur.' })
       return
     }
 
@@ -686,37 +686,9 @@ export default function Chat() {
         </nav>
 
         <div className="chat-sidebar-footer">
-          <Link to="/knowledge" className="chat-footer-link" onClick={closeMobileSidebar}>
-            <Database size={16} strokeWidth={2} />
-            Connaissance IA
-          </Link>
-          <Link to="/experiences" className="chat-footer-link" onClick={closeMobileSidebar}>
-            <BookOpen size={16} strokeWidth={2} />
-            Expériences
-          </Link>
-          <Link to="/devis" className="chat-footer-link" onClick={closeMobileSidebar}>
-            <FileSpreadsheet size={16} strokeWidth={2} />
-            Devis NEXUS
-          </Link>
-          <Link to="/devis/grid" className="chat-footer-link" onClick={closeMobileSidebar}>
-            <LayoutGrid size={16} strokeWidth={2} />
-            Grid devis
-          </Link>
-          <Link to="/devis/legacy" className="chat-footer-link" onClick={closeMobileSidebar}>
-            <FileText size={16} strokeWidth={2} />
-            Devis classique
-          </Link>
-          <Link to="/devis/transport" className="chat-footer-link" onClick={closeMobileSidebar}>
-            <Truck size={16} strokeWidth={2} />
-            Tarifs transport
-          </Link>
-          <Link to="/prospects" className="chat-footer-link" onClick={closeMobileSidebar}>
-            <Building2 size={16} strokeWidth={2} />
-            Prospects
-          </Link>
-          <Link to="/rules" className="chat-footer-link" onClick={closeMobileSidebar}>
-            <Shield size={16} strokeWidth={2} />
-            Règles
+          <Link to="/home" className="chat-footer-link" onClick={closeMobileSidebar}>
+            <House size={16} strokeWidth={2} />
+            Accueil
           </Link>
           {user?.role === 'admin' && (
             <Link to="/admin" className="chat-footer-link" onClick={closeMobileSidebar}>
@@ -1349,6 +1321,22 @@ export default function Chat() {
                 <button type="button" className="chat-modal-btn chat-modal-btn--secondary" onClick={closeMembersModal}>
                   {t('common.close')}
                 </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+        {infoDialog && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="chat-modal-backdrop" onClick={() => setInfoDialog(null)}>
+            <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }} className="chat-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="chat-modal-header">
+                <h2 className="chat-modal-title">{infoDialog.title}</h2>
+                <button type="button" className="chat-modal-close" onClick={() => setInfoDialog(null)} aria-label={t('common.close')}>
+                  <X size={18} strokeWidth={2} />
+                </button>
+              </div>
+              <p className="chat-modal-message">{infoDialog.message}</p>
+              <div className="chat-modal-actions">
+                <button type="button" className="chat-modal-btn chat-modal-btn--primary" onClick={() => setInfoDialog(null)}>{t('common.close')}</button>
               </div>
             </motion.div>
           </motion.div>

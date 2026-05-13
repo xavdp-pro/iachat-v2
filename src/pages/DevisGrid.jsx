@@ -1,13 +1,13 @@
 /**
  * DevisGrid — Vue tableur "mode Armand"
  * Route : /devis/grid
- * Layout : gauche (import fichiers) | centre (grille) | droite (chat Gemma)
+ * Layout : gauche (import fichiers) | centre (grille) | droite (chat Zerux IA)
  * Phase MVP : lecture seule + expand/collapse sous-rows
  */
 import { useState, useCallback, useRef, useEffect, useMemo, Fragment } from 'react'
 import { Upload, RefreshCw, ChevronRight, ChevronDown, AlertTriangle, MessageSquare, ArrowLeft, PanelLeftClose, PanelLeftOpen, Plus, Minus, X, Check, Loader2, Settings, Trash2, Calculator, Truck, Package, EyeOff, Eye, BookOpen, ShieldCheck, FileText } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
-import api from '../api/index.js'
+import api, { hasAuthToken } from '../api/index.js'
 import Select from 'react-select'
 
 // ─── Palettes ──────────────────────────────────────────────────────────────
@@ -20,6 +20,7 @@ const CELL = {
 const SUBROW_BG = 'rgba(0,0,0,0.07)'
 const GRID_TOTAL_COLS = 22
 const DIMENSION_COLUMNS = ['haut_ht', 'larg_ht', 'haut_pl', 'larg_pl']
+const VALIDATION_PARALLELISM = 3
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 function rowLetterLabel(index) {
@@ -31,6 +32,17 @@ function rowLetterLabel(index) {
     n = Math.floor(n / 26)
   }
   return label
+}
+
+async function runClientLimited(items, limit, worker) {
+  let cursor = 0
+  const workers = Array.from({ length: Math.min(Math.max(Number(limit) || 1, 1), items.length || 1) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor++
+      await worker(items[index], index)
+    }
+  })
+  await Promise.all(workers)
 }
 
 function extractRef(str) {
@@ -485,6 +497,13 @@ function inferredPerformanceValue(row = {}, key) {
 
 function performanceValue(row = {}, resolved = {}, key) {
   const rawIndexByPerf = { rc: 3, pb: 4, cf: 5, blast: 6, belier: 7, prison: 8, acoustic: null }
+  const hasManualPerf = row._perfOverrides && Object.keys(row._perfOverrides).length > 0
+  if (hasManualPerf) {
+    if (key === 'acoustic') return acousticValue(row._raw?.[16]) || null
+    if (key === 'blast') return blastValue(row._raw?.[rawIndexByPerf[key]]) || null
+    return row._raw?.[rawIndexByPerf[key]] ?? null
+  }
+  if (Array.isArray(row._raw) && row._raw[rawIndexByPerf[key]] === '') return null
   if (key === 'acoustic') return row._overrideAcoustic !== undefined ? row._overrideAcoustic : (resolved._acousticValue || inferredPerformanceValue(row, key))
   if (key === 'blast') return resolved._blastValue || blastValue(row._raw?.[rawIndexByPerf[key]]) || inferredPerformanceValue(row, key)
   return row._raw?.[rawIndexByPerf[key]] ?? inferredPerformanceValue(row, key)
@@ -500,6 +519,21 @@ const amountHeaderCellStyle = {
   background: 'color-mix(in srgb, var(--color-primary) 4%, var(--color-surface))',
   borderBottom: '1px solid var(--color-border)',
   whiteSpace: 'nowrap',
+}
+
+const stickyRowMarkerStyle = {
+  position: 'sticky',
+  left: 0,
+  zIndex: 3,
+  width: 36,
+  minWidth: 36,
+  background: 'var(--color-surface)',
+  boxShadow: '1px 0 0 var(--color-border)',
+}
+
+const stickyRowMarkerHeaderStyle = {
+  ...stickyRowMarkerStyle,
+  zIndex: 5,
 }
 
 function amountEuro(value) {
@@ -635,6 +669,7 @@ const VERDICT_STYLE = {
 }
 
 function lineLikeForRuleValidation(row, position = 0) {
+  const resolved = resolveRow(row)
   return {
     position,
     designation: row.designation || row.type,
@@ -644,6 +679,13 @@ function lineLikeForRuleValidation(row, position = 0) {
     vantail: row.vantail,
     haut_mm: row.haut_mm,
     larg_mm: row.larg_mm,
+    rc: performanceValue(row, resolved, 'rc'),
+    pb: performanceValue(row, resolved, 'pb'),
+    cf: performanceValue(row, resolved, 'cf'),
+    blast: performanceValue(row, resolved, 'blast'),
+    belier: performanceValue(row, resolved, 'belier'),
+    prison: performanceValue(row, resolved, 'prison'),
+    acoustic: performanceValue(row, resolved, 'acoustic'),
     prix_base_ht: row.prix_base_ht,
     ref_base: row.ref_base,
     prix_total_min_ht: row.prix_total_min_ht,
@@ -651,6 +693,16 @@ function lineLikeForRuleValidation(row, position = 0) {
     equip_extra: row.equip_extra,
     serrure: row.serrure,
     ferme_porte: row.ferme_porte,
+    equipements_resolus: {
+      serrure: resolved._serrureLabel || null,
+      garniture_interieure: resolved._garnIntLabel || null,
+      garniture_exterieure: resolved._garnExtLabel || null,
+      vitrage: resolved._vitrageLabel || null,
+      ferme_porte: resolved._fpLabel || null,
+      cremone: row._overrideCremone !== undefined ? row._overrideCremone : resolved._cremoneLabel || null,
+      autres: row._overrideAutres !== undefined ? row._overrideAutres : resolved._otherExtras?.map(extra => extra.label).filter(Boolean).join(', ') || null,
+      acoustique: resolved._acousticValue || null,
+    },
     alertes: row.alertes,
   }
 }
@@ -663,32 +715,248 @@ function summarizeLineVerdicts(verdicts = []) {
 }
 
 function blockingVerdicts(row) {
-  return (row?._ruleCheck?.verdicts || []).filter(v => v.status === 'violation' || v.status === 'warning')
+  return businessVerdicts(row?._ruleCheck?.verdicts || []).filter(v => v.status === 'violation' || v.status === 'warning')
 }
 
-function VerifyRulesModal({ row, onClose }) {
-  const [loading, setLoading] = useState(true)
-  const [result, setResult] = useState(null)
-  const [error, setError] = useState('')
-  useEffect(() => {
-    const run = async () => {
-      setLoading(true); setError('')
-      try {
-        const lineLike = lineLikeForRuleValidation(row, 0)
-        const data = await api.post('/devis/validate-lines', { lines: [lineLike] })
-        setResult(data)
-      } catch (err) {
-        setError(err?.response?.data?.error || err?.message || 'Erreur analyse')
-      } finally {
-        setLoading(false)
+function businessVerdicts(verdicts = []) {
+  return verdicts.filter(verdict => verdict.source !== 'validation' && verdict.status && verdict.status !== 'na')
+}
+
+function technicalVerdicts(verdicts = []) {
+  return verdicts.filter(verdict => verdict.source === 'validation' && verdict.status && verdict.status !== 'na')
+}
+
+function applicableSourceVerdicts(verdicts = []) {
+  return businessVerdicts(verdicts)
+}
+
+function verdictSourceLabel(verdict) {
+  if (verdict.source === 'validation') return 'Analyse IA'
+  const base = verdict.source === 'experience' ? 'Expérience approuvée' : 'Règle active'
+  return verdict.category ? `${base} · ${verdict.category}` : base
+}
+
+function ruleCheckFromValidationLine(report, lineResult) {
+  const verdicts = lineResult?.verdicts || []
+  const applicableVerdicts = businessVerdicts(verdicts)
+  return {
+    checked_at: report?.generated_at || new Date().toISOString(),
+    knowledge_version: report?.knowledge_version || report?.knowledge?.version || null,
+    knowledge_updated_at: report?.knowledge_updated_at || report?.knowledge?.updated_at || null,
+    rules_count: report?.rules_count || report?.knowledge?.rules_count || 0,
+    summary: summarizeLineVerdicts(applicableVerdicts),
+    verdicts,
+    sources: applicableVerdicts.map(verdict => ({
+      source: verdict.source || null,
+      source_id: verdict.source_id ?? verdict.rule_id ?? null,
+      source_label: verdictSourceLabel(verdict),
+      title: verdict.rule_title || 'Source IA',
+      code: verdict.rule_code || null,
+      status: verdict.status,
+      reason: verdict.reason || '',
+    })),
+  }
+}
+
+function ruleCheckFromClientError(error, knowledge = null) {
+  const reason = error?.error || error?.details || error?.message || 'Analyse IA indisponible pour cette ligne'
+  const verdicts = [{
+    source: 'validation',
+    status: 'warning',
+    rule_title: 'Validation IA de la ligne',
+    reason,
+    fix: 'Relancer la validation IA lorsque le service est disponible.',
+  }]
+  return {
+    checked_at: new Date().toISOString(),
+    knowledge_version: knowledge?.version || null,
+    knowledge_updated_at: knowledge?.updated_at || null,
+    rules_count: knowledge?.rules_count || 0,
+    summary: summarizeLineVerdicts([]),
+    verdicts,
+    sources: [],
+  }
+}
+
+function buildValidationReport(rows, meta = {}) {
+  const lineReports = rows
+    .map((row, index) => ({ row, index }))
+    .filter(({ row }) => sectionOf(row) === 'products')
+    .map(({ row, index }) => {
+      const verdicts = row?._ruleCheck?.verdicts || []
+      const business = businessVerdicts(verdicts)
+      const issues = business.filter(verdict => verdict.status === 'warning' || verdict.status === 'violation')
+      const ok = business.filter(verdict => verdict.status === 'ok')
+      const technical = technicalVerdicts(verdicts)
+      const resolved = resolveRow(row)
+      return {
+        position: index,
+        label: rowLetterLabel(index),
+        designation: resolved.type || row.designation || row.type || `Ligne ${index + 1}`,
+        gamme: row.gamme || null,
+        vantail: row.vantail || null,
+        issues,
+        ok,
+        technical,
+        verdicts,
       }
+    })
+  const summary = { ok: 0, warning: 0, violation: 0, na: 0 }
+  const sourceMap = new Map()
+  for (const line of lineReports) {
+    for (const verdict of businessVerdicts(line.verdicts)) {
+      summary[verdict.status] = (summary[verdict.status] || 0) + 1
+      const key = verdictKey(verdict) || `${verdict.rule_title}-${verdict.status}`
+      const current = sourceMap.get(key) || {
+        code: verdict.rule_code || null,
+        title: verdict.rule_title || 'Source IA',
+        source: verdict.source || 'rule',
+        status: verdict.status,
+        count: 0,
+      }
+      current.count += 1
+      if (verdict.status === 'violation' || (verdict.status === 'warning' && current.status === 'ok')) current.status = verdict.status
+      sourceMap.set(key, current)
     }
-    run()
+  }
+  const issueLines = lineReports.filter(line => line.issues.length > 0)
+  const technicalLines = lineReports.filter(line => line.technical.length > 0)
+  const cleanLines = lineReports.filter(line => !line.issues.length && !line.technical.length)
+  return {
+    generated_at: meta.generatedAt || new Date().toISOString(),
+    mode: meta.mode || 'manual',
+    rules_count: meta.rulesCount || meta.knowledge?.rules_count || 0,
+    knowledge: meta.knowledge || null,
+    knowledge_version: meta.knowledge?.version || null,
+    knowledge_updated_at: meta.knowledge?.updated_at || null,
+    status: issueLines.length ? 'issues' : (technicalLines.length ? 'technical' : 'validated'),
+    total_lines: lineReports.length,
+    validated_rows: cleanLines.length,
+    issue_rows: issueLines.length,
+    technical_rows: technicalLines.length,
+    applicable_sources: [...sourceMap.values()].reduce((sum, source) => sum + source.count, 0),
+    sources: [...sourceMap.values()].sort((leftSource, rightSource) => (rightSource.status === 'violation') - (leftSource.status === 'violation') || (rightSource.status === 'warning') - (leftSource.status === 'warning') || rightSource.count - leftSource.count),
+    summary,
+    lines: lineReports,
+  }
+}
+
+function isRuleCheckStale(check, knowledge) {
+  if (!knowledge?.version) return false
+  if (!check) return (knowledge.rules_count || 0) > 0
+  return String(check.knowledge_version || '') !== String(knowledge.version)
+}
+
+function needsRuleCheckUpdate(row, knowledge) {
+  if (!row?._ruleCheck) return !knowledge || (knowledge.rules_count || 0) > 0
+  return isRuleCheckStale(row._ruleCheck, knowledge)
+}
+
+function validationDateLabel(value) {
+  if (!value) return 'jamais'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return String(value)
+  return date.toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })
+}
+
+function verdictKey(verdict) {
+  return String(verdict?.rule_id ?? verdict?.rule_code ?? verdict?.rule_title ?? '')
+}
+
+function compareRuleVerdicts(previous = [], next = []) {
+  const before = new Map(previous.map(verdict => [verdictKey(verdict), verdict]))
+  const after = new Map(next.map(verdict => [verdictKey(verdict), verdict]))
+  const changes = []
+  for (const verdict of next) {
+    const key = verdictKey(verdict)
+    const old = before.get(key)
+    if (!old) {
+      if (verdict.status !== 'na') changes.push({ type: 'new', verdict })
+      continue
+    }
+    if (old.status !== verdict.status || (old.reason || '') !== (verdict.reason || '') || (old.fix || '') !== (verdict.fix || '')) {
+      changes.push({ type: 'changed', before: old, verdict })
+    }
+  }
+  for (const verdict of previous) {
+    const key = verdictKey(verdict)
+    if (!after.has(key) && verdict.status !== 'na') changes.push({ type: 'removed', before: verdict })
+  }
+  return changes
+}
+
+function rulePopoverSummary(row, knowledge) {
+  if (row?._ruleChecking) return 'Analyse IA en cours...'
+  const check = row?._ruleCheck
+  const stale = isRuleCheckStale(check, knowledge)
+  if (!check) return stale ? 'Aucune analyse IA avec la base R&D actuelle.' : 'Aucune analyse IA enregistrée pour cette ligne.'
+  const summary = check.summary || summarizeLineVerdicts(check.verdicts || [])
+  const sources = applicableSourceVerdicts(check.verdicts || [])
+  const technicalIssues = technicalVerdicts(check.verdicts || [])
+  const issues = (summary.violation || 0) + (summary.warning || 0)
+  const lines = [
+    stale ? 'Analyse IA à mettre à jour.' : 'Analyse IA à jour.',
+    `${check.rules_count || 0} règle(s)/expérience(s) disponibles dans la base.`,
+    `${sources.length} source(s) applicable(s) à cette ligne.`,
+    technicalIssues.length ? 'Analyse technique à relancer.' : (issues ? `${summary.violation || 0} violation(s), ${summary.warning || 0} attention(s).` : 'Aucun blocage détecté.'),
+    `Dernière analyse : ${validationDateLabel(check.checked_at)}.`,
+  ]
+  if (sources.length) lines.push(sources.slice(0, 3).map(verdict => `${verdict.rule_code ? `${verdict.rule_code} · ` : ''}${verdict.rule_title}`).join('\n'))
+  return lines.join('\n')
+}
+
+function VerifyRulesModal({ row, rowIndex = 0, currentKnowledge = null, onClose, onApplyResult }) {
+  const [loading, setLoading] = useState(false)
+  const [activeCheck, setActiveCheck] = useState(row?._ruleCheck || null)
+  const [lastChanges, setLastChanges] = useState(row?._ruleCheck?._lastChanges || [])
+  const [hasRun, setHasRun] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    setActiveCheck(row?._ruleCheck || null)
+    setLastChanges(row?._ruleCheck?._lastChanges || [])
+    setHasRun(false)
+    setError('')
   }, [row])
 
-  const summary = result?.summary || {}
-  const verdicts = result?.lines?.[0]?.verdicts || []
-  const shownVerdicts = verdicts.filter(v => v.status !== 'na')
+  const runAnalysis = async () => {
+    setLoading(true); setError('')
+    try {
+      const previous = activeCheck
+      const lineLike = lineLikeForRuleValidation(row, rowIndex)
+      const data = await api.post('/devis/validate-lines', { lines: [lineLike] }, { timeout: 180000 })
+      const lineResult = data?.lines?.[0] || { position: rowIndex, verdicts: [] }
+      const nextCheck = ruleCheckFromValidationLine(data, lineResult)
+      const changes = compareRuleVerdicts(previous?.verdicts || [], nextCheck.verdicts || [])
+      nextCheck._lastChanges = changes
+      setActiveCheck(nextCheck)
+      setLastChanges(changes)
+      setHasRun(true)
+      onApplyResult?.(rowIndex, nextCheck, data?.knowledge || null)
+    } catch (err) {
+      setError(err?.error || err?.details || err?.message || 'Erreur analyse')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const verdicts = activeCheck?.verdicts || []
+  const shownVerdicts = businessVerdicts(verdicts)
+  const summary = activeCheck?.summary || summarizeLineVerdicts(shownVerdicts)
+  const sourceVerdicts = applicableSourceVerdicts(verdicts)
+  const technicalIssues = technicalVerdicts(verdicts)
+  const stale = isRuleCheckStale(activeCheck, currentKnowledge)
+  const linePreview = lineLikeForRuleValidation(row, rowIndex)
+  const meta = [
+    linePreview.type || row?.type,
+    linePreview.gamme,
+    linePreview.vantail,
+  ].filter(Boolean).join(' · ')
+  const perfPreview = ['rc','pb','cf','blast','belier','prison','acoustic']
+    .map(key => [PERF_LABELS[key], performanceValue(row, resolveRow(row), key)])
+    .filter(([, value]) => value != null)
+    .map(([label, value]) => `${label} ${value}`)
+    .join(' · ')
 
   return (
     <div
@@ -697,28 +965,58 @@ function VerifyRulesModal({ row, onClose }) {
     >
       <div
         onClick={e => e.stopPropagation()}
-        style={{ background: 'var(--color-surface)', borderRadius: 10, padding: '22px 24px', width: 600, maxWidth: '96vw', maxHeight: '80vh', overflowY: 'auto', boxShadow: '0 8px 32px rgba(0,0,0,0.28)' }}
+        style={{ background: 'var(--color-surface)', borderRadius: 10, padding: '22px 24px', width: 700, maxWidth: '96vw', maxHeight: '84vh', overflowY: 'auto', boxShadow: '0 8px 32px rgba(0,0,0,0.28)' }}
       >
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
           <span style={{ display: 'flex', alignItems: 'center', gap: 7, fontWeight: 700, fontSize: 14, color: 'var(--color-primary)' }}>
-            <ShieldCheck size={15} /> Vérification des règles IA
+            <ShieldCheck size={15} /> Analyse IA ligne {rowLetterLabel(rowIndex)}
           </span>
           <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-3)', padding: 4 }}><X size={15} /></button>
         </div>
 
-        <div style={{ fontSize: 11, color: 'var(--color-text-2)', marginBottom: 12, padding: '6px 10px', background: 'var(--color-input-bg)', borderRadius: 6 }}>
-          {row.designation || row.type || 'Ligne'} — {row.haut_mm}×{row.larg_mm} mm — {row.prix_base_ht ? `${Number(row.prix_base_ht).toLocaleString('fr-FR')} € HT` : 'prix N/A'}
+        <div style={{ fontSize: 11, color: 'var(--color-text-2)', marginBottom: 12, padding: '8px 10px', background: 'var(--color-input-bg)', borderRadius: 6, lineHeight: 1.55 }}>
+          <div style={{ fontWeight: 800, color: 'var(--color-text)' }}>{row.designation || row.type || 'Ligne'}</div>
+          <div>{meta || 'Type non renseigné'} · {row.haut_mm || '—'}×{row.larg_mm || '—'} mm · {row.prix_base_ht ? `${Number(row.prix_base_ht).toLocaleString('fr-FR')} € HT` : 'prix N/A'}</div>
+          {perfPreview && <div>{perfPreview}</div>}
         </div>
+
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 10, color: 'var(--color-text-3)', lineHeight: 1.5 }}>
+            <div>Base IA actuelle : {currentKnowledge?.rules_count ?? activeCheck?.rules_count ?? 0} règle(s)/expérience(s).</div>
+            <div>Dernière analyse : {validationDateLabel(activeCheck?.checked_at)}.</div>
+          </div>
+          <button
+            type="button"
+            onClick={runAnalysis}
+            disabled={loading}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 11px', borderRadius: 6, border: `1px solid ${stale ? '#dc2626' : 'var(--color-primary)'}`, background: stale ? 'rgba(220,38,38,0.12)' : 'color-mix(in srgb, var(--color-primary) 10%, var(--color-surface))', color: stale ? '#dc2626' : 'var(--color-primary)', fontSize: 11, fontWeight: 800, cursor: loading ? 'default' : 'pointer', opacity: loading ? 0.75 : 1 }}
+          >
+            {loading ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <RefreshCw size={13} />}
+            {activeCheck ? 'Relancer l’analyse IA' : 'Lancer l’analyse IA'}
+          </button>
+        </div>
+
+        {stale && (
+          <div style={{ marginBottom: 12, padding: '8px 10px', borderRadius: 7, background: 'rgba(220,38,38,0.10)', color: '#dc2626', fontSize: 11, fontWeight: 800 }}>
+            La base R&D a changé depuis cette analyse. Relancez cette ligne pour voir l’effet des nouvelles règles ou expériences approuvées.
+          </div>
+        )}
 
         {loading && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '20px 0', color: 'var(--color-text-2)', fontSize: 13 }}>
-            <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} /> Analyse en cours…
+            <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} /> Analyse en cours...
           </div>
         )}
 
         {error && <div style={{ color: '#ef4444', fontSize: 12, padding: '10px 0' }}>{error}</div>}
 
-        {result && !loading && (
+        {!activeCheck && !loading && !error && (
+          <div style={{ fontSize: 12, color: 'var(--color-text-2)', padding: '8px 0 14px' }}>
+            Aucune analyse IA disponible pour cette ligne. Lancez l’analyse pour vérifier les règles métier et les validations R&D approuvées.
+          </div>
+        )}
+
+        {activeCheck && !loading && (
           <>
             <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
               {[['ok', '#22c55e'], ['warning', '#f59e0b'], ['violation', '#ef4444']].map(([s, c]) =>
@@ -728,12 +1026,63 @@ function VerifyRulesModal({ row, onClose }) {
                   </span>
                 )
               )}
-              {result.rules_count === 0 && <span style={{ fontSize: 11, color: 'var(--color-text-3)' }}>Aucune règle approuvée trouvée.</span>}
+              {activeCheck.rules_count === 0 && <span style={{ fontSize: 11, color: 'var(--color-text-3)' }}>Aucune règle approuvée trouvée.</span>}
             </div>
 
-            {shownVerdicts.length === 0 && result.rules_count > 0 && (
-              <div style={{ fontSize: 12, color: '#22c55e', padding: '8px 0' }}>✓ Toutes les règles sont respectées.</div>
+            {hasRun && (
+              <div style={{ marginBottom: 14, padding: '8px 10px', borderRadius: 7, background: lastChanges.length ? 'rgba(245,158,11,0.10)' : 'rgba(34,197,94,0.10)', color: lastChanges.length ? '#b45309' : '#16a34a', fontSize: 11 }}>
+                <div style={{ fontWeight: 900, marginBottom: lastChanges.length ? 6 : 0 }}>{lastChanges.length ? 'Changements détectés' : 'Aucun changement détecté'}</div>
+                {lastChanges.slice(0, 8).map((change, index) => {
+                  const verdict = change.verdict || change.before || {}
+                  const label = change.type === 'new' ? 'Nouvelle règle' : change.type === 'removed' ? 'Règle retirée' : 'Résultat modifié'
+                  const beforeLabel = change.before ? VERDICT_STYLE[change.before.status]?.label || change.before.status : null
+                  const afterLabel = change.verdict ? VERDICT_STYLE[change.verdict.status]?.label || change.verdict.status : null
+                  return (
+                    <div key={`${label}-${index}`} style={{ color: 'var(--color-text-2)', lineHeight: 1.45 }}>
+                      <strong>{label}</strong> — {verdict.rule_code ? `${verdict.rule_code} · ` : ''}{verdict.rule_title || 'Règle'}{beforeLabel && afterLabel ? ` : ${beforeLabel} -> ${afterLabel}` : ''}
+                    </div>
+                  )
+                })}
+              </div>
             )}
+
+            {shownVerdicts.length === 0 && activeCheck.rules_count > 0 && (
+              <div style={{ fontSize: 12, color: '#22c55e', padding: '8px 0' }}>Aucune règle ou expérience pertinente à signaler pour cette ligne.</div>
+            )}
+
+            {technicalIssues.length > 0 && (
+              <div style={{ marginBottom: 14, padding: '8px 10px', borderRadius: 7, background: 'rgba(245,158,11,0.10)', color: '#b45309', fontSize: 11, lineHeight: 1.45 }}>
+                <strong>Analyse IA à relancer.</strong> {technicalIssues[0].reason || 'La réponse du modèle n’a pas pu être lue correctement.'}
+              </div>
+            )}
+
+            <div style={{ marginBottom: 14, padding: '10px 12px', borderRadius: 7, background: 'var(--color-input-bg)', border: '1px solid var(--color-border)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
+                <span style={{ fontSize: 11, fontWeight: 900, color: 'var(--color-text)' }}>Règles et expériences utilisées pour cette ligne</span>
+                <span style={{ fontSize: 10, color: 'var(--color-text-3)', fontWeight: 800 }}>{sourceVerdicts.length}/{activeCheck.rules_count || verdicts.length || 0} applicable(s)</span>
+              </div>
+              {sourceVerdicts.length === 0 ? (
+                <div style={{ fontSize: 11, color: 'var(--color-text-3)' }}>
+                  Aucune règle ou expérience approuvée ne correspond directement aux valeurs de cette ligne.
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {sourceVerdicts.map((v, sourceIndex) => {
+                    const s = VERDICT_STYLE[v.status] || VERDICT_STYLE.na
+                    return (
+                      <div key={`source-${v.rule_id || v.rule_code || sourceIndex}`} style={{ display: 'grid', gridTemplateColumns: 'minmax(120px, 180px) 1fr auto', gap: 8, alignItems: 'start', fontSize: 11 }}>
+                        <span style={{ color: v.source === 'experience' ? '#0f766e' : 'var(--color-primary)', fontWeight: 900 }}>{verdictSourceLabel(v)}</span>
+                        <span style={{ color: 'var(--color-text-2)', minWidth: 0 }}>
+                          <strong style={{ color: 'var(--color-text)' }}>{v.rule_code ? `${v.rule_code} · ` : ''}{v.rule_title || 'Source IA'}</strong>
+                          {v.source_excerpt ? <span style={{ display: 'block', marginTop: 2, color: 'var(--color-text-3)' }}>{v.source_excerpt}</span> : null}
+                        </span>
+                        <span style={{ fontSize: 10, fontWeight: 800, color: s.text, background: s.bg, padding: '2px 7px', borderRadius: 99 }}>{s.label}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {shownVerdicts.map((v, vi) => {
@@ -757,14 +1106,119 @@ function VerifyRulesModal({ row, onClose }) {
   )
 }
 
+function ValidationSummaryModal({ report, onClose, onReviewLine }) {
+  if (!report) return null
+  const statusMeta = report.status === 'validated'
+    ? { label: 'Validé IA', color: '#16a34a', bg: 'rgba(22,163,74,0.12)', border: 'rgba(22,163,74,0.35)', icon: <Check size={16} /> }
+    : report.status === 'technical'
+      ? { label: 'Analyse IA à relancer', color: '#b45309', bg: 'rgba(245,158,11,0.12)', border: 'rgba(245,158,11,0.35)', icon: <AlertTriangle size={16} /> }
+      : { label: 'Problème à corriger', color: '#dc2626', bg: 'rgba(220,38,38,0.12)', border: 'rgba(220,38,38,0.35)', icon: <X size={16} /> }
+  const issueLines = report.lines.filter(line => line.issues.length > 0)
+  const technicalLines = report.lines.filter(line => line.technical.length > 0)
+  const okSources = report.sources.filter(source => source.status === 'ok')
+  const problematicSources = report.sources.filter(source => source.status === 'warning' || source.status === 'violation')
+  const noSourceCount = report.lines.filter(line => !line.issues.length && !line.ok.length && !line.technical.length).length
+  const statCell = (label, value, color = 'var(--color-text)') => (
+    <div style={{ padding: '10px 12px', borderRadius: 8, background: 'var(--color-input-bg)', border: '1px solid var(--color-border)' }}>
+      <div style={{ fontSize: 18, fontWeight: 950, color }}>{value}</div>
+      <div style={{ fontSize: 10, color: 'var(--color-text-3)', fontWeight: 800 }}>{label}</div>
+    </div>
+  )
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 9200, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 18 }}>
+      <div onClick={event => event.stopPropagation()} style={{ width: 780, maxWidth: '96vw', maxHeight: '88vh', overflowY: 'auto', background: 'var(--color-surface)', borderRadius: 10, border: '1px solid var(--color-border)', boxShadow: '0 16px 50px rgba(0,0,0,0.35)' }}>
+        <div style={{ padding: '16px 18px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+            <ShieldCheck size={18} color="var(--color-primary)" />
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 900 }}>Bilan validation IA</div>
+              <div style={{ fontSize: 10, color: 'var(--color-text-3)' }}>Contrôle règles + expériences ligne par ligne · {validationDateLabel(report.generated_at)}</div>
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--color-text-3)', cursor: 'pointer', padding: 4 }}><X size={16} /></button>
+        </div>
+
+        <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '10px 12px', borderRadius: 8, background: statusMeta.bg, border: `1px solid ${statusMeta.border}`, color: statusMeta.color, fontWeight: 950 }}>
+            {statusMeta.icon}
+            <span>{statusMeta.label}</span>
+            <span style={{ marginLeft: 'auto', fontSize: 10, fontWeight: 800, color: 'var(--color-text-2)' }}>{report.rules_count || 0} source(s) disponibles dans la base R&D</span>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 8 }}>
+            {statCell('lignes analysées', report.total_lines)}
+            {statCell('lignes validées', report.validated_rows, '#16a34a')}
+            {statCell('à corriger', report.issue_rows, report.issue_rows ? '#dc2626' : '#16a34a')}
+            {statCell('à relancer', report.technical_rows, report.technical_rows ? '#b45309' : '#16a34a')}
+            {statCell('sources appliquées', report.applicable_sources)}
+          </div>
+
+          {issueLines.length > 0 && (
+            <div style={{ border: '1px solid rgba(220,38,38,0.28)', borderRadius: 8, overflow: 'hidden' }}>
+              <div style={{ padding: '8px 10px', background: 'rgba(220,38,38,0.10)', color: '#dc2626', fontSize: 11, fontWeight: 950 }}>Lignes à corriger</div>
+              {issueLines.slice(0, 12).map(line => (
+                <div key={`issue-${line.position}`} style={{ padding: '9px 10px', borderTop: '1px solid var(--color-border)', fontSize: 11 }}>
+                  <button type="button" onClick={() => onReviewLine?.(line.position)} style={{ background: 'none', border: 'none', padding: 0, color: 'var(--color-primary)', fontWeight: 900, cursor: 'pointer' }}>Ligne {line.label}</button>
+                  <span style={{ marginLeft: 6, fontWeight: 800 }}>{line.designation}</span>
+                  {line.issues.map((verdict, issueIndex) => (
+                    <div key={`issue-${line.position}-${issueIndex}`} style={{ marginTop: 4, color: 'var(--color-text-2)', lineHeight: 1.45 }}>
+                      <strong style={{ color: verdict.status === 'violation' ? '#dc2626' : '#b45309' }}>{verdict.rule_code ? `${verdict.rule_code} · ` : ''}{verdict.rule_title}</strong>
+                      {verdict.reason ? ` : ${verdict.reason}` : ''}
+                      {verdict.fix ? <span style={{ color: '#dc2626' }}> Correctif : {verdict.fix}</span> : null}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {problematicSources.length > 0 && (
+            <div style={{ padding: '10px 12px', borderRadius: 8, background: 'var(--color-input-bg)', border: '1px solid var(--color-border)' }}>
+              <div style={{ fontSize: 11, fontWeight: 950, marginBottom: 7 }}>Règles ou expériences relevées</div>
+              {problematicSources.slice(0, 10).map(source => (
+                <div key={`${source.code || source.title}-${source.status}`} style={{ display: 'flex', gap: 8, justifyContent: 'space-between', fontSize: 11, lineHeight: 1.45 }}>
+                  <span>{source.code ? `${source.code} · ` : ''}{source.title}</span>
+                  <span style={{ color: source.status === 'violation' ? '#dc2626' : '#b45309', fontWeight: 900 }}>{source.count} ligne(s)</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div style={{ padding: '10px 12px', borderRadius: 8, background: 'var(--color-input-bg)', border: '1px solid var(--color-border)' }}>
+            <div style={{ fontSize: 11, fontWeight: 950, marginBottom: 7 }}>Appliqué et conforme</div>
+            {okSources.length ? okSources.slice(0, 12).map(source => (
+              <div key={`${source.code || source.title}-ok`} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 11, lineHeight: 1.45 }}>
+                <span>{source.code ? `${source.code} · ` : ''}{source.title}</span>
+                <span style={{ color: '#16a34a', fontWeight: 900 }}>{source.count} ligne(s)</span>
+              </div>
+            )) : <div style={{ fontSize: 11, color: 'var(--color-text-3)' }}>Aucune source conforme spécifique remontée par l’IA.</div>}
+            {noSourceCount > 0 && <div style={{ marginTop: 7, fontSize: 11, color: '#16a34a', fontWeight: 800 }}>{noSourceCount} ligne(s) sans règle ou expérience spécifique applicable.</div>}
+          </div>
+
+          {technicalLines.length > 0 && (
+            <div style={{ padding: '10px 12px', borderRadius: 8, background: 'rgba(245,158,11,0.10)', border: '1px solid rgba(245,158,11,0.28)', fontSize: 11, color: '#b45309' }}>
+              <strong>{technicalLines.length} ligne(s) à relancer.</strong> Le modèle n’a pas renvoyé une réponse exploitable sur toutes les lignes.
+            </div>
+          )}
+        </div>
+
+        <div style={{ padding: '12px 18px', borderTop: '1px solid var(--color-border)', display: 'flex', justifyContent: 'flex-end' }}>
+          <button onClick={onClose} style={{ padding: '7px 13px', borderRadius: 6, border: 'none', background: statusMeta.color, color: '#fff', fontSize: 12, fontWeight: 900, cursor: 'pointer' }}>Fermer le bilan</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Composant ligne principale ──────────────────────────────────────────────
-function MainRow({ row, index, displayIndex = index, expanded, onToggle, change, tva, multGlobal, editMode, onUpdate, onRecompute, onDelete, onSaveAsRule, onVerifyRules, assistantHighlight = null, hiddenCols = new Set(), hiddenDimensionCols = new Set() }) {
+function MainRow({ row, index, displayIndex = index, expanded, onToggle, change, tva, multGlobal, editMode, onUpdate, onRecompute, onDelete, onSaveAsRule, onVerifyRules, assistantHighlight = null, validationKnowledge = null, hiddenCols = new Set(), hiddenDimensionCols = new Set() }) {
   const r = resolveRow(row, change, tva, multGlobal)
   const qty = Number.isFinite(r.qty) ? r.qty : 1
   const isAmountSection = sectionOf(row) !== 'products'
   const dimensionHiddenStyle = (key) => hiddenDimensionCols.has(key) ? { display: 'none' } : {}
   const ruleSummary = row._ruleCheck?.summary || null
   const ruleIssues = blockingVerdicts(row)
+  const ruleStale = isRuleCheckStale(row._ruleCheck, validationKnowledge)
   const [showEmptyPerfs, setShowEmptyPerfs] = useState(false)
   const perfKeys = ['rc', 'pb', 'cf', 'blast', 'belier', 'prison', 'acoustic']
   const rawIndexByPerf = { rc: 3, pb: 4, cf: 5, blast: 6, belier: 7, prison: 8, acoustic: null }
@@ -789,16 +1243,11 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
       }}
     >
       {/* # */}
-      <Td style={{ color: 'var(--color-text-3)', fontWeight: 700, width: 36 }}>
+      <Td style={{ ...stickyRowMarkerStyle, color: 'var(--color-text-3)', fontWeight: 700 }}>
         <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
           {expanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
           {rowLetterLabel(displayIndex)}
           {r._recomputing && <RefreshCw size={9} style={{ animation: 'spin 1s linear infinite' }} />}
-          {assistantActive && <span title={assistantHighlight.message || 'Modifié par Gemma'} style={{ marginLeft: 2, padding: '1px 4px', borderRadius: 999, background: '#22c55e', color: '#052e16', fontSize: 8, fontWeight: 950, lineHeight: 1.2 }}>Gemma</span>}
-          {row._ruleChecking && <ShieldCheck size={9} style={{ animation: 'spin 1s linear infinite', color: 'var(--color-primary)' }} />}
-          {!row._ruleChecking && ruleSummary && (
-            <ShieldCheck size={9} style={{ color: ruleSummary.violation ? '#dc2626' : ruleSummary.warning ? '#b45309' : '#16a34a' }} />
-          )}
         </span>
       </Td>
       {/* Désignation */}
@@ -870,16 +1319,16 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
                       value={cur ?? ''}
                       options={PERF_OPTIONS[key]}
                       onCommit={value => {
-                        const v = value || null
+                        const v = value || ''
                         if (key === 'acoustic') {
                           // Rebuild _raw[16] with or without the acoustic value so the
                           // server recomputes the price (acoustic treatment is priced server-side).
                           const raw16 = String(row._raw?.[16] ?? '')
                           const stripped = stripAcousticInfo(raw16)
-                          const newRaw16 = v ? (stripped ? `${stripped} ${v}` : v) : (stripped || null)
-                          onRecompute?.({ _raw_16: newRaw16 })
+                          const newRaw16 = v ? (stripped ? `${stripped} ${v}` : v) : (stripped || '')
+                          onRecompute?.({ _raw_16: newRaw16, _perfOverrides: { ...(row._perfOverrides || {}), [key]: true } })
                         } else {
-                          onRecompute?.({ [`_raw_${rawIdx}`]: v })
+                          onRecompute?.({ [`_raw_${rawIdx}`]: v, _perfOverrides: { ...(row._perfOverrides || {}), [key]: true } })
                         }
                       }}
                       title={key === 'acoustic' ? 'Acoustique' : key.toUpperCase()}
@@ -1088,36 +1537,42 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
         {r._pu > 0 ? r._totalHt.toLocaleString('fr-FR') + ' €' : '—'}
       </Td>
       <Td style={{ width: editMode ? 72 : 32, textAlign: 'center', padding: 0 }}>
-        {editMode && (
+        {(editMode || !isAmountSection) && (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2 }}>
             {!isAmountSection && (
               <>
-                <button
-                  type="button"
-                  onClick={e => { e.stopPropagation(); onVerifyRules?.() }}
-                  title="Vérifier les règles IA sur cette ligne"
-                  style={{ width: 22, height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 'none', background: 'transparent', color: 'var(--color-primary)', cursor: 'pointer', borderRadius: 3 }}
-                >
-                  <ShieldCheck size={12} />
-                </button>
-                <button
-                  type="button"
-                  onClick={e => { e.stopPropagation(); onSaveAsRule?.() }}
-                  title="Enregistrer comme règle R&D"
-                  style={{ width: 22, height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 'none', background: 'transparent', color: '#0f766e', cursor: 'pointer', borderRadius: 3 }}
-                >
-                  <BookOpen size={12} />
-                </button>
+                <Popover content={rulePopoverSummary(row, validationKnowledge)} maxWidth={260}>
+                  <button
+                    type="button"
+                    onClick={e => { e.stopPropagation(); onVerifyRules?.() }}
+                    title={ruleStale ? 'Analyse IA à mettre à jour' : 'Voir l’analyse IA de cette ligne'}
+                    style={{ width: 22, height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 'none', background: ruleStale ? 'rgba(220,38,38,0.10)' : 'transparent', color: ruleStale ? '#dc2626' : 'var(--color-primary)', cursor: 'pointer', borderRadius: 3 }}
+                  >
+                    {row._ruleChecking ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <ShieldCheck size={12} />}
+                  </button>
+                </Popover>
+                {editMode && (
+                  <button
+                    type="button"
+                    onClick={e => { e.stopPropagation(); onSaveAsRule?.() }}
+                    title="Enregistrer comme règle R&D"
+                    style={{ width: 22, height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 'none', background: 'transparent', color: '#0f766e', cursor: 'pointer', borderRadius: 3 }}
+                  >
+                    <BookOpen size={12} />
+                  </button>
+                )}
               </>
             )}
-            <button
-              type="button"
-              onClick={e => { e.stopPropagation(); onDelete?.() }}
-              title="Supprimer la ligne"
-              style={{ width: 22, height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 'none', background: 'transparent', color: '#a33c3c', cursor: 'pointer', borderRadius: 3 }}
-            >
-              <Trash2 size={13} />
-            </button>
+            {editMode && (
+              <button
+                type="button"
+                onClick={e => { e.stopPropagation(); onDelete?.() }}
+                title="Supprimer la ligne"
+                style={{ width: 22, height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 'none', background: 'transparent', color: '#a33c3c', cursor: 'pointer', borderRadius: 3 }}
+              >
+                <Trash2 size={13} />
+              </button>
+            )}
           </div>
         )}
       </Td>
@@ -1130,7 +1585,7 @@ function AmountSectionColumns({ section, hiddenDimensionCount = 0 }) {
   const detailSpan = Math.max(1, 5 - hiddenDimensionCount)
   return (
     <tr>
-      <td style={{ ...amountHeaderCellStyle, width: 36 }}>#</td>
+      <td style={{ ...amountHeaderCellStyle, ...stickyRowMarkerHeaderStyle }}>#</td>
       <td colSpan={6} style={amountHeaderCellStyle}>{isTransport ? 'Poste transport' : 'Libellé calcul'}</td>
       <td colSpan={detailSpan} style={amountHeaderCellStyle}>{isTransport ? 'Destination / note' : 'Détail / condition'}</td>
       <td colSpan={3} style={amountHeaderCellStyle}>{isTransport ? 'Règle' : 'Référence'}</td>
@@ -1165,11 +1620,10 @@ function AmountRow({ row, index, displayIndex = index, change, tva, multGlobal, 
       outlineOffset: -1,
       transition: 'background 0.25s, box-shadow 0.25s, outline 0.25s',
     }}>
-      <Td style={{ color: 'var(--color-text-3)', fontWeight: 700, width: 36 }}>
+      <Td style={{ ...stickyRowMarkerStyle, color: 'var(--color-text-3)', fontWeight: 700 }}>
         <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
           <ChevronRight size={11} style={{ opacity: 0.25 }} />
           {rowLetterLabel(displayIndex)}
-          {assistantActive && <span title={assistantHighlight.message || 'Modifié par Gemma'} style={{ marginLeft: 2, padding: '1px 4px', borderRadius: 999, background: '#22c55e', color: '#052e16', fontSize: 8, fontWeight: 950, lineHeight: 1.2 }}>Gemma</span>}
         </span>
       </Td>
       <Td colSpan={6} style={{ minWidth: 220, fontWeight: 700, padding: 0 }}>
@@ -1607,10 +2061,11 @@ const prettyCellSelectStyles = ({ width = 64, height = 26, active = false } = {}
     minWidth: Math.max(width, 112),
     fontSize: 12,
     zIndex: 9999,
-    background: '#263034',
+    background: 'var(--color-surface)',
     border: '1px solid var(--color-border)',
     overflow: 'hidden',
-    boxShadow: '0 8px 22px rgba(0,0,0,0.32)',
+    borderRadius: 8,
+    boxShadow: '0 8px 22px rgba(0,0,0,0.22)',
   }),
   menuPortal: (base) => ({ ...base, zIndex: 9999 }),
   option: (base, state) => ({
@@ -1621,9 +2076,14 @@ const prettyCellSelectStyles = ({ width = 64, height = 26, active = false } = {}
     padding: '8px 10px',
     cursor: 'pointer',
     background: state.isSelected
-      ? 'color-mix(in srgb, var(--color-primary) 22%, transparent)'
-      : state.isFocused ? 'color-mix(in srgb, var(--color-primary) 13%, transparent)' : 'transparent',
-    color: 'var(--color-text)',
+      ? 'var(--color-primary)'
+      : state.isFocused ? 'var(--color-input-bg)' : 'var(--color-surface)',
+    color: state.isSelected ? '#fff' : 'var(--color-text)',
+    ':active': {
+      ...base[':active'],
+      background: 'var(--color-primary)',
+      color: '#fff',
+    },
   }),
 })
 
@@ -1905,7 +2365,7 @@ function AddLineModal({ onClose, onAdd }) {
       setParsed(data)
       setStep(1)
     } catch (e) {
-      setParseError(e?.error || e?.details || e?.message || 'Erreur parsing Gemma')
+      setParseError(e?.error || e?.details || e?.message || 'Erreur parsing Zerux IA')
     } finally {
       setParsing(false)
     }
@@ -1966,7 +2426,7 @@ function AddLineModal({ onClose, onAdd }) {
           {step === 0 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <p style={{ margin: 0, fontSize: 12, color: 'var(--color-text-2)' }}>
-                Décrivez la ligne en texte libre. Gemma 4 va la parser automatiquement.
+                Décrivez la ligne en texte libre. Zerux IA va la parser automatiquement.
               </p>
               <p style={{ margin: 0, fontSize: 10, color: 'var(--color-text-3)', fontStyle: 'italic' }}>
                 Ex : "BP 1V CR4+FB4 1300×2100 LSS motorisée RAL 7016" ou "Chassis CR5 EI60 980x2200"
@@ -1993,11 +2453,11 @@ function AddLineModal({ onClose, onAdd }) {
             </div>
           )}
 
-          {/* STEP 1 — Vérification (résultat Gemma) */}
+          {/* STEP 1 — Vérification (résultat Zerux IA) */}
           {step === 1 && parsed && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <p style={{ margin: 0, fontSize: 12, color: 'var(--color-text-2)' }}>
-                Voici ce que Gemma a compris. Vérifiez et cliquez sur "Calculer le prix".
+                Voici ce que Zerux IA a compris. Vérifiez et cliquez sur "Calculer le prix".
               </p>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
                 {[
@@ -2082,7 +2542,7 @@ function AddLineModal({ onClose, onAdd }) {
                 style={{ fontSize: 12, padding: '6px 14px', borderRadius: 6, border: 'none', background: 'var(--color-primary)', color: '#fff', cursor: text.trim() && !parsing ? 'pointer' : 'not-allowed', opacity: text.trim() && !parsing ? 1 : 0.5, display: 'flex', alignItems: 'center', gap: 5 }}
               >
                 {parsing ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <MessageSquare size={12} />}
-                {parsing ? 'Gemma analyse…' : 'Analyser avec Gemma'}
+                {parsing ? 'Zerux IA analyse…' : 'Analyser avec Zerux IA'}
               </button>
             </>
           )}
@@ -2221,6 +2681,8 @@ function SettingsModal({ change, multGlobal, tva, onClose, onApply }) {
 // ─── Composant principal réutilisable ─────────────────────────────────────────
 export function DevisGridWorkspace({
   embedded = false,
+  devisId = null,
+  versionId = null,
   initialRows = null,
   assistantHighlights = null,
   defaultTransportAddress = '',
@@ -2249,6 +2711,12 @@ export function DevisGridWorkspace({
   const [error, setError] = useState(null)
   const [validatingImport, setValidatingImport] = useState(false)
   const [importValidationSummary, setImportValidationSummary] = useState(null)
+  const [validationKnowledge, setValidationKnowledge] = useState(null)
+  const [validationProgress, setValidationProgress] = useState(null)
+  const [lastValidationReport, setLastValidationReport] = useState(null)
+  const [validationSummaryModal, setValidationSummaryModal] = useState(null)
+  const [refreshingRuleChecks, setRefreshingRuleChecks] = useState(false)
+  const [confirmDialog, setConfirmDialog] = useState(null)
   const [toast, setToast] = useState(null) // { msg, kind: 'success'|'error', id }
   const toastTimerRef = useRef(null)
   const showToast = useCallback((msg, kind = 'success') => {
@@ -2277,6 +2745,16 @@ export function DevisGridWorkspace({
   useEffect(() => { try { localStorage.setItem('devisGridTva', String(tva)) } catch { /* noop */ } }, [tva])
   useEffect(() => { try { localStorage.setItem('devisGridMultGlobal', String(multGlobal)) } catch { /* noop */ } }, [multGlobal])
   useEffect(() => { try { localStorage.setItem('devisGridEditMode', editMode ? '1' : '0') } catch { /* noop */ } }, [editMode])
+  const refreshValidationKnowledge = useCallback(async () => {
+    if (!hasAuthToken()) return null
+    try {
+      const knowledge = await api.get('/devis/validation-knowledge')
+      setValidationKnowledge(knowledge)
+      return knowledge
+    } catch {
+      return null
+    }
+  }, [])
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try { return localStorage.getItem('devisGridSidebarCollapsed') === '1' } catch { return false }
   })
@@ -2299,6 +2777,19 @@ export function DevisGridWorkspace({
   useEffect(() => {
     try { localStorage.setItem('devisGridHiddenDimensionCols', JSON.stringify([...hiddenDimensionCols])) } catch { /* noop */ }
   }, [hiddenDimensionCols])
+  useEffect(() => {
+    refreshValidationKnowledge()
+    const onFocus = () => refreshValidationKnowledge()
+    const onVisible = () => { if (!document.hidden) refreshValidationKnowledge() }
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onVisible)
+    const interval = window.setInterval(refreshValidationKnowledge, 60000)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onVisible)
+      window.clearInterval(interval)
+    }
+  }, [refreshValidationKnowledge])
 
   const toggleDimensionColumn = useCallback((key) => {
     setHiddenDimensionCols(prev => {
@@ -2345,7 +2836,11 @@ export function DevisGridWorkspace({
     const nextRows = [...rowsRef.current, newRow]
     setRows(nextRows)
     onRowsCommit?.(newRow, nextRows.length - 1, { _created: true })
-    showToast('Ligne ajoutée', 'success')
+    if (newRow?.source === 'ia' || newRow?._ia) {
+      showToast('Ligne IA ajoutée', 'success')
+    } else {
+      showToast('Ligne ajoutée', 'success')
+    }
   }, [onRowsCommit, showToast])
 
   const addBlankRow = useCallback(() => {
@@ -2419,12 +2914,19 @@ export function DevisGridWorkspace({
     const row = rowsRef.current[i]
     if (!row) return
     const label = row.type || row.designation || `ligne ${i + 1}`
-    if (!window.confirm(`Supprimer définitivement la ligne ${i + 1} — ${label} ?`)) return
-    const nextRows = rowsRef.current.filter((_, idx) => idx !== i)
-    setRows(nextRows)
-    setExpandedRows(prev => new Set([...prev].filter(idx => idx !== i).map(idx => idx > i ? idx - 1 : idx)))
-    onRowsDelete?.(row, i)
-    showToast('Ligne supprimée', 'success')
+    setConfirmDialog({
+      title: 'Supprimer la ligne',
+      message: `Supprimer définitivement la ligne ${i + 1} — ${label} ?`,
+      danger: true,
+      confirmLabel: 'Supprimer',
+      onConfirm: () => {
+        const nextRows = rowsRef.current.filter((_, idx) => idx !== i)
+        setRows(nextRows)
+        setExpandedRows(prev => new Set([...prev].filter(idx => idx !== i).map(idx => idx > i ? idx - 1 : idx)))
+        onRowsDelete?.(row, i)
+        showToast('Ligne supprimée', 'success')
+      },
+    })
   }, [onRowsDelete, showToast])
 
   const recomputeRow = useCallback((i, patch) => {
@@ -2435,24 +2937,30 @@ export function DevisGridWorkspace({
       updateRow(i, patch)
       return
     }
+    if (!hasAuthToken()) {
+      showToast('Session expirée : reconnectez-vous pour recalculer', 'error')
+      return
+    }
     const raw = patch._raw_override
       ? [...patch._raw_override]
       : Array.isArray(cur._raw) ? [...cur._raw] : new Array(17).fill(null)
     while (raw.length < 17) raw.push(null)
-    if (patch.type != null) raw[0] = patch.type
-    if (patch.larg_mm != null) raw[1] = patch.larg_mm
-    if (patch.haut_mm != null) raw[2] = patch.haut_mm
+    raw[0] = patch.type ?? raw[0] ?? cur.type ?? cur.designation ?? null
+    raw[1] = patch.larg_mm ?? raw[1] ?? cur.larg_mm ?? cur.largeur_mm ?? null
+    raw[2] = patch.haut_mm ?? raw[2] ?? cur.haut_mm ?? cur.hauteur_mm ?? null
     for (let idx = 3; idx <= 16; idx++) {
       const k = `_raw_${idx}`
       if (Object.prototype.hasOwnProperty.call(patch, k)) raw[idx] = patch[k]
     }
     const { qty, multiple, change_override, _lineId, _dbPosition, _manualBlank, localisation } = cur
+    const perfOverrides = patch._perfOverrides || cur._perfOverrides || null
     // Maj optimiste immédiate
     setRows(prev => prev.map((r, idx) => idx === i ? {
       ...r,
       ...(patch.type != null ? { type: patch.type } : {}),
       ...(patch.haut_mm != null ? { haut_mm: patch.haut_mm } : {}),
       ...(patch.larg_mm != null ? { larg_mm: patch.larg_mm } : {}),
+      ...(perfOverrides ? { _perfOverrides: perfOverrides } : {}),
       _raw: raw,
       _recomputing: true,
     } : r))
@@ -2462,16 +2970,23 @@ export function DevisGridWorkspace({
       .then(res => {
         const result = res?.result
         if (!result) return
-        setRows(p2 => p2.map((r, idx) => idx === i ? {
+        const recomputedRow = {
           ...result,
+          _raw: raw,
           _lineId,
           _dbPosition,
           _manualBlank,
           localisation,
-          qty, multiple, change_override,
+          qty,
+          multiple,
+          change_override,
+          ...(perfOverrides ? { _perfOverrides: perfOverrides } : {}),
           _recomputing: false,
+        }
+        setRows(p2 => p2.map((r, idx) => idx === i ? {
+          ...recomputedRow,
         } : r))
-        onRowsCommit?.({ ...result, _lineId, _dbPosition, _manualBlank, localisation, qty, multiple, change_override }, i, { _recomputed: true })
+        onRowsCommit?.(recomputedRow, i, { _recomputed: true })
         showToast('Recalculé et enregistré', 'success')
       })
       .catch(err => {
@@ -2507,11 +3022,67 @@ export function DevisGridWorkspace({
     }
   }, [recomputeRow, updateRow, showToast])
 
+  const persistValidationReport = useCallback(async (report) => {
+    if (!devisId || !versionId || !report?.total_lines) return
+    try {
+      await api.post(`/devis/${devisId}/rule-checks`, { version_id: versionId, report })
+    } catch (err) {
+      console.error('rule-check report persist error', err)
+    }
+  }, [devisId, versionId])
+
+  const validateEntriesProgressively = useCallback(async ({ targetEntries, baseRows, mode = 'manual' }) => {
+    if (!targetEntries.length) return { rows: baseRows, report: null }
+    let workingRows = baseRows
+    let completed = 0
+    let latestKnowledge = validationKnowledge
+    let rulesCount = validationKnowledge?.rules_count || 0
+    const total = targetEntries.length
+    setValidationProgress({ active: true, mode, done: 0, total, issueRows: 0, technicalRows: 0 })
+
+    await runClientLimited(targetEntries, VALIDATION_PARALLELISM, async (entry) => {
+      let nextCheck = null
+      try {
+        const report = await api.post('/devis/validate-lines', {
+          lines: [lineLikeForRuleValidation(entry.row, entry.index)],
+          concurrency: 1,
+        }, { timeout: 180000 })
+        if (report?.knowledge) {
+          latestKnowledge = report.knowledge
+          setValidationKnowledge(report.knowledge)
+        }
+        rulesCount = report?.rules_count || rulesCount
+        const lineResult = report?.lines?.[0] || { position: entry.index, verdicts: [] }
+        nextCheck = ruleCheckFromValidationLine(report, lineResult)
+      } catch (validationError) {
+        nextCheck = ruleCheckFromClientError(validationError, latestKnowledge)
+      }
+      nextCheck._lastChanges = compareRuleVerdicts(entry.row?._ruleCheck?.verdicts || [], nextCheck.verdicts || [])
+      workingRows = workingRows.map((currentRow, rowIndex) => rowIndex === entry.index ? { ...currentRow, _ruleChecking: false, _ruleCheck: nextCheck } : currentRow)
+      completed += 1
+      const partialReport = buildValidationReport(workingRows, { mode, rulesCount, knowledge: latestKnowledge })
+      setRows(workingRows)
+      onRowsChange?.(workingRows)
+      setValidationProgress({ active: completed < total, mode, done: completed, total, issueRows: partialReport.issue_rows, technicalRows: partialReport.technical_rows })
+    })
+
+    const finalReport = buildValidationReport(workingRows, { mode, rulesCount, knowledge: latestKnowledge })
+    setValidationProgress(null)
+    setImportValidationSummary({ ...(finalReport.summary || {}), issueRows: finalReport.issue_rows, technicalRows: finalReport.technical_rows, rules_count: finalReport.rules_count || 0 })
+    setLastValidationReport(finalReport)
+    setValidationSummaryModal(finalReport)
+    await persistValidationReport(finalReport)
+    return { rows: workingRows, report: finalReport }
+  }, [onRowsChange, persistValidationReport, validationKnowledge])
+
   const handleFile = async (file) => {
     if (!file) return
     setLoading(true)
     setError(null)
     setImportValidationSummary(null)
+    setLastValidationReport(null)
+    setValidationSummaryModal(null)
+    setValidationProgress(null)
     try {
       const fd = new FormData()
       fd.append('file', file)
@@ -2532,39 +3103,24 @@ export function DevisGridWorkspace({
         .filter(({ row }) => sectionOf(row) === 'products')
       if (productEntries.length) {
         setValidatingImport(true)
-        setRows(prev => prev.map((row, index) => productEntries.some(entry => entry.index === index) ? { ...row, _ruleChecking: true, _ruleCheck: null } : row))
+        const indexSet = new Set(productEntries.map(entry => entry.index))
+        const checkingRows = sectionedRows.map((row, index) => indexSet.has(index) ? { ...row, _ruleChecking: true, _ruleCheck: null } : row)
+        setRows(checkingRows)
+        onRowsChange?.(checkingRows)
         try {
-          const report = await api.post('/devis/validate-lines', {
-            lines: productEntries.map(({ row, index }) => lineLikeForRuleValidation(row, index)),
-          }, { timeout: 180000 })
-          const byPosition = new Map((report.lines || []).map(line => [Number(line.position), line]))
-          const checkedRows = sectionedRows.map((row, index) => {
-            const result = byPosition.get(index)
-            if (!result || sectionOf(row) !== 'products') return row
-            const verdicts = result.verdicts || []
-            return {
-              ...row,
-              _ruleChecking: false,
-              _ruleCheck: {
-                checked_at: report.generated_at,
-                rules_count: report.rules_count || 0,
-                summary: summarizeLineVerdicts(verdicts),
-                verdicts,
-              },
-            }
-          })
-          setRows(checkedRows)
-          onRowsChange?.(checkedRows)
-          const issueRows = checkedRows.filter(row => blockingVerdicts(row).length > 0)
-          setImportValidationSummary({ ...(report.summary || {}), issueRows: issueRows.length, rules_count: report.rules_count || 0 })
-          if (issueRows.length) {
-            setExpandedRows(new Set(checkedRows.map((row, index) => blockingVerdicts(row).length > 0 ? index : null).filter(index => index != null)))
-            showToast(`${issueRows.length} ligne(s) à vérifier après contrôle règles`, 'error')
+          const { rows: checkedRows, report } = await validateEntriesProgressively({ targetEntries: productEntries, baseRows: checkingRows, mode: 'import' })
+          if (report?.issue_rows) {
+            setExpandedRows(new Set(report.lines.filter(line => line.issues.length > 0).map(line => line.position)))
+            showToast(`${report.issue_rows} ligne(s) à vérifier après contrôle règles`, 'error')
+          } else if (report?.technical_rows) {
+            showToast(`${report.technical_rows} ligne(s) à relancer après contrôle IA`, 'error')
           } else {
             showToast('Import contrôlé : règles et expériences OK', 'success')
           }
+          rowsRef.current = checkedRows
         } catch (validationError) {
           setRows(prev => prev.map(row => ({ ...row, _ruleChecking: false })))
+          setValidationProgress(null)
           showToast(validationError?.error || validationError?.message || 'Contrôle règles impossible', 'error')
         } finally {
           setValidatingImport(false)
@@ -2580,29 +3136,39 @@ export function DevisGridWorkspace({
   const clearImportedGrid = useCallback(async () => {
     const currentCount = rowsRef.current.length
     if (!currentCount && !fileName) return
-    if (!window.confirm(`Vider définitivement le tableau (${currentCount} ligne${currentCount > 1 ? 's' : ''}) ?`)) return
-    const nextRows = []
-    setLoading(true)
-    setError(null)
-    try {
-      await onRowsBulkCommit?.(nextRows)
-      setRows(nextRows)
-      setFileName(null)
-      setImportValidationSummary(null)
-      setExpandedRows(new Set())
-      try {
-        localStorage.removeItem('devisGridRows')
-        localStorage.removeItem('devisGridFileName')
-      } catch { /* noop */ }
-      onRowsChange?.(nextRows)
-      showToast('Tableau vidé — vous pouvez réimporter un xlsx', 'success')
-    } catch (e) {
-      const msg = e?.error || e?.details || e?.message || 'Vidage du tableau impossible'
-      setError(msg)
-      showToast(msg, 'error')
-    } finally {
-      setLoading(false)
-    }
+    setConfirmDialog({
+      title: 'Vider le tableau',
+      message: `Vider définitivement le tableau (${currentCount} ligne${currentCount > 1 ? 's' : ''}) ?`,
+      danger: true,
+      confirmLabel: 'Vider',
+      onConfirm: async () => {
+        const nextRows = []
+        setLoading(true)
+        setError(null)
+        try {
+          await onRowsBulkCommit?.(nextRows)
+          setRows(nextRows)
+          setFileName(null)
+          setImportValidationSummary(null)
+          setLastValidationReport(null)
+          setValidationSummaryModal(null)
+          setValidationProgress(null)
+          setExpandedRows(new Set())
+          try {
+            localStorage.removeItem('devisGridRows')
+            localStorage.removeItem('devisGridFileName')
+          } catch { /* noop */ }
+          onRowsChange?.(nextRows)
+          showToast('Tableau vidé — vous pouvez réimporter un xlsx', 'success')
+        } catch (e) {
+          const msg = e?.error || e?.details || e?.message || 'Vidage du tableau impossible'
+          setError(msg)
+          showToast(msg, 'error')
+        } finally {
+          setLoading(false)
+        }
+      },
+    })
   }, [fileName, onRowsBulkCommit, onRowsChange, showToast])
 
   const onDrop = (e) => {
@@ -2652,13 +3218,63 @@ export function DevisGridWorkspace({
   const handleVerifyRules = useCallback((rowIdx) => {
     const row = rowsRef.current[rowIdx]
     if (!row) return
-    setVerifyRulesModal(row)
+    setVerifyRulesModal({ rowIdx, row })
   }, [])
+
+  const applyRuleCheckResult = useCallback((rowIdx, nextCheck, knowledge = null) => {
+    if (knowledge) setValidationKnowledge(knowledge)
+    const nextRows = rowsRef.current.map((row, index) => index === rowIdx ? { ...row, _ruleChecking: false, _ruleCheck: nextCheck } : row)
+    setRows(nextRows)
+    onRowsChange?.(nextRows)
+    showToast('Analyse IA mise à jour', 'success')
+  }, [onRowsChange, showToast])
+
+  const rerunRuleChecksForIndexes = useCallback(async (rowIndexes = null) => {
+    const freshKnowledge = await refreshValidationKnowledge()
+    const knowledge = freshKnowledge || validationKnowledge
+    const currentRows = rowsRef.current
+    const targetEntries = currentRows
+      .map((row, index) => ({ row, index }))
+      .filter(({ row, index }) => sectionOf(row) === 'products' && (
+        Array.isArray(rowIndexes)
+          ? rowIndexes.includes(index)
+          : needsRuleCheckUpdate(row, knowledge)
+      ))
+    if (!targetEntries.length) {
+      showToast('Aucune ligne IA à mettre à jour', 'success')
+      return
+    }
+    const indexSet = new Set(targetEntries.map(entry => entry.index))
+    setRefreshingRuleChecks(true)
+    const checkingRows = currentRows.map((row, index) => indexSet.has(index) ? { ...row, _ruleChecking: true } : row)
+    setRows(checkingRows)
+    onRowsChange?.(checkingRows)
+    try {
+      const { report } = await validateEntriesProgressively({ targetEntries, baseRows: checkingRows, mode: 'manual' })
+      if (report?.issue_rows) {
+        setExpandedRows(prev => new Set([...prev, ...report.lines.filter(line => line.issues.length > 0).map(line => line.position)]))
+        showToast(`${report.issue_rows} ligne(s) à vérifier après analyse IA`, 'error')
+      } else if (report?.technical_rows) {
+        showToast(`${report.technical_rows} ligne(s) à relancer après analyse IA`, 'error')
+      } else {
+        showToast('Analyse IA à jour', 'success')
+      }
+    } catch (validationError) {
+      setRows(prev => prev.map((row, index) => indexSet.has(index) ? { ...row, _ruleChecking: false } : row))
+      setValidationProgress(null)
+      showToast(validationError?.error || validationError?.details || validationError?.message || 'Mise à jour IA impossible', 'error')
+    } finally {
+      setRefreshingRuleChecks(false)
+    }
+  }, [onRowsChange, refreshValidationKnowledge, showToast, validateEntriesProgressively, validationKnowledge])
   const totalPU  = rows.reduce((s, r) => s + (resolveRow(r, change, tva, multGlobal)._pu), 0)
   const totalHT = rows.reduce((s, r) => s + (resolveRow(r, change, tva, multGlobal)._totalHt || 0), 0)
 
   // Colonnes masquables : calculer lesquelles ont des données sur les lignes produits
   const productRows = rows.filter(r => sectionOf(r) === 'products')
+  const productRowEntries = rows.map((row, index) => ({ row, index })).filter(({ row }) => sectionOf(row) === 'products')
+  const ruleUpdateEntries = productRowEntries.filter(({ row }) => needsRuleCheckUpdate(row, validationKnowledge))
+  const ruleUpdateCount = ruleUpdateEntries.length
   const hasVitrage = productRows.some(r => { const rv = resolveRow(r); return !!(rv._vitrageLabel) })
   const hasFP = productRows.some(r => { const rv = resolveRow(r); return !!(rv._fpLabel || r._raw?.[15]) })
   const hasCremone = productRows.some(r => { const rv = resolveRow(r); return !!(r._overrideCremone !== undefined ? r._overrideCremone : rv._cremoneLabel) })
@@ -2859,15 +3475,47 @@ export function DevisGridWorkspace({
             <span style={{ fontSize: 13, fontWeight: 700 }}>
               {subtitle || (rows.length > 0 ? `${rows.length} lignes analysées` : 'Importer un xlsx pour démarrer')}
             </span>
-            {validatingImport && (
+            {validationProgress && (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 10, color: 'var(--color-primary)', fontWeight: 900 }}>
+                <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} />
+                IA multi-worker {validationProgress.done}/{validationProgress.total}
+                <span style={{ width: 82, height: 5, borderRadius: 99, background: 'var(--color-input-bg)', overflow: 'hidden', border: '1px solid var(--color-border)' }}>
+                  <span style={{ display: 'block', height: '100%', width: `${validationProgress.total ? Math.round((validationProgress.done / validationProgress.total) * 100) : 0}%`, background: 'var(--color-primary)' }} />
+                </span>
+                {(validationProgress.issueRows || validationProgress.technicalRows) ? `${validationProgress.issueRows || 0} à corriger · ${validationProgress.technicalRows || 0} à relancer` : 'contrôle en cours'}
+              </span>
+            )}
+            {validatingImport && !validationProgress && (
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, color: 'var(--color-primary)', fontWeight: 800 }}>
                 <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> Contrôle règles ligne par ligne
               </span>
             )}
-            {!validatingImport && importValidationSummary && (
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, color: importValidationSummary.issueRows ? '#b45309' : '#16a34a', fontWeight: 800 }}>
-                <ShieldCheck size={12} /> {importValidationSummary.issueRows ? `${importValidationSummary.issueRows} ligne(s) à vérifier` : 'Règles OK'}
+            {!validatingImport && !validationProgress && importValidationSummary && (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, color: importValidationSummary.issueRows ? '#dc2626' : importValidationSummary.technicalRows ? '#b45309' : '#16a34a', fontWeight: 800 }}>
+                <ShieldCheck size={12} /> {importValidationSummary.issueRows ? `${importValidationSummary.issueRows} ligne(s) à corriger` : importValidationSummary.technicalRows ? `${importValidationSummary.technicalRows} ligne(s) à relancer` : 'Validé IA'}
               </span>
+            )}
+            {lastValidationReport && !validationProgress && (
+              <button
+                type="button"
+                onClick={() => setValidationSummaryModal(lastValidationReport)}
+                title="Rouvrir le bilan final des règles et expériences appliquées"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, padding: '3px 8px', background: lastValidationReport.status === 'validated' ? 'rgba(22,163,74,0.10)' : lastValidationReport.status === 'technical' ? 'rgba(245,158,11,0.12)' : 'rgba(220,38,38,0.12)', border: `1px solid ${lastValidationReport.status === 'validated' ? '#16a34a' : lastValidationReport.status === 'technical' ? '#b45309' : '#dc2626'}`, borderRadius: 4, cursor: 'pointer', color: lastValidationReport.status === 'validated' ? '#16a34a' : lastValidationReport.status === 'technical' ? '#b45309' : '#dc2626', fontWeight: 900 }}
+              >
+                <ShieldCheck size={12} /> Bilan IA
+              </button>
+            )}
+            {productRowEntries.length > 0 && (
+              <button
+                type="button"
+                onClick={() => rerunRuleChecksForIndexes(ruleUpdateCount ? ruleUpdateEntries.map(entry => entry.index) : productRowEntries.map(entry => entry.index))}
+                disabled={refreshingRuleChecks || validatingImport}
+                title={ruleUpdateCount ? 'Relancer les lignes dont l’analyse IA est périmée ou absente' : 'Relancer l’analyse IA sur toutes les lignes produit'}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, padding: '3px 8px', background: ruleUpdateCount ? 'rgba(220,38,38,0.12)' : 'var(--color-surface)', border: `1px solid ${ruleUpdateCount ? '#dc2626' : 'var(--color-border)'}`, borderRadius: 4, cursor: refreshingRuleChecks || validatingImport ? 'default' : 'pointer', color: ruleUpdateCount ? '#dc2626' : 'var(--color-text-2)', fontWeight: 800, opacity: refreshingRuleChecks || validatingImport ? 0.7 : 1 }}
+              >
+                {refreshingRuleChecks ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <RefreshCw size={12} />}
+                {ruleUpdateCount ? `Mise à jour IA (${ruleUpdateCount})` : 'Relancer IA'}
+              </button>
             )}
             <button
               type="button"
@@ -2946,7 +3594,7 @@ export function DevisGridWorkspace({
         </div>
 
         {/* Table */}
-        <div style={{ flex: 1, overflow: 'auto' }}>
+        <div style={{ flex: 1, minHeight: 0, overflowX: 'scroll', overflowY: 'auto', scrollbarGutter: 'stable', paddingBottom: 10 }}>
           {rows.length === 0 && !loading && (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 12, color: 'var(--color-text-3)' }}>
               <Plus size={40} />
@@ -2965,7 +3613,7 @@ export function DevisGridWorkspace({
             <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'auto', minWidth: 1990 }}>
               <thead>
                 <tr>
-                  <Th style={{ width: 36 }}>#</Th>
+                  <Th style={stickyRowMarkerHeaderStyle}>#</Th>
                   <Th style={{ minWidth: 140 }}>Désignation</Th>
                   <Th style={{ minWidth: 90, width: 110 }}>Localisation</Th>
                   <Th style={{ minWidth: 430, width: 430 }}>Perfs</Th>
@@ -3034,7 +3682,7 @@ export function DevisGridWorkspace({
                   }
                   return (
                   <Fragment key={`row-${i}-${entryIndex}`}>
-                    <MainRow row={row} index={i} displayIndex={entry.displayIndex} expanded={expandedRows.has(i)} onToggle={() => toggleRow(i)} change={change} tva={tva} multGlobal={multGlobal} editMode={editMode} onUpdate={(patch) => updateRow(i, patch)} onRecompute={(patch) => recomputeRow(i, patch)} onDelete={() => deleteRow(i)} onSaveAsRule={() => handleSaveAsRule(i)} onVerifyRules={() => handleVerifyRules(i)} assistantHighlight={(assistantHighlightIds.has(String(row._lineId)) || assistantHighlightIndexes.has(i)) ? assistantHighlights : null} hiddenCols={hiddenCols} hiddenDimensionCols={hiddenDimensionCols} />
+                    <MainRow row={row} index={i} displayIndex={entry.displayIndex} expanded={expandedRows.has(i)} onToggle={() => toggleRow(i)} change={change} tva={tva} multGlobal={multGlobal} editMode={editMode} onUpdate={(patch) => updateRow(i, patch)} onRecompute={(patch) => recomputeRow(i, patch)} onDelete={() => deleteRow(i)} onSaveAsRule={() => handleSaveAsRule(i)} onVerifyRules={() => handleVerifyRules(i)} assistantHighlight={(assistantHighlightIds.has(String(row._lineId)) || assistantHighlightIndexes.has(i)) ? assistantHighlights : null} validationKnowledge={validationKnowledge} hiddenCols={hiddenCols} hiddenDimensionCols={hiddenDimensionCols} />
                     {expandedRows.has(i) && (
                       <Fragment>
                         <SubRowRefs row={row} editMode={editMode} onRefCommit={(colIdx, ref) => handleRefCommit(i, colIdx, ref)} hiddenCols={hiddenCols} visibleDimensionCount={visibleDimensionCount} />
@@ -3143,9 +3791,36 @@ export function DevisGridWorkspace({
       )}
       {verifyRulesModal && (
         <VerifyRulesModal
-          row={verifyRulesModal}
+          row={rows[verifyRulesModal.rowIdx] || verifyRulesModal.row}
+          rowIndex={verifyRulesModal.rowIdx}
+          currentKnowledge={validationKnowledge}
           onClose={() => setVerifyRulesModal(null)}
+          onApplyResult={applyRuleCheckResult}
         />
+      )}
+      {validationSummaryModal && (
+        <ValidationSummaryModal
+          report={validationSummaryModal}
+          onClose={() => setValidationSummaryModal(null)}
+          onReviewLine={(rowIndex) => {
+            setExpandedRows(prev => new Set([...prev, rowIndex]))
+            setValidationSummaryModal(null)
+            setVerifyRulesModal({ rowIdx: rowIndex, row: rowsRef.current[rowIndex] })
+          }}
+        />
+      )}
+
+      {confirmDialog && (
+        <div onClick={() => setConfirmDialog(null)} style={{ position: 'fixed', inset: 0, zIndex: 9500, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div onClick={event => event.stopPropagation()} style={{ width: 360, maxWidth: '92vw', borderRadius: 10, border: '1px solid var(--color-border)', background: 'var(--color-surface)', boxShadow: '0 14px 40px rgba(0,0,0,0.28)', padding: 16 }}>
+            <div style={{ fontSize: 14, fontWeight: 900, color: 'var(--color-text)', marginBottom: 8 }}>{confirmDialog.title}</div>
+            <div style={{ fontSize: 12, lineHeight: 1.5, color: 'var(--color-text-2)', marginBottom: 14 }}>{confirmDialog.message}</div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button type="button" onClick={() => setConfirmDialog(null)} style={{ padding: '7px 11px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-input-bg)', color: 'var(--color-text-2)', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}>Annuler</button>
+              <button type="button" onClick={async () => { const action = confirmDialog.onConfirm; setConfirmDialog(null); await action?.() }} style={{ padding: '7px 11px', borderRadius: 6, border: '1px solid transparent', background: confirmDialog.danger ? '#dc2626' : 'var(--color-primary)', color: '#fff', fontSize: 12, fontWeight: 900, cursor: 'pointer' }}>{confirmDialog.confirmLabel || 'Confirmer'}</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {toast && (

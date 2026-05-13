@@ -1,14 +1,14 @@
 /**
- * STT via Gemma 4 (vLLM – API OpenAI-compatible)
+ * STT via vLLM (API OpenAI-compatible)
  * Envoie l'audio en base64 inline et retourne le texte transcrit.
  *
  * Variables d'env :
  *   OLLAMA_BASE_URL   → base vLLM  (défaut http://127.0.0.1:8000)
- *   STT_GEMMA_MODEL   → modèle STT (défaut = OLLAMA_MODEL)
+ *   STT_MODEL         → modèle STT (défaut = OLLAMA_MODEL)
  */
 
 const VLLM_BASE = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:8000'
-const STT_MODEL = process.env.STT_GEMMA_MODEL || process.env.OLLAMA_MODEL || 'google/gemma-4-E2B-it'
+const STT_MODEL = process.env.STT_MODEL || process.env.STT_GEMMA_MODEL || process.env.OLLAMA_MODEL || ''
 
 const STT_PROMPT =
   "Transcris l'audio. Réponds UNIQUEMENT avec le texte transcrit en français, " +
@@ -25,12 +25,13 @@ function clean(text) {
 }
 
 /**
- * Transcrit un Buffer audio avec Gemma 4.
+ * Transcrit un Buffer audio avec le modèle vLLM configuré.
  * @param {Buffer} audioBuffer  - bytes bruts (WebM / WAV / Ogg …)
  * @param {string} mimeType     - type MIME (ex. 'audio/webm')
  * @returns {Promise<string>}   - texte transcrit (vide si silence)
  */
 export async function transcribeWithGemma(audioBuffer, mimeType = 'audio/webm') {
+  if (!STT_MODEL) throw new Error('Aucun modele STT configure. Definis STT_MODEL ou OLLAMA_MODEL.')
   const audioB64 = audioBuffer.toString('base64')
 
   // vLLM attend le format sans le préfixe "audio/"
@@ -55,7 +56,7 @@ export async function transcribeWithGemma(audioBuffer, mimeType = 'audio/webm') 
 
   if (!resp.ok) {
     const errText = await resp.text()
-    throw new Error(`Gemma STT ${resp.status}: ${errText.slice(0, 300)}`)
+    throw new Error(`vLLM STT ${resp.status}: ${errText.slice(0, 300)}`)
   }
 
   const data = await resp.json()

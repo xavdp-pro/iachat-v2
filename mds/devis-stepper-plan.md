@@ -41,12 +41,18 @@ Revenir sur la meme version OU creer une nouvelle version / branche
 
 ### Etat implemente au fil de l'integration
 
+- [x] Page d'accueil `/home` creee comme tableau de bord : Nouveau devis, Recherche devis, Recherche client, Chatbot IA, Experiences chiffrage, Chiffrage rapide.
+- [x] Page `/devis/search` ajoutee pour lister les devis chronologiquement avec numero, affaire, client, montant et acces PDF rapide.
+- [x] Le nom complet devis/version suit le format `numero.version - Client`, par exemple `605.0104.2.1.1 - Client` pour la version `2.1.1`.
+- [x] Les anciens raccourcis techniques de la sidebar sont regroupes dans l'onglet `Modules` de l'administration.
 - [x] Table `devis_rules` creee par `ensureDbSchema`.
 - [x] API `/api/rules` creee pour lister, creer, modifier, activer, rendre obsolete et supprimer les regles.
 - [x] Page `/rules` creee, separee de `/knowledge` et accessible depuis le stepper devis.
 - [x] Le check `/api/devis/:id/validate-rules` persiste un rapport par version dans `devis_rule_checks`.
 - [x] Le moteur de validation lit les regles actives de `devis_rules` en plus des experiences approuvees historiques.
-- [x] L'import XLSX dans la grille lance un controle automatique ligne par ligne via `/api/devis/validate-lines` et affiche les violations/avertissements par reference de regle.
+- [x] L'import XLSX dans la grille lance un controle automatique ligne par ligne via `/api/devis/validate-lines` et affiche uniquement les regles/experiences pertinentes pour chaque row, avec violations/avertissements par reference de regle.
+- [x] L'import XLSX et la relance IA utilisent une validation progressive multi-worker : plusieurs lignes sont controlees en parallele, chaque row affiche son etat en cours, puis un bilan final vert/rouge recapitule les regles/experiences appliquees, les lignes validees et les lignes a corriger.
+- [x] Le bilan final IA de la grille embedded est rattache a la version via `devis_rule_checks` pour ne pas rester seulement dans le navigateur de l'utilisateur qui a lance le controle.
 - [x] Le pre-editeur PDF sauvegarde les libelles dans `devis_version_lines.designation_pdf` pour la version active.
 - [x] La pre-edition PDF relance le controle regles + experiences apres generation IA des libelles et avant le telechargement du PDF final.
 - [x] La pre-edition PDF affiche les alertes detaillees par ligne avec reference de regle (`R001`, `R002`, etc.), raison et correctif propose.

@@ -265,7 +265,7 @@ function OverviewView({ inventory, nav }) {
         Base de connaissance de l'agent IA
       </h1>
       <p style={{ color: 'var(--color-text-2)', fontSize: 14, lineHeight: 1.7, marginBottom: 24 }}>
-        Cette page liste <strong>toutes les règles métier NEXUS</strong> que l'agent Gemma
+        Cette page liste <strong>toutes les règles métier NEXUS</strong> que Zerux IA
         connaît et utilise pour analyser les devis. Elle sert de source de vérité consultable
         par les humains pour s'assurer que les bonnes règles sont en place, et pour identifier
         ce qui manque ou ce qu'il faut corriger.
@@ -289,10 +289,10 @@ function OverviewView({ inventory, nav }) {
 
       <Section title="Ce que l'IA fait avec ces données">
         <ul style={{ paddingLeft: 18, lineHeight: 1.8, fontSize: 13, color: 'var(--color-text-2)' }}>
-          <li>À chaque question posée dans le Devis, Gemma charge automatiquement : <code>GUIDE-DEVIS.md</code> (méthodo), <code>BASE.md</code> (catalogue), <code>EQUIP-COMMUN.md</code> (équipements), plus les markdowns de la gamme détectée ;</li>
-          <li>Gemma utilise les <strong>tableaux de prix</strong> pour positionner une dimension dans la bonne fourchette (arrondi au plafond, cf. onglet "Tableaux") ;</li>
-          <li>Gemma consulte les <strong>expériences commerciaux</strong> approuvées : les 3 à 8 plus pertinentes sont remontées selon la question (recherche sémantique) ;</li>
-          <li>En cas de contradiction, la gamme principale prime — Gemma signale le conflit.</li>
+          <li>À chaque question posée dans le Devis, Zerux IA charge automatiquement : <code>GUIDE-DEVIS.md</code> (méthodo), <code>BASE.md</code> (catalogue), <code>EQUIP-COMMUN.md</code> (équipements), plus les markdowns de la gamme détectée ;</li>
+          <li>Zerux IA utilise les <strong>tableaux de prix</strong> pour positionner une dimension dans la bonne fourchette (arrondi au plafond, cf. onglet "Tableaux") ;</li>
+          <li>Zerux IA consulte les <strong>expériences commerciaux</strong> approuvées : les 3 à 8 plus pertinentes sont remontées selon la question (recherche sémantique) ;</li>
+          <li>En cas de contradiction, la gamme principale prime — Zerux IA signale le conflit.</li>
         </ul>
       </Section>
 
@@ -306,7 +306,7 @@ function OverviewView({ inventory, nav }) {
         <div>
           <strong>Vous voyez une règle manquante, un prix obsolète, un cas non couvert ?</strong><br/>
           Ouvrez une <a onClick={() => nav('/experiences')} style={{ color: 'var(--color-primary)', cursor: 'pointer', textDecoration: 'underline' }}>expérience commerciale</a>.
-          Une fois approuvée par un admin, elle sera injectée automatiquement dans le prompt Gemma à chaque devis pertinent.
+          Une fois approuvée par un admin, elle sera injectée automatiquement dans le prompt Zerux IA à chaque devis pertinent.
         </div>
       </div>
     </div>
@@ -319,7 +319,7 @@ function ProcessView({ inventory }) {
     <div style={{ maxWidth: 800 }}>
       <h1 style={{ fontSize: 24, fontWeight: 700, marginBottom: 6 }}>Comment l'IA s'en sert</h1>
       <p style={{ color: 'var(--color-text-2)', fontSize: 13, marginBottom: 20 }}>
-        Le raisonnement de Gemma n'est pas une boîte noire. Voici précisément ce qui se passe en coulisses.
+        Le raisonnement de Zerux IA n'est pas une boîte noire. Voici précisément ce qui se passe en coulisses.
       </p>
 
       <StepCard n="1" title="Détection automatique">
@@ -328,7 +328,7 @@ function ProcessView({ inventory }) {
         (coupe-feu, pare-balles, séisme, AEV, blast), la serrure et le ferme-porte demandés.
       </StepCard>
       <StepCard n="2" title="Sélection des documents à charger">
-        Selon ce qui est détecté, Gemma reçoit dans son prompt un jeu de markdowns :
+        Selon ce qui est détecté, Zerux IA reçoit dans son prompt un jeu de markdowns :
         la <strong>méthodologie</strong>, le <strong>catalogue de base</strong>, le <strong>markdown de la gamme</strong>,
         les <strong>équipements communs</strong>, plus les markdowns des options activées.
       </StepCard>
@@ -339,7 +339,7 @@ function ProcessView({ inventory }) {
         <div style={{ lineHeight: 1.6 }}>{how.control}</div>
       </StepCard>
       <StepCard n="5" title="Réponse structurée">
-        Gemma applique les règles de croisement (si deux markdowns se contredisent, la gamme principale prime),
+        Zerux IA applique les règles de croisement (si deux markdowns se contredisent, la gamme principale prime),
         signale les alertes (incompatibilités, avis de chantier, dimensions hors catalogue), et répond en français
         professionnel avec la source de chaque chiffre.
       </StepCard>
@@ -364,7 +364,7 @@ function ControlView({ nav }) {
           Les commerciaux et admins peuvent créer des notes typées (chiffrage, piège à éviter,
           règle métier, attention client, matériaux, main d'œuvre, déplacement). Chaque note suit
           un cycle <strong>brouillon → en attente → approuvée ou refusée</strong>. Seules les notes
-          <strong> approuvées par un admin</strong> sont injectées dans le prompt de Gemma.
+          <strong> approuvées par un admin</strong> sont injectées dans le prompt de Zerux IA.
         </p>
         <button onClick={() => nav('/experiences')} style={btnPrimary}>
           Ouvrir le module Expériences <ChevronRight size={14} />

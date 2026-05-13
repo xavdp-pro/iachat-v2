@@ -7,11 +7,35 @@ import {
   createDealForCompany,
   updateDeal,
   deleteDeal,
+  listUsers,
   isHubspotConfigured,
 } from '../services/hubspot.js'
 
 const router = Router()
 router.use(authenticate)
+
+// GET /api/prospects/users?after=&limit= — HubSpot CRM users
+router.get('/users', async (req, res) => {
+  try {
+    if (!isHubspotConfigured()) {
+      return res
+        .status(503)
+        .json({ error: 'HubSpot is not configured (set HUBSPOT_PRIVATE_APP_TOKEN in server env)' })
+    }
+    const { after, limit } = req.query
+    const data = await listUsers({ after, limit })
+    res.json(data)
+  } catch (err) {
+    if (err.code === 'NO_TOKEN') {
+      return res.status(503).json({ error: err.message })
+    }
+    console.error('[prospects] GET /users', err)
+    res.status(err.status >= 400 && err.status < 600 ? err.status : 500).json({
+      error: err.message || 'HubSpot request failed',
+      details: err.body || undefined,
+    })
+  }
+})
 
 // GET /api/prospects/companies?q=&after=&limit=
 router.get('/companies', async (req, res) => {

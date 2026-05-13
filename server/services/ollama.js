@@ -60,7 +60,54 @@ export function isOllamaEnabled() {
 }
 
 export function defaultModel() {
-  return (process.env.OLLAMA_MODEL || 'Qwen/Qwen2.5-32B-Instruct-AWQ').trim()
+  return (process.env.OLLAMA_MODEL || '').trim()
+}
+
+export function maxPromptChars() {
+  const value = Number(process.env.OLLAMA_MAX_CONTEXT_CHARS || 32000)
+  return Number.isFinite(value) && value > 0 ? value : 32000
+}
+
+export function maxCompletionTokens() {
+  const value = Number(process.env.OLLAMA_MAX_COMPLETION_TOKENS || 1024)
+  return Number.isFinite(value) && value > 0 ? value : 1024
+}
+
+function contentLength(content) {
+  if (typeof content === 'string') return content.length
+  if (!Array.isArray(content)) return 0
+  return content.reduce((total, part) => total + String(part?.text || part?.image_url?.url || '').length, 0)
+}
+
+function truncateText(text, maxLength) {
+  const value = String(text || '')
+  if (value.length <= maxLength) return value
+  return `${value.slice(0, Math.max(0, maxLength - 80))}\n\n[...contexte tronque pour tenir dans la fenetre du modele...]`
+}
+
+function trimContent(content, maxLength) {
+  if (typeof content === 'string') return truncateText(content, maxLength)
+  if (!Array.isArray(content)) return content
+  let remaining = maxLength
+  return content.map((part) => {
+    if (part?.type !== 'text') return part
+    const text = String(part.text || '')
+    const nextText = truncateText(text, remaining)
+    remaining -= nextText.length
+    return { ...part, text: nextText }
+  })
+}
+
+export function fitChatMessages(messages, maxChars = maxPromptChars()) {
+  const safeMessages = Array.isArray(messages) ? messages.filter(Boolean) : []
+  let remaining = Math.max(1000, maxChars)
+  return safeMessages.map((message, index) => {
+    const reservedForLater = Math.max(0, safeMessages.length - index - 1) * 1200
+    const budget = Math.max(800, remaining - reservedForLater)
+    const content = trimContent(message.content, budget)
+    remaining -= contentLength(content)
+    return { ...message, content }
+  })
 }
 
 /**
@@ -140,10 +187,12 @@ export async function listModels() {
  */
 export async function chatCompletion({ model, messages, signal, responseFormat, temperature, maxTokens }) {
   const url = `${baseUrl()}/v1/chat/completions`
-  const payload = { model, messages }
+  const resolvedModel = String(model || defaultModel()).trim()
+  if (!resolvedModel) throw new Error('Aucun modele vLLM configure. Definis OLLAMA_MODEL ou le modele par defaut dans Admin.')
+  const payload = { model: resolvedModel, messages: fitChatMessages(messages) }
   if (responseFormat) payload.response_format = responseFormat
   if (typeof temperature === 'number') payload.temperature = temperature
-  if (typeof maxTokens === 'number') payload.max_tokens = maxTokens
+  payload.max_tokens = typeof maxTokens === 'number' ? maxTokens : maxCompletionTokens()
   const body = JSON.stringify(payload)
   const res = await fetch(url, {
     method: 'POST',
@@ -173,9 +222,11 @@ export async function chatCompletion({ model, messages, signal, responseFormat, 
  */
 export async function chatCompletionStream({ model, messages, signal, onChunk, temperature, maxTokens }) {
   const url = `${baseUrl()}/v1/chat/completions`
-  const payload = { model, messages, stream: true }
+  const resolvedModel = String(model || defaultModel()).trim()
+  if (!resolvedModel) throw new Error('Aucun modele vLLM configure. Definis OLLAMA_MODEL ou le modele par defaut dans Admin.')
+  const payload = { model: resolvedModel, messages: fitChatMessages(messages), stream: true }
   if (typeof temperature === 'number') payload.temperature = temperature
-  if (typeof maxTokens === 'number') payload.max_tokens = maxTokens
+  payload.max_tokens = typeof maxTokens === 'number' ? maxTokens : maxCompletionTokens()
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
