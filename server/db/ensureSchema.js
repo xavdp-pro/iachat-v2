@@ -5,6 +5,24 @@ import db from './index.js'
  */
 export async function ensureDbSchema() {
   try {
+    // ── users ↔ HubSpot user association ──────────────────────────────────
+    const userHubspotColumns = [
+      ['hubspot_user_id', 'VARCHAR(64) DEFAULT NULL'],
+      ['hubspot_user_email', 'VARCHAR(255) DEFAULT NULL'],
+      ['hubspot_user_name', 'VARCHAR(255) DEFAULT NULL'],
+    ]
+    for (const [columnName, definition] of userHubspotColumns) {
+      const [cols] = await db.query(
+        `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = ?`,
+        [columnName]
+      )
+      if (!cols.length) {
+        await db.query(`ALTER TABLE users ADD COLUMN ${columnName} ${definition}`)
+        console.log(`✅ DB: users.${columnName} column added`)
+      }
+    }
+
     // ── projects.archived ──────────────────────────────────────────────────
     const [archivedCols] = await db.query(
       `SELECT COLUMN_NAME FROM information_schema.COLUMNS

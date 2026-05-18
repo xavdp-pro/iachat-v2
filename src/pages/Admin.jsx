@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next'
 import {
   Plus, Pencil, Trash2, ShieldCheck, User, Loader2, Moon, Sun, MessageSquare, LogOut, Mic, Bot, RefreshCw, X,
   Headphones, Play, Square, Volume2, Menu, Undo2, CornerUpLeft, MessageCircleReply, BookOpen, CheckCircle2, XCircle, Clock,
-  Building2, Database, FileText, FileSpreadsheet, LayoutGrid, Shield, Truck,
+  Building2, Database, FileSpreadsheet, LayoutGrid, Shield, Truck, AlertTriangle,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useAuthStore } from '../store/useAuthStore.js'
@@ -16,14 +16,14 @@ const TAB_STT = 'stt'
 const TAB_TTS = 'tts'
 const TAB_EXPERIENCES = 'experiences'
 const TAB_MODULES = 'modules'
-const VALID_TABS = new Set([TAB_USERS, TAB_STT, TAB_TTS, TAB_EXPERIENCES, TAB_MODULES])
+const TAB_MAINTENANCE = 'maintenance'
+const VALID_TABS = new Set([TAB_USERS, TAB_STT, TAB_TTS, TAB_EXPERIENCES, TAB_MODULES, TAB_MAINTENANCE])
 
 const ADMIN_MODULE_LINKS = [
   { label: 'Connaissance IA', description: 'Documentation et base consultable par Zerux IA.', to: '/knowledge', icon: Database },
   { label: 'Expériences', description: 'Expériences terrain et validations commerciales.', to: '/experiences', icon: BookOpen },
   { label: 'Devis NEXUS', description: 'Workflow complet de devis versionné.', to: '/devis', icon: FileSpreadsheet },
   { label: 'Grid devis', description: 'Chiffrage rapide en grille.', to: '/devis/grid', icon: LayoutGrid },
-  { label: 'Devis classique', description: 'Ancienne interface de génération devis.', to: '/devis/legacy', icon: FileText },
   { label: 'Tarifs transport', description: 'Gestion et vérification des frais de port.', to: '/devis/transport', icon: Truck },
   { label: 'Prospects', description: 'Recherche client et affaires HubSpot.', to: '/prospects', icon: Building2 },
   { label: 'Règles', description: 'Règles opérationnelles R001, R002, etc.', to: '/rules', icon: Shield },
@@ -52,6 +52,15 @@ export default function Admin() {
   const [loading, setLoading] = useState(true)
   const [modalUser, setModalUser] = useState(undefined)
   const [confirmDelete, setConfirmDelete] = useState(null)
+  const [hubspotUsers, setHubspotUsers] = useState([])
+  const [hubspotUsersLoading, setHubspotUsersLoading] = useState(false)
+  const [hubspotUsersError, setHubspotUsersError] = useState('')
+  const [maintenanceLoading, setMaintenanceLoading] = useState(false)
+  const [maintenanceSaving, setMaintenanceSaving] = useState(false)
+  const [maintenanceFeedback, setMaintenanceFeedback] = useState('')
+  const [maintenanceError, setMaintenanceError] = useState('')
+  const [maintenanceCfg, setMaintenanceCfg] = useState(null)
+  const [maintenanceForm, setMaintenanceForm] = useState({ enabled: false, message: '', bypassIps: '' })
 
   const [sttTesting, setSttTesting] = useState(false)
   const [sttResult, setSttResult] = useState('')
@@ -99,6 +108,60 @@ export default function Admin() {
     if (activeTab === TAB_EXPERIENCES) fetchAllExperiences()
   }, [activeTab, fetchAllExperiences])
 
+  const loadMaintenanceSettings = useCallback(async () => {
+    setMaintenanceLoading(true)
+    setMaintenanceError('')
+    setMaintenanceFeedback('')
+    try {
+      const data = await api.get('/admin/maintenance-settings')
+      setMaintenanceCfg(data)
+      setMaintenanceForm({
+        enabled: Boolean(data.enabled),
+        message: data.message || '',
+        bypassIps: data.bypassIps || '',
+      })
+    } catch (err) {
+      setMaintenanceError(err?.error || err?.message || 'Impossible de charger le mode maintenance')
+    } finally {
+      setMaintenanceLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (activeTab === TAB_MAINTENANCE) loadMaintenanceSettings()
+  }, [activeTab, loadMaintenanceSettings])
+
+  const addCurrentIpToMaintenanceBypass = () => {
+    const ip = String(maintenanceCfg?.clientIp || '').trim()
+    if (!ip) return
+    setMaintenanceForm((form) => {
+      const items = String(form.bypassIps || '').split(/[\s,;]+/u).map(item => item.trim()).filter(Boolean)
+      if (!items.includes(ip)) items.push(ip)
+      return { ...form, bypassIps: items.join('\n') }
+    })
+  }
+
+  const saveMaintenanceSettings = async (event) => {
+    event.preventDefault()
+    setMaintenanceSaving(true)
+    setMaintenanceError('')
+    setMaintenanceFeedback('')
+    try {
+      const data = await api.put('/admin/maintenance-settings', maintenanceForm)
+      setMaintenanceCfg(data)
+      setMaintenanceForm({
+        enabled: Boolean(data.enabled),
+        message: data.message || '',
+        bypassIps: data.bypassIps || '',
+      })
+      setMaintenanceFeedback(data.enabled ? 'Mode maintenance activé pour les IP non autorisées.' : 'Mode maintenance désactivé.')
+    } catch (err) {
+      setMaintenanceError(err?.error || err?.message || 'Impossible de sauvegarder le mode maintenance')
+    } finally {
+      setMaintenanceSaving(false)
+    }
+  }
+
   const handleExpApprove = async (exp) => {
     await api.post(`/experiences/${exp.id}/approve`)
     setAllExperiences((prev) => prev.map((e) => e.id === exp.id ? { ...e, status: 'approved' } : e))
@@ -132,9 +195,29 @@ export default function Admin() {
     }
   }
 
+  const fetchHubspotUsers = async () => {
+    setHubspotUsersLoading(true)
+    setHubspotUsersError('')
+    try {
+      const data = await api.get('/prospects/owners?limit=100')
+      setHubspotUsers(Array.isArray(data?.results) ? data.results : [])
+    } catch (err) {
+      setHubspotUsersError(err?.error || err?.message || 'Impossible de charger les utilisateurs HubSpot')
+      setHubspotUsers([])
+    } finally {
+      setHubspotUsersLoading(false)
+    }
+  }
+
   useEffect(() => {
     fetchUsers()
   }, [])
+
+  useEffect(() => {
+    if (modalUser !== undefined && !hubspotUsers.length && !hubspotUsersLoading && !hubspotUsersError) {
+      fetchHubspotUsers()
+    }
+  }, [modalUser, hubspotUsers.length, hubspotUsersLoading, hubspotUsersError])
 
     const handleStartRecording = async () => {
     try {
@@ -282,6 +365,11 @@ export default function Admin() {
     fetchUsers()
   }
 
+  const maintenanceBypassList = String(maintenanceForm.bypassIps || '')
+    .split(/[\s,;]+/u)
+    .map(item => item.trim())
+    .filter(Boolean)
+
   
 
   return (
@@ -371,7 +459,128 @@ export default function Admin() {
             <LayoutGrid size={17} strokeWidth={2} aria-hidden />
             Modules
           </button>
+          <button
+            type="button"
+            role="tab"
+            id="admin-tab-maintenance"
+            aria-selected={activeTab === TAB_MAINTENANCE}
+            aria-controls="admin-panel-maintenance"
+            className={`admin-tab ${activeTab === TAB_MAINTENANCE ? 'admin-tab--active' : ''}`}
+            onClick={() => setActiveTab(TAB_MAINTENANCE)}
+          >
+            <AlertTriangle size={17} strokeWidth={2} aria-hidden />
+            Maintenance
+          </button>
         </div>
+
+        {activeTab === TAB_MAINTENANCE && (
+          <section id="admin-panel-maintenance" role="tabpanel" aria-labelledby="admin-tab-maintenance" className="admin-ollama-panel">
+            <div className="admin-ollama-head">
+              <div className="admin-ollama-icon"><AlertTriangle size={22} strokeWidth={2} /></div>
+              <div>
+                <h2>Mode maintenance</h2>
+                <p className="admin-ollama-desc">Bloque l'application pour les visiteurs, sauf les IP de bypass autorisées.</p>
+              </div>
+              <button type="button" className="admin-btn-ghost" onClick={loadMaintenanceSettings} disabled={maintenanceLoading || maintenanceSaving} style={{ marginLeft: 'auto' }}>
+                <RefreshCw size={15} className={maintenanceLoading ? 'animate-spin' : ''} /> Recharger
+              </button>
+            </div>
+
+            <form onSubmit={saveMaintenanceSettings} style={{ display: 'grid', gap: 16, maxWidth: 760 }}>
+              <div style={{ display: 'grid', gap: 8, padding: 14, borderRadius: 8, border: '1px solid var(--color-border)', background: maintenanceForm.enabled ? 'rgba(245,158,11,0.10)' : 'var(--color-input-bg)' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontWeight: 800, color: 'var(--color-text)' }}>
+                  <input
+                    type="checkbox"
+                    checked={maintenanceForm.enabled}
+                    onChange={(event) => setMaintenanceForm((form) => ({ ...form, enabled: event.target.checked }))}
+                    style={{ width: 18, height: 18 }}
+                  />
+                  Activer le mode maintenance
+                </label>
+                <div style={{ fontSize: 12, color: 'var(--color-text-2)', lineHeight: 1.45 }}>
+                  Quand il est actif, les requêtes API retournent une page de maintenance. Les IP listées ci-dessous continuent à utiliser l'app et l'admin.
+                </div>
+              </div>
+
+              <div className="chat-modal-field">
+                <label className="chat-modal-label" htmlFor="maintenance-message">Message affiché</label>
+                <textarea
+                  id="maintenance-message"
+                  className="chat-modal-input"
+                  rows={3}
+                  value={maintenanceForm.message}
+                  onChange={(event) => setMaintenanceForm((form) => ({ ...form, message: event.target.value }))}
+                  placeholder="Maintenance en cours. Le service revient rapidement."
+                  style={{ resize: 'vertical', minHeight: 84 }}
+                />
+              </div>
+
+              <div className="chat-modal-field">
+                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', gap: 12, alignItems: 'stretch', marginBottom: 12 }}>
+                  <div style={{ padding: 12, borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-input-bg)' }}>
+                    <div style={{ fontSize: 11, fontWeight: 900, color: 'var(--color-text-3)', textTransform: 'uppercase', marginBottom: 5 }}>IP actuelle détectée</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <code style={{ fontSize: 15, color: 'var(--color-text)', fontWeight: 900, background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 6, padding: '4px 8px' }}>
+                        {maintenanceCfg?.clientIp || 'chargement…'}
+                      </code>
+                    </div>
+                    <div style={{ marginTop: 7, fontSize: 11, color: 'var(--color-text-3)' }}>
+                      Source : {maintenanceCfg?.ipSource || 'inconnue'}{maintenanceCfg?.ipRaw ? ` · ${maintenanceCfg.ipRaw}` : ''}
+                    </div>
+                    {Array.isArray(maintenanceCfg?.ipChain) && maintenanceCfg.ipChain.length > 0 && (
+                      <div style={{ marginTop: 10, display: 'grid', gap: 5 }}>
+                        <div style={{ fontSize: 10, fontWeight: 900, color: 'var(--color-text-3)', textTransform: 'uppercase' }}>Chaîne proxy</div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                          {maintenanceCfg.ipChain.map((ip, index) => (
+                            <span key={`${ip}-${index}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '4px 7px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-surface)', color: index === 0 ? 'var(--color-primary)' : 'var(--color-text-2)', fontSize: 11, fontWeight: 800 }}>
+                              {index === 0 ? 'client' : `proxy ${index}`} · {ip}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  <button type="button" className="admin-btn-primary" onClick={addCurrentIpToMaintenanceBypass} disabled={!maintenanceCfg?.clientIp || maintenanceSaving} style={{ alignSelf: 'stretch', justifyContent: 'center', minWidth: 178 }}>
+                    <Plus size={15} /> Autoriser cette IP
+                  </button>
+                </div>
+
+                <label className="chat-modal-label" htmlFor="maintenance-bypass-ips">IP autorisées</label>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, minHeight: 36, padding: 10, borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-input-bg)', marginBottom: 8 }}>
+                  {maintenanceBypassList.length ? maintenanceBypassList.map((ip) => (
+                    <span key={ip} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 8px', borderRadius: 7, border: '1px solid var(--color-border)', background: 'var(--color-surface)', color: 'var(--color-text)', fontSize: 12, fontWeight: 800 }}>
+                      <ShieldCheck size={12} /> {ip}
+                    </span>
+                  )) : (
+                    <span style={{ color: 'var(--color-text-3)', fontSize: 12 }}>Aucune IP autorisée pour le moment.</span>
+                  )}
+                </div>
+                <textarea
+                  id="maintenance-bypass-ips"
+                  className="chat-modal-input"
+                  rows={6}
+                  value={maintenanceForm.bypassIps}
+                  onChange={(event) => setMaintenanceForm((form) => ({ ...form, bypassIps: event.target.value }))}
+                  placeholder="Une IP par ligne, ex. 82.65.12.34"
+                  style={{ resize: 'vertical', minHeight: 132, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}
+                />
+                <p style={{ margin: '6px 0 0', fontSize: 11, color: 'var(--color-text-3)' }}>
+                  Une IP ou plage CIDR par ligne. Sauvegarde obligatoire après ajout.
+                </p>
+              </div>
+
+              {maintenanceError && <p className="admin-ollama-warn" role="alert">{maintenanceError}</p>}
+              {maintenanceFeedback && <p style={{ margin: 0, color: 'var(--color-primary)', fontSize: 12, fontWeight: 800 }}>{maintenanceFeedback}</p>}
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+                <button type="button" className="chat-modal-btn chat-modal-btn--secondary" onClick={loadMaintenanceSettings} disabled={maintenanceLoading || maintenanceSaving}>Annuler</button>
+                <button type="submit" className="admin-btn-primary" disabled={maintenanceLoading || maintenanceSaving}>
+                  {maintenanceSaving ? <Loader2 size={15} className="animate-spin" /> : <ShieldCheck size={15} />} Sauvegarder
+                </button>
+              </div>
+            </form>
+          </section>
+        )}
 
         {activeTab === TAB_MODULES && (
           <section id="admin-panel-modules" role="tabpanel" aria-labelledby="admin-tab-modules" className="admin-ollama-panel">
@@ -395,6 +604,63 @@ export default function Admin() {
                   </button>
                 )
               })}
+            </div>
+          </section>
+        )}
+
+        {activeTab === TAB_USERS && (
+          <section id="admin-panel-users" role="tabpanel" aria-labelledby="admin-tab-users" className="admin-ollama-panel">
+            <div className="admin-ollama-head">
+              <div className="admin-ollama-icon"><User size={22} strokeWidth={2} /></div>
+              <div>
+                <h2>Gestion des utilisateurs</h2>
+                <p className="admin-ollama-desc">Ajoutez, modifiez, désactivez ou supprimez les comptes, et associez-les aux utilisateurs HubSpot.</p>
+              </div>
+              <button type="button" className="admin-btn-primary" onClick={() => setModalUser(null)} style={{ marginLeft: 'auto' }}>
+                <Plus size={15} /> Ajouter
+              </button>
+            </div>
+
+            {hubspotUsersError && (
+              <p className="admin-ollama-warn" role="alert">HubSpot : {hubspotUsersError}</p>
+            )}
+
+            <div className="admin-table-wrap">
+              <table className="admin-table">
+                <thead>
+                  <tr>
+                    <th>Nom</th>
+                    <th>E-mail</th>
+                    <th>Rôle</th>
+                    <th>Statut</th>
+                    <th>HubSpot</th>
+                    <th>Créé le</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {loading ? (
+                    <tr><td colSpan={7}><Loader2 size={16} className="animate-spin" /> Chargement…</td></tr>
+                  ) : users.length === 0 ? (
+                    <tr><td colSpan={7}>Aucun utilisateur.</td></tr>
+                  ) : users.map((item) => (
+                    <tr key={item.id}>
+                      <td>{item.name || '—'}</td>
+                      <td>{item.email}</td>
+                      <td><span className="admin-badge">{item.role === 'admin' ? 'Admin' : 'Utilisateur'}</span></td>
+                      <td>{item.active ? <span className="admin-badge">Actif</span> : <span className="admin-badge admin-badge--muted">Inactif</span>}</td>
+                      <td>{item.hubspot_user_id ? `${item.hubspot_user_name || item.hubspot_user_email || item.hubspot_user_id}` : <span style={{ color: 'var(--color-text-3)' }}>Non associé</span>}</td>
+                      <td>{item.created_at ? new Date(item.created_at).toLocaleDateString('fr-FR') : '—'}</td>
+                      <td>
+                        <div className="admin-table-actions">
+                          <button type="button" className="admin-table-icon-btn" onClick={() => setModalUser(item)} title="Modifier"><Pencil size={14} /></button>
+                          <button type="button" className="admin-table-icon-btn admin-table-icon-btn--danger" onClick={() => setConfirmDelete(item)} title="Supprimer"><Trash2 size={14} /></button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </section>
         )}
@@ -669,6 +935,9 @@ export default function Admin() {
         {modalUser !== undefined && (
           <UserModal
             user={modalUser}
+            hubspotUsers={hubspotUsers}
+            hubspotUsersLoading={hubspotUsersLoading}
+            onRefreshHubspotUsers={fetchHubspotUsers}
             onSave={() => {
               setModalUser(undefined)
               fetchUsers()
@@ -691,7 +960,14 @@ export default function Admin() {
   )
 }
 
-function UserModal({ user, onSave, onClose }) {
+function hubspotUserLabel(hubspotUser) {
+  const props = hubspotUser?.properties || {}
+  const fullName = [hubspotUser?.firstName || props.hs_given_name, hubspotUser?.lastName || props.hs_family_name].filter(Boolean).join(' ').trim()
+  const email = hubspotUser?.email || props.hs_email || ''
+  return fullName && email ? `${fullName} · ${email}` : fullName || email || hubspotUser?.id || 'Utilisateur HubSpot'
+}
+
+function UserModal({ user, hubspotUsers = [], hubspotUsersLoading = false, onRefreshHubspotUsers, onSave, onClose }) {
   const { t } = useTranslation()
   const [form, setForm] = useState({
     email: user?.email || '',
@@ -699,6 +975,9 @@ function UserModal({ user, onSave, onClose }) {
     role: user?.role || 'user',
     password: '',
     active: user?.active !== undefined ? user.active : true,
+    hubspot_user_id: user?.hubspot_user_id || '',
+    hubspot_user_email: user?.hubspot_user_email || '',
+    hubspot_user_name: user?.hubspot_user_name || '',
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -716,6 +995,23 @@ function UserModal({ user, onSave, onClose }) {
     } finally {
       setSaving(false)
     }
+  }
+
+  const handleHubspotSelect = (hubspotId) => {
+    if (!hubspotId) {
+      setForm((f) => ({ ...f, hubspot_user_id: '', hubspot_user_email: '', hubspot_user_name: '' }))
+      return
+    }
+    const selected = hubspotUsers.find((item) => String(item.id) === String(hubspotId))
+    const props = selected?.properties || {}
+    const fullName = [selected?.firstName || props.hs_given_name, selected?.lastName || props.hs_family_name].filter(Boolean).join(' ').trim()
+    setForm((f) => ({
+      ...f,
+      hubspot_user_id: selected?.id || hubspotId,
+      hubspot_user_email: selected?.email || props.hs_email || '',
+      hubspot_user_name: fullName,
+      name: f.name || fullName,
+    }))
   }
 
   return (
@@ -796,6 +1092,38 @@ function UserModal({ user, onSave, onClose }) {
                 <option value="0">{t('common.inactive')}</option>
               </select>
             </div>
+          </div>
+          <div className="chat-modal-field">
+            <label className="chat-modal-label" htmlFor="adm-hubspot-user">Utilisateur HubSpot associé</label>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <select
+                id="adm-hubspot-user"
+                className="chat-modal-select"
+                value={form.hubspot_user_id || ''}
+                onChange={(e) => handleHubspotSelect(e.target.value)}
+                style={{ flex: 1 }}
+              >
+                <option value="">Aucun utilisateur HubSpot</option>
+                {hubspotUsers.map((hubspotUser) => (
+                  <option key={hubspotUser.id} value={hubspotUser.id}>{hubspotUserLabel(hubspotUser)}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="chat-modal-btn chat-modal-btn--secondary"
+                onClick={onRefreshHubspotUsers}
+                disabled={hubspotUsersLoading}
+                title="Recharger les utilisateurs HubSpot"
+                style={{ flexShrink: 0 }}
+              >
+                {hubspotUsersLoading ? <Loader2 className="animate-spin" size={15} /> : <RefreshCw size={15} />}
+              </button>
+            </div>
+            {form.hubspot_user_id && (
+              <p style={{ marginTop: 6, fontSize: 11, color: 'var(--color-text-3)' }}>
+                ID HubSpot {form.hubspot_user_id}{form.hubspot_user_email ? ` · ${form.hubspot_user_email}` : ''}
+              </p>
+            )}
           </div>
           {error && (
             <div

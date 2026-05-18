@@ -21,7 +21,10 @@ import {
   getCachedOllamaModels,
   replaceCachedOllamaModels,
   getOllamaModelsCacheUpdatedAt,
+  getMaintenanceSettings,
+  persistMaintenanceSettings,
 } from '../services/appSettings.js'
+import { getClientIp, getClientIpInfo, isIpAllowedByMaintenanceBypass, normalizeMaintenanceBypassIps } from '../middleware/maintenance.js'
 
 const router = Router()
 router.use(authenticate, requireAdmin)
@@ -153,11 +156,57 @@ router.put('/ollama-settings', async (req, res) => {
   }
 })
 
+// GET /api/admin/maintenance-settings — global maintenance mode config
+router.get('/maintenance-settings', async (req, res) => {
+  try {
+    const settings = await getMaintenanceSettings()
+    const ipInfo = getClientIpInfo(req)
+    const clientIp = ipInfo.ip
+    res.json({
+      ...settings,
+      clientIp,
+      ipSource: ipInfo.source,
+      ipRaw: ipInfo.raw,
+      ipChain: ipInfo.forwardedForChain,
+      bypassed: isIpAllowedByMaintenanceBypass(clientIp, settings.bypassIps),
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// PUT /api/admin/maintenance-settings — body: { enabled, message, bypassIps }
+router.put('/maintenance-settings', async (req, res) => {
+  const enabled = Boolean(req.body?.enabled)
+  const message = String(req.body?.message || '').trim()
+  const bypassIps = normalizeMaintenanceBypassIps(req.body?.bypassIps || '')
+  const clientIp = getClientIp(req)
+  if (enabled && !isIpAllowedByMaintenanceBypass(clientIp, bypassIps)) {
+    return res.status(400).json({
+      error: `Ajoute d'abord ton IP (${clientIp || 'inconnue'}) dans la liste de bypass avant d'activer la maintenance.`,
+      clientIp,
+    })
+  }
+  try {
+    await persistMaintenanceSettings({ enabled, message, bypassIps })
+    res.json({
+      ok: true,
+      enabled,
+      message,
+      bypassIps,
+      clientIp,
+      bypassed: isIpAllowedByMaintenanceBypass(clientIp, bypassIps),
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 // GET /api/admin/users — list all users
 router.get('/users', async (req, res) => {
   try {
     const [rows] = await db.query(
-      'SELECT id, email, role, name, avatar, active, created_at FROM users ORDER BY created_at DESC'
+      'SELECT id, email, role, name, avatar, active, hubspot_user_id, hubspot_user_email, hubspot_user_name, created_at FROM users ORDER BY created_at DESC'
     )
     res.json(rows)
   } catch (err) {
@@ -167,15 +216,16 @@ router.get('/users', async (req, res) => {
 
 // POST /api/admin/users — create user
 router.post('/users', async (req, res) => {
-  const { email, password, name, role = 'user' } = req.body
+  const { email, password, name, role = 'user', active = true, hubspot_user_id = null, hubspot_user_email = null, hubspot_user_name = null } = req.body
   if (!email || !password) return res.status(400).json({ error: 'Email and password required' })
+  if (!['user', 'admin'].includes(role)) return res.status(400).json({ error: 'Invalid role' })
   try {
     const hash = await bcrypt.hash(password, 12)
     const [result] = await db.query(
-      'INSERT INTO users (email, password_hash, name, role) VALUES (?, ?, ?, ?)',
-      [email.toLowerCase().trim(), hash, name || '', role]
+      'INSERT INTO users (email, password_hash, name, role, active, hubspot_user_id, hubspot_user_email, hubspot_user_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [email.toLowerCase().trim(), hash, name || '', role, active ? 1 : 0, hubspot_user_id || null, hubspot_user_email || null, hubspot_user_name || null]
     )
-    res.status(201).json({ id: result.insertId, email, name, role })
+    res.status(201).json({ id: result.insertId, email, name, role, active, hubspot_user_id, hubspot_user_email, hubspot_user_name })
   } catch (err) {
     if (err.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'Email already exists' })
     res.status(500).json({ error: err.message })
@@ -184,16 +234,17 @@ router.post('/users', async (req, res) => {
 
 // PUT /api/admin/users/:id — update user
 router.put('/users/:id', async (req, res) => {
-  const { name, role, active, password } = req.body
+  const { name, role, active, password, hubspot_user_id = null, hubspot_user_email = null, hubspot_user_name = null } = req.body
   const { id } = req.params
+  if (!['user', 'admin'].includes(role)) return res.status(400).json({ error: 'Invalid role' })
   try {
     if (password) {
       const hash = await bcrypt.hash(password, 12)
       await db.query('UPDATE users SET password_hash = ? WHERE id = ?', [hash, id])
     }
     await db.query(
-      'UPDATE users SET name = ?, role = ?, active = ? WHERE id = ?',
-      [name, role, active ? 1 : 0, id]
+      'UPDATE users SET name = ?, role = ?, active = ?, hubspot_user_id = ?, hubspot_user_email = ?, hubspot_user_name = ? WHERE id = ?',
+      [name || '', role, active ? 1 : 0, hubspot_user_id || null, hubspot_user_email || null, hubspot_user_name || null, id]
     )
     res.json({ ok: true })
   } catch (err) {

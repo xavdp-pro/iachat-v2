@@ -29,6 +29,11 @@ api.interceptors.request.use(config => {
 api.interceptors.response.use(
   res => res.data,
   err => {
+    if (err.response?.status === 503 && err.response?.data?.code === 'MAINTENANCE_MODE') {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('app:maintenance', { detail: err.response.data }))
+      }
+    }
     if (err.response?.status === 401) {
       try {
         localStorage.removeItem('token')

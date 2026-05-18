@@ -3,6 +3,7 @@
  *
  * POST /api/devis/conseils     — session + résultats → conseils (expériences)
  * POST /api/devis/analyze      — upload .xlsx → exécute detect_nexus.py → retourne JSON
+ * POST /api/devis/grid-intent  — langage libre → JSON d'éditions grille (vLLM), validé puis appliqué côté client
  * POST /api/devis/ask          — question Gemma avec contexte markdowns + lignes devis
  * GET  /api/devis/types-options — liste des types depuis knowledge_tables.json
  * POST /api/devis/recompute-row — recalcule une ligne via detect_nexus.py --recompute
@@ -266,7 +267,7 @@ function isCasualAssistantMessage(text) {
   if (!normalized) return false
   if (normalized.length > 240) return false
   const stopBusinessIntent = /\b(ne parle pas du devis|arrete le devis|conversation normale)\b/.test(normalized)
-  const hasBusinessIntent = /\b(tableau|devis|ligne|gamme|classement|total ht|prix|chiffr|option|alerte|dimension|hauteur|largeur|porte|chassis|cr[2-6]|rc[2-6]|ei\s?\d+|fb[4-7]|calcul|modifier|modifie|verifier|verifie|controle|audit)\b/.test(normalized)
+  const hasBusinessIntent = /\b(tableau|devis|ligne|gamme|classement|total ht|prix|chiffr|option|alerte|dimension|hauteur|huteur|huter|largeur|porte|portes|type|chassis|cr[2-6]|rc[2-6]|ei\s?\d+|fb[4-7]|anti feu|coupe feu|serrure|garniture|vitrage|ferme porte|calcul|modifier|modifie|verifier|verifie|controle|audit)\b/.test(normalized)
   if (hasBusinessIntent && !stopBusinessIntent) return false
   return /^(salut|bonjour|bonsoir|hello|hey|coucou)\b/.test(normalized) ||
     /\b(tu es la|t es la|tes la|t la|tu est la|vous etes la|ca va|comment ca va|tu vas bien|merci)\b/.test(normalized) ||
@@ -278,11 +279,303 @@ function isCasualAssistantMessage(text) {
     (normalized.length <= 180 && !hasBusinessIntent)
 }
 
+function equipmentText(value, depth = 0) {
+  if (value == null || depth > 2) return ''
+  if (typeof value === 'string' || typeof value === 'number') return String(value)
+  if (Array.isArray(value)) return value.map(item => equipmentText(item, depth + 1)).join(' ')
+  if (typeof value === 'object') {
+    return Object.entries(value)
+      .filter(([key]) => !/^_/u.test(key))
+      .map(([, item]) => equipmentText(item, depth + 1))
+      .join(' ')
+  }
+  return ''
+}
+
 function isBusinessDevisHistory(content) {
   const text = String(content || '').toLowerCase()
   if (text.length > 700) return true
   return /\b(devis|ligne|gamme|classement|total ht|options|alertes|hauteur ht|largeur ht|cr3|cr4|cr5|cr6|chassis|tableau)\b/i.test(text) ||
     /^\s*\|.+\|/m.test(text)
+}
+
+// ── POST /api/devis/grid-intent — natural language → validated edit list (client applies) ──
+const GRID_INTENT_PATCH_KEYS = new Set([
+  'hauteur_mm', 'largeur_mm', 'localisation', 'designation', 'type_porte',
+  'gamme', 'vantail', 'prix_base_ht', 'ref_base', 'qty', 'multiple',
+  'rc', 'pb', 'cf', 'blast', 'belier', 'prison', 'acoustic',
+  'serrure', 'garniture_int', 'garniture_ext', 'vitrage', 'ferme_porte',
+  'cremone', 'autres', 'thermolaquage', 'notes', 'options_add', 'options_remove',
+])
+
+const GRID_INTENT_PATCH_ALIASES = new Map([
+  ['type', 'type_porte'], ['produit', 'type_porte'], ['hauteur', 'hauteur_mm'], ['largeur', 'largeur_mm'],
+  ['h', 'hauteur_mm'], ['l', 'largeur_mm'], ['quantite', 'qty'], ['quantité', 'qty'], ['qte', 'qty'],
+  ['remise', 'multiple'], ['multiplicateur', 'multiple'], ['coupe_feu', 'cf'], ['feu', 'cf'], ['anti_feu', 'cf'],
+  ['pare_balles', 'pb'], ['pareballes', 'pb'], ['acoustique', 'acoustic'], ['db', 'acoustic'],
+  ['fermeporte', 'ferme_porte'], ['ferme_porte_ref', 'ferme_porte'], ['fp', 'ferme_porte'],
+  ['garniture_interieure', 'garniture_int'], ['garniture_intérieure', 'garniture_int'],
+  ['garniture_exterieure', 'garniture_ext'], ['garniture_extérieure', 'garniture_ext'],
+  ['option', 'options_add'], ['options', 'options_add'], ['ajouter_option', 'options_add'], ['supprimer_option', 'options_remove'],
+  ['note', 'notes'], ['commentaire', 'notes'], ['thermolaquage_type', 'thermolaquage'],
+])
+
+function canonicalGridIntentPatchKey(key) {
+  const raw = String(key || '').trim()
+  const normalized = raw.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[\s-]+/g, '_')
+  return GRID_INTENT_PATCH_ALIASES.get(raw) || GRID_INTENT_PATCH_ALIASES.get(normalized) || normalized
+}
+
+function cleanGridIntentString(value, max = 4000) {
+  const text = String(value ?? '').trim()
+  return text ? text.slice(0, max) : null
+}
+
+function cleanGridIntentList(value) {
+  const list = Array.isArray(value) ? value : String(value ?? '').split(/[,;|]+/u)
+  return list.map(item => cleanGridIntentString(item, 220)).filter(Boolean).slice(0, 12)
+}
+
+function repLetterFromIndex(i) {
+  let n = Math.max(0, Number(i) || 0) + 1
+  let label = ''
+  while (n > 0) {
+    n -= 1
+    label = String.fromCharCode(65 + (n % 26)) + label
+    n = Math.floor(n / 26)
+  }
+  return label
+}
+
+function sanitizeGridIntentPatch(patch) {
+  if (!patch || typeof patch !== 'object') return {}
+  const out = {}
+  for (const [rawKey, value] of Object.entries(patch)) {
+    const key = canonicalGridIntentPatchKey(rawKey)
+    if (!GRID_INTENT_PATCH_KEYS.has(key)) continue
+    if (value === null || value === undefined) continue
+    if (key === 'hauteur_mm' || key === 'largeur_mm') {
+      const n = Number(value)
+      if (Number.isFinite(n) && n >= 100 && n <= 14000) out[key] = Math.round(n)
+    } else if (key === 'prix_base_ht') {
+      const n = Number(value)
+      if (Number.isFinite(n) && n >= 0 && n < 1e10) out[key] = n
+    } else if (key === 'qty') {
+      const n = Number(value)
+      if (Number.isFinite(n) && n > 0 && n <= 9999) out[key] = Math.round(n)
+    } else if (key === 'multiple') {
+      const n = Number(value)
+      if (Number.isFinite(n) && n >= 0 && n <= 10) out[key] = n
+    } else if (key === 'options_add' || key === 'options_remove') {
+      const list = cleanGridIntentList(value)
+      if (list.length) out[key] = list
+    } else if (key === 'gamme' || key === 'vantail' || key === 'ref_base') {
+      const s = cleanGridIntentString(value, 120)
+      if (s) out[key] = s
+    } else if (['rc', 'pb', 'cf', 'blast', 'belier', 'prison', 'acoustic', 'serrure', 'garniture_int', 'garniture_ext', 'vitrage', 'ferme_porte', 'cremone', 'autres', 'thermolaquage'].includes(key)) {
+      const s = cleanGridIntentString(value, 220)
+      if (s) out[key] = s
+    } else {
+      const s = cleanGridIntentString(value, 4000)
+      if (s) out[key] = s
+    }
+  }
+  return out
+}
+
+function productLineIndices(catalog) {
+  return catalog
+    .map((row, index) => ((row.line_section || 'products') === 'products' ? index : -1))
+    .filter(index => index >= 0)
+}
+
+function expandGridIntentTargets(targets, catalog) {
+  if (targets == null) return []
+  const allToken = (value) => {
+    const s = String(value || '').trim().toLowerCase()
+    return ['all_products', 'all', 'toutes', 'tous', 'chaque_porte', 'chaque ligne', 'ensemble'].includes(s)
+  }
+  if (typeof targets === 'string' && allToken(targets)) return productLineIndices(catalog)
+  const list = Array.isArray(targets) ? targets : [targets]
+  const out = new Set()
+  for (const item of list) {
+    if (item == null) continue
+    if (typeof item === 'string' && allToken(item)) {
+      for (const index of productLineIndices(catalog)) out.add(index)
+      continue
+    }
+    if (typeof item === 'number' && Number.isFinite(item)) {
+      const index = Math.trunc(item) - 1
+      if (index >= 0 && index < catalog.length) out.add(index)
+      continue
+    }
+    const raw = String(item).trim()
+    if (/^[A-Za-z]+$/.test(raw)) {
+      const index = raw.toUpperCase().split('').reduce((sum, char) => (sum * 26) + char.charCodeAt(0) - 64, 0) - 1
+      if (index >= 0 && index < catalog.length) out.add(index)
+    } else if (/^\d+$/.test(raw)) {
+      const index = Number(raw) - 1
+      if (index >= 0 && index < catalog.length) out.add(index)
+    }
+  }
+  return [...out].sort((a, b) => a - b)
+}
+
+function normalizedGridIntentText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/œ/g, 'oe')
+}
+
+function rowIntentSearchText(row = {}) {
+  return normalizedGridIntentText([
+    row.ligne, row.gamme, row.vantail, row.designation, row.type, row.localisation,
+    row.haut_mm, row.larg_mm, row.rc, row.pb, row.cf, row.blast, row.belier, row.prison,
+    row.serrure, row.garniture_int, row.garniture_ext, row.vitrage, row.ferme_porte,
+    row.cremone, row.autres, row.thermolaquage, row.options_text, row.alertes_text,
+  ].filter(Boolean).join(' '))
+}
+
+function rowLooksLikeDoor(row = {}) {
+  const text = normalizedGridIntentText([row.type, row.designation, row.gamme].filter(Boolean).join(' '))
+  if (/\b(chassis|guichet)\b/u.test(text)) return false
+  return (row.line_section || 'products') === 'products'
+}
+
+function rowLooksLikeChassis(row = {}) {
+  return /\bchassis\b/u.test(normalizedGridIntentText([row.type, row.designation, row.gamme].filter(Boolean).join(' ')))
+}
+
+function rowMatchesSecurityLevel(row = {}, prefix, level) {
+  const expected = `${prefix}${level}`
+  const candidates = [row.gamme, row.rc, row.pb, row.cf, row.designation, row.type]
+    .map(value => normalizedGridIntentText(value).replace(/\s+/g, ''))
+    .filter(Boolean)
+  return candidates.some(value => value.includes(expected))
+}
+
+function filterDoorTargetsIfRequested(text, catalog, targets) {
+  const wantsDoor = /\bportes?\b/u.test(text)
+  const explicitlyWantsNonDoor = /\b(chassis|guichet)\b/u.test(text)
+  if (!wantsDoor || explicitlyWantsNonDoor) return targets
+  return targets.filter(index => rowLooksLikeDoor(catalog[index]))
+}
+
+function filterChassisTargetsIfRequested(text, catalog, targets) {
+  if (!/\bchassis\b/u.test(text)) return targets
+  return targets.filter(index => rowLooksLikeChassis(catalog[index]))
+}
+
+function deterministicGridIntent(question, catalog) {
+  const text = normalizedGridIntentText(question)
+  const patch = {}
+  const heightMatch = text.match(/(?:hauteur|huteur|huter|haut(?:eur)?|\bh\b)(?:\s+(?:de\s+)?(?:porte|ht))?[^0-9]{0,40}(\d{3,5})\b/u)
+  const widthMatch = text.match(/(?:largeur|larg(?:eur)?|\bl\b)(?:\s+(?:de\s+)?(?:porte|ht))?[^0-9]{0,40}(\d{3,5})\b/u)
+  const qtyMatch = text.match(/(?:quantite|qte|qty|\bq\b)[^0-9]{0,24}(\d{1,4})\b/u)
+  const priceMatch = text.match(/(?:prix\s*(?:base|ht)?|pu\s*ht)[^0-9]{0,24}(\d+(?:[.,]\d+)?)\b/u)
+  const multipleMatch = text.match(/(?:remise|coef|coefficient|multiplicateur)[^0-9]{0,24}(\d+(?:[.,]\d+)?)\b/u)
+  const localisationMatch = question.match(/(?:localisation|localiser|zone|lieu)\s*(?:=|:|a|à|en|sur)?\s*([^,.;]+)$/i)
+  const noteMatch = question.match(/(?:note|commentaire|remarque)\s*(?:=|:|a|à)?\s*([^,.;]+)$/i)
+  if (heightMatch) patch.hauteur_mm = Number(heightMatch[1])
+  if (widthMatch) patch.largeur_mm = Number(widthMatch[1])
+  if (qtyMatch) patch.qty = Number(qtyMatch[1])
+  if (priceMatch) patch.prix_base_ht = Number(priceMatch[1].replace(',', '.'))
+  if (multipleMatch) patch.multiple = Number(multipleMatch[1].replace(',', '.'))
+  if (localisationMatch) patch.localisation = localisationMatch[1].trim()
+  if (noteMatch) patch.notes = noteMatch[1].trim()
+
+  const perfMatch = question.match(/\b(CR\s*[2-6]|RC\s*[2-6]|FB\s*[4-7]|EI\s*(?:30|60|90|120)|(?:[245])\s*t\s*\/\s*m(?:²|2)|(?:30|35|40|45)\s*dB)\b/i)
+  if (perfMatch && /\b(?:mettre|passer|changer|remplacer|en|vers|devient|devenir)\b/i.test(question)) {
+    const value = perfMatch[1].replace(/\s+/g, '').toUpperCase().replace(/^RC/, 'CR').replace(/DB$/, 'dB')
+    if (/^CR[2-6]$/.test(value)) patch.rc = value
+    else if (/^FB[4-7]$/.test(value)) patch.pb = value
+    else if (/^EI(?:30|60|90|120)$/.test(value)) patch.cf = value
+    else if (/DB/i.test(perfMatch[1])) patch.acoustic = perfMatch[1].replace(/\s+/g, ' ').replace(/db/i, 'dB')
+    else patch.blast = perfMatch[1].replace(/\s+/g, '')
+  }
+
+  const typeMatch = question.match(/(?:type(?:\s+(?:porte|produit))?|produit)\s*(?:=|:|a|à|en|sur)?\s*(BP\s*[12]V|Chassis|Guichet)\b/i)
+  if (typeMatch) patch.type_porte = typeMatch[1].replace(/\s+/g, ' ').trim()
+
+  const equipmentPatterns = [
+    ['serrure', /serrure\s*(?:=|:|a|à|en|mettre)?\s*([^,.;]+)$/i],
+    ['ferme_porte', /ferme[ -]?porte\s*(?:=|:|a|à|en|mettre)?\s*([^,.;]+)$/i],
+    ['vitrage', /(?:vitrage|remplissage)\s*(?:=|:|a|à|en|mettre)?\s*([^,.;]+)$/i],
+    ['cremone', /cr[ée]mone\s*(?:=|:|a|à|en|mettre)?\s*([^,.;]+)$/i],
+    ['thermolaquage', /\b(RAL|NCS)\b/i],
+  ]
+  for (const [key, re] of equipmentPatterns) {
+    const match = question.match(re)
+    if (match && !patch[key]) patch[key] = match[1].trim()
+  }
+
+  const cleanPatch = sanitizeGridIntentPatch(patch)
+  if (!Object.keys(cleanPatch).length) return null
+
+  let targets = []
+  const lineMatch = text.match(/(?:\blignes?\b|\brepere\b|\brepère\b)\s+([a-z]{1,3}|\d{1,3})\b/u)
+  if (lineMatch) {
+    targets = expandGridIntentTargets(lineMatch[1], catalog)
+  } else if (/\bcr\s*([2-6])\b/.test(text) || /\brc\s*([2-6])\b/.test(text)) {
+    const level = (text.match(/\b(?:cr|rc)\s*([2-6])\b/) || [])[1]
+    targets = catalog.map((row, index) => rowMatchesSecurityLevel(row, 'cr', level) ? index : -1).filter(index => index >= 0)
+  } else if (/\bfb\s*([4-7])\b/.test(text)) {
+    const level = (text.match(/\bfb\s*([4-7])\b/) || [])[1]
+    targets = catalog.map((row, index) => rowMatchesSecurityLevel(row, 'fb', level) ? index : -1).filter(index => index >= 0)
+  } else if (/\bei\s*(30|60|90|120)\b/u.test(text)) {
+    const level = (text.match(/\bei\s*(30|60|90|120)\b/u) || [])[1]
+    targets = catalog.map((row, index) => rowMatchesSecurityLevel(row, 'ei', level) ? index : -1).filter(index => index >= 0)
+  } else if (/anti[ -]?feu|coupe[ -]?feu|\bfeu\b|\bei\s*(30|60|90|120)?\b/u.test(text)) {
+    targets = catalog.map((row, index) => /\bei\s*(30|60|90|120)\b|anti[ -]?feu|coupe[ -]?feu/u.test(rowIntentSearchText(row)) ? index : -1).filter(index => index >= 0)
+  } else if (/toutes?|tous|chaque|ensemble|all/u.test(text)) {
+    targets = productLineIndices(catalog)
+  }
+  targets = filterDoorTargetsIfRequested(text, catalog, targets)
+  targets = filterChassisTargetsIfRequested(text, catalog, targets)
+  if (!targets.length) return null
+  return {
+    reply: `${targets.length} ligne${targets.length > 1 ? 's' : ''} ciblée${targets.length > 1 ? 's' : ''}.`,
+    edits: [{ targets: targets.map(index => catalog[index]?.ligne || index + 1).filter(Boolean), set: cleanPatch }],
+  }
+}
+
+function extractJsonFromModelText(text) {
+  const trimmed = String(text || '').trim()
+  const fence = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  const inner = fence ? fence[1].trim() : trimmed
+  const start = inner.indexOf('{')
+  const end = inner.lastIndexOf('}')
+  if (start === -1 || end <= start) throw new Error('No JSON object in model output')
+  return JSON.parse(inner.slice(start, end + 1))
+}
+
+function flattenGridIntentEdits(parsed, catalog) {
+  const rawEdits = Array.isArray(parsed?.edits)
+    ? parsed.edits
+    : (Array.isArray(parsed?.actions) ? parsed.actions : [])
+  const flat = []
+  const maxOps = 48
+  for (const edit of rawEdits) {
+    if (flat.length >= maxOps) break
+    const set = sanitizeGridIntentPatch(edit?.set || edit?.patch)
+    if (!Object.keys(set).length) continue
+    const targets = edit?.targets !== undefined ? edit.targets : edit?.target
+    const indices = expandGridIntentTargets(targets, catalog)
+    for (const index of indices) {
+      if (flat.length >= maxOps) break
+      const row = catalog[index]
+      if (!row) continue
+      flat.push({ lineIndex: index, lineId: row.id || null, rowKey: row.key, patch: { ...set } })
+    }
+  }
+  return flat.map((item) => {
+    const row = catalog[item.lineIndex]
+    if (!row) return null
+    if (item.lineId && Number(row.id) !== Number(item.lineId)) return null
+    return item
+  }).filter(Boolean)
 }
 
 function cleanDesignationFact(value) {
@@ -484,7 +777,7 @@ Format JSON attendu (toutes les clés présentes, null si absent):
   "type": "<ex: BP 1V, BP 2V, Chassis CR4, Guichet CR4>",
   "larg_mm": <largeur en mm entier ou null>,
   "haut_mm": <hauteur en mm entier ou null>,
-  "rc": "<CR3|CR4|CR5|CR6 ou null>",
+  "rc": "<CR2|CR3|CR4|CR5|CR6 ou null>",
   "pb": "<FB4|FB5|FB6|FB7 ou null>",
   "cf": "<EI30|EI60|EI120 ou null>",
   "blast": "<2t/m²|4t/m²|5t/m² ou null>",
@@ -902,6 +1195,136 @@ router.delete('/:id/grid-actions', async (req, res) => {
   }
 })
 
+// ── POST /api/devis/grid-intent — natural language → JSON edits (validated; client applies) ──
+router.post('/grid-intent', async (req, res) => {
+  const question = String(req.body?.question || '').trim()
+  const rowsIn = Array.isArray(req.body?.rows) ? req.body.rows : []
+  if (!question) return res.status(400).json({ error: 'Question requise' })
+  if (question.length > 4500) return res.status(400).json({ error: 'Question trop longue' })
+  if (!rowsIn.length) return res.json({ ok: false, reply: 'Aucune ligne de devis dans le contexte.', edits: [] })
+  if (isCasualAssistantMessage(question)) {
+    return res.json({ ok: false, reply: '', edits: [] })
+  }
+
+  const catalog = rowsIn.slice(0, 120).map((row, index) => {
+    const raw = Array.isArray(row._raw) ? row._raw : (Array.isArray(row.raw) ? row.raw : [])
+    const parsedId = Number(row.id ?? row._lineId ?? row.lineId)
+    return {
+      index,
+      key: String(row.rowKey || row.key || row._clientKey || row.id || row._lineId || `row-${index}`),
+      id: Number.isInteger(parsedId) && parsedId > 0 ? parsedId : null,
+      ligne: String(row.ligne || repLetterFromIndex(index)).trim().toUpperCase().slice(0, 4),
+      line_section: row.line_section || 'products',
+      gamme: row.gamme ?? null,
+      vantail: row.vantail ?? null,
+      designation: row.designation ?? null,
+      haut_mm: row.haut_mm ?? row.hauteur_mm ?? null,
+      larg_mm: row.larg_mm ?? row.largeur_mm ?? null,
+      dimensions: row.dimensions ?? [row.haut_mm ?? row.hauteur_mm, row.larg_mm ?? row.largeur_mm].filter(Boolean).join('×'),
+      localisation: row.localisation ?? null,
+      type: row.type ?? row.type_porte ?? null,
+      rc: row.rc ?? raw[3] ?? null,
+      pb: row.pb ?? raw[4] ?? null,
+      cf: row.cf ?? raw[5] ?? null,
+      blast: row.blast ?? raw[6] ?? null,
+      belier: row.belier ?? raw[7] ?? null,
+      prison: row.prison ?? raw[8] ?? null,
+      serrure: row.serrure ?? raw[12] ?? null,
+      garniture_int: row.garniture_int ?? raw[13] ?? null,
+      garniture_ext: row.garniture_ext ?? raw[14] ?? null,
+      ferme_porte: row.ferme_porte ?? raw[15] ?? null,
+      vitrage: row.vitrage ?? raw[16] ?? null,
+      options_text: Array.isArray(row.options) ? row.options.map(option => equipmentText(option)).filter(Boolean).join(' | ') : '',
+      alertes_text: Array.isArray(row.alertes) ? row.alertes.join(' | ') : '',
+    }
+  })
+
+  if (!catalog.length) return res.json({ ok: false, reply: 'Aucune ligne exploitable dans le contexte.', edits: [] })
+
+  const deterministic = deterministicGridIntent(question, catalog)
+  if (deterministic) {
+    const edits = flattenGridIntentEdits(deterministic, catalog)
+    if (edits.length) {
+      const reply = `${edits.length} ligne${edits.length > 1 ? 's' : ''} ciblée${edits.length > 1 ? 's' : ''}.`
+      return res.json({ ok: true, reply, edits })
+    }
+  }
+
+  const tableJson = JSON.stringify(catalog, null, 0)
+  const systemMsg = `Tu es un extracteur d'intentions pour un tableau de devis NEXUS (portes).
+L'utilisateur demande une ou plusieurs modifications en français (langage libre).
+Tu dois répondre UNIQUEMENT par un objet JSON (pas de markdown, pas de texte hors JSON) avec cette forme exacte :
+{
+  "reply": "phrase courte en français résumant ce qui sera modifié (ou pourquoi tu refuses)",
+  "edits": [
+    {
+      "targets": "all_products" | ["A","B"] | [1,2] | "C",
+      "set": { "cle": valeur }
+    }
+  ]
+}
+
+Règles pour "targets" :
+- "all_products" (ou "all") = toutes les lignes produit (pas transport ni calculs).
+- Une lettre seule "A" = ligne A (première ligne = A).
+- Un tableau mélange lettres et numéros 1-based : ["A","B",3] = lignes A, B et 3.
+- Numéros = index 1-based dans le tableau fourni (1 = première ligne).
+
+Clés autorisées dans "set" (une ou plusieurs par edit) :
+- hauteur_mm, largeur_mm (entiers mm, typiquement 600–3000)
+- localisation, designation, type_porte, notes (chaînes)
+- gamme, vantail, ref_base (chaînes courtes)
+- prix_base_ht, qty, multiple (nombres ; qty=quantité, multiple=coefficient/remise)
+- rc, pb, cf, blast, belier, prison, acoustic (performances : CR3, FB6, EI60, 4t/m², 40 dB...)
+- serrure, garniture_int, garniture_ext, vitrage, ferme_porte, cremone, autres, thermolaquage
+- options_add et options_remove (tableaux de libellés courts)
+
+Ciblage métier :
+- Résous toi-même les cibles à partir du tableau. Exemples : "toutes les portes CR3" = lignes dont gamme/performance contient CR3 ; "portes anti-feu" = lignes EI/coupe-feu ; "ligne B" = repère B.
+- Quand tu cibles par critère, renvoie des cibles explicites (lettres ou numéros), pas une expression vague.
+
+Si la demande est une question, un audit, ou ne correspond pas à une modification de champs : mets "edits": [] et explique dans "reply".
+Si tu n'es pas sûr des lignes ciblées, préfère "edits": [] et pose une clarification courte dans "reply".
+Ne dépasse pas 12 entrées dans "edits". Regroupe les lignes qui reçoivent le même patch dans un seul objet avec plusieurs targets.
+
+Tableau actuel (ordre = index 0..n-1, id peut être absent si la grille est locale) :
+${tableJson}
+
+Question utilisateur :
+`
+
+  try {
+    const model = await getGlobalOllamaModel()
+    const userMsg = `${systemMsg}${question}`
+    let rawText
+    try {
+      rawText = await chatCompletion({
+        model,
+        messages: [{ role: 'user', content: userMsg }],
+        temperature: 0.08,
+        maxTokens: 2200,
+        responseFormat: { type: 'json_object' },
+      })
+    } catch (firstErr) {
+      console.warn('[devis/grid-intent] json_object mode failed, retry without:', firstErr?.message || firstErr)
+      rawText = await chatCompletion({
+        model,
+        messages: [{ role: 'user', content: userMsg }],
+        temperature: 0.08,
+        maxTokens: 2200,
+      })
+    }
+    const parsed = extractJsonFromModelText(rawText)
+    const edits = flattenGridIntentEdits(parsed, catalog)
+    const reply = String(parsed?.reply || '').trim() || (edits.length ? 'Modifications préparées.' : 'Aucune modification structurée extraite.')
+    if (!edits.length) return res.json({ ok: false, reply, edits: [] })
+    return res.json({ ok: true, reply, edits })
+  } catch (err) {
+    console.error('[devis/grid-intent]', err)
+    return res.json({ ok: false, reply: 'Impossible d’interpréter la demande comme des modifications de tableau. Reformule ou précise les lignes.', edits: [] })
+  }
+})
+
 // ── POST /api/devis/ask ─────────────────────────────────────────────────────
 // body: { rows: [...], question: string, mdFiles: [string], scope: 'line'|'all' }
 router.post('/ask', async (req, res) => {
@@ -917,18 +1340,6 @@ router.post('/ask', async (req, res) => {
   const pastedImages = attachments.filter(item => item.type.startsWith('image/')).map(item => item.dataUrl)
   if (!safeQuestion && !attachments.length) return res.status(400).json({ error: 'Question requise' })
   const casualMessage = isCasualAssistantMessage(safeQuestion) && !attachments.length
-  const askLogBase = {
-    question: safeQuestion.slice(0, 140),
-    casualMessage,
-    rowsCount: Array.isArray(rows) ? rows.length : 0,
-    historyCount: incomingHistory.length,
-    mdFilesCount: Array.isArray(mdFiles) ? mdFiles.length : 0,
-    imagesCount: attachments.length,
-    scope,
-    devis_id,
-    version_id,
-  }
-  console.log('[devis/ask] received', askLogBase)
 
   // ── Enrichissement automatique des markdowns selon les caractéristiques de la ligne ──
   // Objectif : garantir que Gemma a toujours accès aux bons référentiels croisés,
@@ -1064,13 +1475,6 @@ router.post('/ask', async (req, res) => {
       return true
     })
     .slice(casualMessage ? -6 : -12)
-  console.log('[devis/ask] mode', {
-    casualMessage,
-    contextRowsCount: contextRows.length,
-    loadedDocsCount: loadedDocs.length,
-    shortHistoryCount: shortHistory.length,
-    filteredHistoryCount: storedHistory.length + incomingHistory.length - shortHistory.length,
-  })
   const historyBlock = shortHistory.length
     ? `\n\n[MÉMOIRE COURTE DE LA CONVERSATION — contexte récent à conserver :]\n` +
     shortHistory.map((m, i) => `${i + 1}. ${m.role === 'user' ? 'Utilisateur' : 'Zerux IA'}: ${String(m.content || '').slice(0, casualMessage ? 400 : 1200)}`).join('\n')
@@ -2112,9 +2516,28 @@ router.post('/:id/send-hubspot', async (req, res) => {
     const enrichedDevis = { ...devis, pdf_filename: buildDevisPdfFilename(devis, versionNumber) }
     const { buffer, filename } = await buildDevisNexusPdf({ devis: enrichedDevis, lines })
 
-    const { uploadPdfToDeal, isHubspotConfigured } = await import('../services/hubspot.js')
+    const { uploadPdfToDeal, updateDeal, isHubspotConfigured } = await import('../services/hubspot.js')
     if (!isHubspotConfigured()) {
       return res.status(503).json({ error: 'HubSpot non configuré (HUBSPOT_PRIVATE_APP_TOKEN manquant)' })
+    }
+
+    let hubspotAmount = null
+    if (versionRow) {
+      const [[versionTotal]] = await db.query(
+        'SELECT COALESCE(SUM(total_ligne_ht), 0) AS total FROM devis_version_lines WHERE version_id = ?',
+        [versionRow.id]
+      )
+      hubspotAmount = Number(versionTotal?.total || 0)
+    }
+    if (!(hubspotAmount > 0)) {
+      const [[devisTotal]] = await db.query(
+        'SELECT COALESCE(SUM(total_ligne_ht), 0) AS total FROM devis_lines WHERE devis_id = ?',
+        [id]
+      )
+      hubspotAmount = Number(devisTotal?.total || devis.total_ht || 0)
+    }
+    if (hubspotAmount > 0) {
+      await updateDeal(targetDealId, { amount: hubspotAmount })
     }
 
     const body = note_body
@@ -2136,7 +2559,7 @@ router.post('/:id/send-hubspot', async (req, res) => {
       [result.noteId, 'sent_hubspot', id]
     )
 
-    res.json({ ...result, filename, version_id: versionRow?.id || null, version_label: versionLabel, version_comment: versionComment })
+    res.json({ ...result, filename, amount: hubspotAmount > 0 ? hubspotAmount : null, version_id: versionRow?.id || null, version_label: versionLabel, version_comment: versionComment })
   } catch (err) {
     if (err.code === 'NO_TOKEN') return res.status(503).json({ error: err.message })
     console.error('[devis] send-hubspot error:', err)

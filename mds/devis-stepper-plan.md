@@ -53,6 +53,11 @@ Revenir sur la meme version OU creer une nouvelle version / branche
 - [x] L'import XLSX dans la grille lance un controle automatique ligne par ligne via `/api/devis/validate-lines` et affiche uniquement les regles/experiences pertinentes pour chaque row, avec violations/avertissements par reference de regle.
 - [x] L'import XLSX et la relance IA utilisent une validation progressive multi-worker : plusieurs lignes sont controlees en parallele, chaque row affiche son etat en cours, puis un bilan final vert/rouge recapitule les regles/experiences appliquees, les lignes validees et les lignes a corriger.
 - [x] Le bilan final IA de la grille embedded est rattache a la version via `devis_rule_checks` pour ne pas rester seulement dans le navigateur de l'utilisateur qui a lance le controle.
+- [x] La vue chiffrage rapide `/devis/grid` embarque maintenant Zerux IA avec onglets Chat, Verification IA et Historique local des actions de grille.
+- [x] Le chat du chiffrage rapide peut agir comme agent grille : `/api/devis/grid-intent` transforme une phrase en patchs multi-lignes (ligne A/B, toutes les portes, CR3/CR4, portes anti-feu/EI), la vue applique les changements, recalcule les lignes produit et historise l'action.
+- [x] Après une action IA dans `/devis/grid`, les champs réellement modifiés sont surlignés dans la grille. L'entrée Historique conserve les valeurs avant action et permet de revenir en arrière sur cette action IA.
+- [x] Sur un import XLSX complet, l'agent grille comprend les repères multi-lettres (`AA`, `AB`, `AC`) et distingue explicitement les demandes `portes` des demandes `châssis` pour éviter de toucher les mauvais types de lignes.
+- [x] Batterie de scénarios agent grille validée sur XLSX complet : repère `AC`, numéro de ligne, toutes les lignes, portes CR/FB/EI, châssis CR, anti-feu, quantité, remise, prix base, localisation, note, serrure et thermolaquage. Les tests ont corrigé le piège `lignes` lu comme repère `S`.
 - [x] Le pre-editeur PDF sauvegarde les libelles dans `devis_version_lines.designation_pdf` pour la version active.
 - [x] La pre-edition PDF relance le controle regles + experiences apres generation IA des libelles et avant le telechargement du PDF final.
 - [x] La pre-edition PDF affiche les alertes detaillees par ligne avec reference de regle (`R001`, `R002`, etc.), raison et correctif propose.

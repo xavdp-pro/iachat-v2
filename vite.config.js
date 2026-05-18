@@ -20,6 +20,25 @@ function resolvePublicHost(env) {
   return 'devis.zerux.com'
 }
 
+function configureForwardedHeaders(proxy) {
+  proxy.on('proxyReq', (proxyReq, req) => {
+    const remoteAddress = req.socket?.remoteAddress || ''
+    const forwardedFor = req.headers['x-forwarded-for'] || remoteAddress
+    const realIp = req.headers['x-real-ip'] || String(forwardedFor).split(',')[0].trim()
+    if (forwardedFor) proxyReq.setHeader('X-Forwarded-For', forwardedFor)
+    if (realIp) proxyReq.setHeader('X-Real-IP', realIp)
+    if (req.headers['x-forwarded-proto']) proxyReq.setHeader('X-Forwarded-Proto', req.headers['x-forwarded-proto'])
+    if (req.headers.host) proxyReq.setHeader('X-Forwarded-Host', req.headers.host)
+  })
+}
+
+const apiProxy = {
+  target: 'http://127.0.0.1:7608',
+  changeOrigin: true,
+  xfwd: true,
+  configure: configureForwardedHeaders,
+}
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const publicHost = resolvePublicHost(env)
@@ -48,14 +67,8 @@ export default defineConfig(({ mode }) => {
         clientPort: 443,
       },
       proxy: {
-        '/api': {
-          target: 'http://127.0.0.1:7608',
-          changeOrigin: true,
-        },
-        '/uploads': {
-          target: 'http://127.0.0.1:7608',
-          changeOrigin: true,
-        },
+        '/api': apiProxy,
+        '/uploads': apiProxy,
       },
     },
     preview: {
@@ -63,14 +76,8 @@ export default defineConfig(({ mode }) => {
       port: 7598,
       strictPort: true,
       proxy: {
-        '/api': {
-          target: 'http://127.0.0.1:7608',
-          changeOrigin: true,
-        },
-        '/uploads': {
-          target: 'http://127.0.0.1:7608',
-          changeOrigin: true,
-        },
+        '/api': apiProxy,
+        '/uploads': apiProxy,
       },
     },
   }

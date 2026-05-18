@@ -3,6 +3,9 @@ import { defaultModel as envDefaultModel, isOllamaEnabled } from './ollama.js'
 
 export const KEY_MODEL = 'ollama_default_model'
 export const KEY_ENABLED = 'ollama_enabled'
+export const KEY_MAINTENANCE_ENABLED = 'maintenance_enabled'
+export const KEY_MAINTENANCE_MESSAGE = 'maintenance_message'
+export const KEY_MAINTENANCE_BYPASS_IPS = 'maintenance_bypass_ips'
 
 export async function getSetting(key) {
   const [rows] = await db.query(
@@ -110,4 +113,27 @@ export async function getOllamaModelsCacheUpdatedAt() {
     'SELECT MAX(updated_at) AS updated_at FROM ollama_models_cache'
   )
   return rows[0]?.updated_at ?? null
+}
+
+export async function getMaintenanceSettings() {
+  const [rows] = await db.query(
+    'SELECT setting_key, setting_value FROM app_settings WHERE setting_key IN (?, ?, ?)',
+    [KEY_MAINTENANCE_ENABLED, KEY_MAINTENANCE_MESSAGE, KEY_MAINTENANCE_BYPASS_IPS]
+  )
+  const values = Object.fromEntries(rows.map(row => [row.setting_key, row.setting_value]))
+  return {
+    enabled: values[KEY_MAINTENANCE_ENABLED] === '1' || values[KEY_MAINTENANCE_ENABLED] === 'true',
+    message: String(values[KEY_MAINTENANCE_MESSAGE] || 'Maintenance en cours. Le service revient rapidement.').trim(),
+    bypassIps: String(values[KEY_MAINTENANCE_BYPASS_IPS] || '').trim(),
+  }
+}
+
+export async function persistMaintenanceSettings({ enabled, message, bypassIps }) {
+  await setSetting(KEY_MAINTENANCE_ENABLED, enabled ? '1' : '0')
+  const cleanMessage = String(message || '').trim().slice(0, 500)
+  if (cleanMessage) await setSetting(KEY_MAINTENANCE_MESSAGE, cleanMessage)
+  else await deleteSetting(KEY_MAINTENANCE_MESSAGE)
+  const cleanIps = String(bypassIps || '').trim().slice(0, 5000)
+  if (cleanIps) await setSetting(KEY_MAINTENANCE_BYPASS_IPS, cleanIps)
+  else await deleteSetting(KEY_MAINTENANCE_BYPASS_IPS)
 }

@@ -5,7 +5,7 @@
  * Phase MVP : lecture seule + expand/collapse sous-rows
  */
 import { useState, useCallback, useRef, useEffect, useMemo, Fragment } from 'react'
-import { Upload, RefreshCw, ChevronRight, ChevronDown, AlertTriangle, MessageSquare, ArrowLeft, PanelLeftClose, PanelLeftOpen, Plus, Minus, X, Check, Loader2, Settings, Trash2, Calculator, Truck, Package, EyeOff, Eye, BookOpen, ShieldCheck, FileText } from 'lucide-react'
+import { Upload, RefreshCw, ChevronRight, ChevronDown, AlertTriangle, MessageSquare, ArrowLeft, PanelLeftClose, PanelLeftOpen, Plus, Minus, X, Check, Loader2, Settings, Trash2, Calculator, Truck, Package, EyeOff, Eye, BookOpen, ShieldCheck, FileText, Bot, Sparkles, History, Send, Columns2, Undo2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import api, { hasAuthToken } from '../api/index.js'
 import Select from 'react-select'
@@ -21,6 +21,11 @@ const SUBROW_BG = 'rgba(0,0,0,0.07)'
 const GRID_TOTAL_COLS = 22
 const DIMENSION_COLUMNS = ['haut_ht', 'larg_ht', 'haut_pl', 'larg_pl']
 const VALIDATION_PARALLELISM = 3
+const ASSISTANT_CELL_HIGHLIGHT_STYLE = {
+  background: 'rgba(34,197,94,0.26)',
+  border: '1px solid rgba(34,197,94,0.85)',
+  boxShadow: 'inset 0 0 0 1px rgba(34,197,94,0.35)',
+}
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 function rowLetterLabel(index) {
@@ -43,6 +48,167 @@ async function runClientLimited(items, limit, worker) {
     }
   })
   await Promise.all(workers)
+}
+
+function QuickGridAssistantPanel({
+  rows = [],
+  messages = [],
+  input = '',
+  setInput,
+  loading = false,
+  onAsk,
+  historyEntries = [],
+  verificationReport = null,
+  verificationProgress = null,
+  verificationSummary = null,
+  onRunVerification,
+  onOpenVerificationReport,
+  onClearHistory,
+  onUndoHistoryEntry,
+  endRef,
+  inputRef,
+}) {
+  const [activeTab, setActiveTab] = useState(() => {
+    try {
+      const saved = localStorage.getItem('devis_grid_assistant_tab')
+      return ['chat', 'ia-verif', 'historique'].includes(saved) ? saved : 'chat'
+    } catch { return 'chat' }
+  })
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem('devis_grid_assistant_collapsed') === '1' } catch { return false }
+  })
+  const [panelWidth, setPanelWidth] = useState(() => {
+    try {
+      const saved = Number(localStorage.getItem('devis_grid_assistant_width'))
+      return Number.isFinite(saved) && saved >= 300 ? Math.min(720, saved) : 360
+    } catch { return 360 }
+  })
+
+  useEffect(() => { try { localStorage.setItem('devis_grid_assistant_tab', activeTab) } catch { /* noop */ } }, [activeTab])
+  useEffect(() => { try { localStorage.setItem('devis_grid_assistant_collapsed', collapsed ? '1' : '0') } catch { /* noop */ } }, [collapsed])
+  useEffect(() => { try { localStorage.setItem('devis_grid_assistant_width', String(panelWidth)) } catch { /* noop */ } }, [panelWidth])
+
+  const startResize = (event) => {
+    event.preventDefault()
+    const startX = event.clientX
+    const startWidth = panelWidth
+    const onMove = (moveEvent) => {
+      const next = Math.min(760, Math.max(300, startWidth - (moveEvent.clientX - startX)))
+      setPanelWidth(next)
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
+  const submit = () => {
+    const question = String(input || '').trim()
+    if (!question || loading) return
+    onAsk?.(question)
+  }
+
+  if (collapsed) {
+    return (
+      <aside style={{ width: 42, minWidth: 42, flexShrink: 0, borderLeft: '1px solid var(--color-border)', background: 'var(--color-surface)', display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 10 }}>
+        <button type="button" onClick={() => setCollapsed(false)} title="Ouvrir Zerux IA" style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-input-bg)', color: 'var(--color-primary)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
+          <Bot size={15} />
+        </button>
+        <div style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)', marginTop: 12, fontSize: 11, fontWeight: 800, color: 'var(--color-text-3)' }}>Zerux IA</div>
+      </aside>
+    )
+  }
+
+  return (
+    <aside style={{ width: panelWidth, minWidth: panelWidth, maxWidth: panelWidth, flexShrink: 0, display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, borderLeft: '1px solid var(--color-border)', background: 'var(--color-surface)', position: 'relative' }}>
+      <div role="separator" aria-label="Redimensionner Zerux IA" onMouseDown={startResize} title="Glisser pour agrandir ou réduire Zerux IA" style={{ position: 'absolute', left: -4, top: 0, bottom: 0, width: 8, cursor: 'col-resize', zIndex: 2 }} />
+      <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+        <Bot size={16} color="var(--color-primary)" />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 800, fontSize: 13 }}>Zerux IA</div>
+          <div style={{ fontSize: 10, color: 'var(--color-text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Chiffrage rapide · {rows.length} ligne{rows.length !== 1 ? 's' : ''}</div>
+        </div>
+        <button type="button" onClick={() => setPanelWidth(360)} title="Largeur par défaut" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 5, borderRadius: 6, border: '1px solid var(--color-border)', background: 'transparent', color: 'var(--color-text-2)', cursor: 'pointer' }}>
+          <Columns2 size={13} />
+        </button>
+        <button type="button" onClick={() => setCollapsed(true)} title="Rétracter Zerux IA" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 5, borderRadius: 6, border: '1px solid var(--color-border)', background: 'transparent', color: 'var(--color-text-2)', cursor: 'pointer' }}>
+          <ChevronRight size={14} />
+        </button>
+      </div>
+
+      <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+        <button type="button" onClick={() => setActiveTab('chat')} title="Chatbot" style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-border)', background: activeTab === 'chat' ? 'var(--color-input-bg)' : 'transparent', color: activeTab === 'chat' ? 'var(--color-text)' : 'var(--color-text-2)', cursor: 'pointer' }}><Bot size={15} /></button>
+        <button type="button" onClick={() => setActiveTab('ia-verif')} title="Vérification IA" style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-border)', background: activeTab === 'ia-verif' ? 'var(--color-input-bg)' : 'transparent', color: activeTab === 'ia-verif' ? 'var(--color-text)' : 'var(--color-text-2)', cursor: 'pointer' }}><Sparkles size={15} /></button>
+        <button type="button" onClick={() => setActiveTab('historique')} title="Historique" style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-border)', background: activeTab === 'historique' ? 'var(--color-input-bg)' : 'transparent', color: activeTab === 'historique' ? 'var(--color-text)' : 'var(--color-text-2)', cursor: 'pointer' }}><History size={15} /></button>
+      </div>
+
+      {activeTab === 'ia-verif' ? (
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 14, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+            <strong style={{ fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 6 }}><Sparkles size={14} />Vérification IA</strong>
+            <button type="button" onClick={onRunVerification} disabled={!rows.length || verificationProgress} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-input-bg)', color: 'var(--color-text)', fontSize: 11, fontWeight: 800, cursor: rows.length && !verificationProgress ? 'pointer' : 'default', opacity: rows.length && !verificationProgress ? 1 : 0.5 }}>
+              {verificationProgress ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <RefreshCw size={13} />} Relancer
+            </button>
+          </div>
+          {verificationProgress && <div style={{ fontSize: 12, color: 'var(--color-primary)', fontWeight: 800 }}>Contrôle IA {verificationProgress.done}/{verificationProgress.total}</div>}
+          {verificationReport ? (
+            <button type="button" onClick={onOpenVerificationReport} style={{ textAlign: 'left', padding: 12, borderRadius: 8, border: '1px solid var(--color-border)', background: verificationReport.status === 'validated' ? 'rgba(22,163,74,0.08)' : verificationReport.status === 'technical' ? 'rgba(245,158,11,0.10)' : 'rgba(220,38,38,0.08)', color: 'var(--color-text)', cursor: 'pointer' }}>
+              <div style={{ fontSize: 13, fontWeight: 900, marginBottom: 6 }}>{verificationReport.status === 'validated' ? 'Validé IA' : verificationReport.status === 'technical' ? 'Analyse à relancer' : 'Corrections nécessaires'}</div>
+              <div style={{ fontSize: 12, color: 'var(--color-text-2)' }}>{verificationReport.issue_rows || 0} ligne(s) à corriger · {verificationReport.technical_rows || 0} à relancer · {verificationReport.rules_count || 0} règle(s)</div>
+            </button>
+          ) : verificationSummary ? (
+            <div style={{ fontSize: 12, color: 'var(--color-text-2)' }}>Dernier bilan : {verificationSummary.issueRows || 0} correction(s), {verificationSummary.technicalRows || 0} relance(s).</div>
+          ) : <div style={{ fontSize: 12, color: 'var(--color-text-3)' }}>Aucune vérification IA récente. Importez un fichier ou ajoutez des lignes, puis relancez le contrôle.</div>}
+        </div>
+      ) : activeTab === 'historique' ? (
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+            <strong style={{ fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 6 }}><History size={14} />Historique grille</strong>
+            <button type="button" onClick={onClearHistory} disabled={!historyEntries.length} title="Vider l'historique" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 5, borderRadius: 6, border: '1px solid var(--color-border)', background: 'transparent', color: '#dc2626', cursor: historyEntries.length ? 'pointer' : 'default', opacity: historyEntries.length ? 1 : 0.45 }}><Trash2 size={13} /></button>
+          </div>
+          {historyEntries.length ? historyEntries.map(entry => {
+            const canUndo = entry?.undoable && Array.isArray(entry.undoRows) && entry.undoRows.length && !entry.undoneAt
+            return (
+            <div key={entry.id} style={{ border: `1px solid ${entry.undoneAt ? 'var(--color-border)' : canUndo ? 'rgba(34,197,94,0.65)' : 'var(--color-border)'}`, borderRadius: 8, background: entry.undoneAt ? 'var(--color-surface)' : 'var(--color-input-bg)', padding: 10, opacity: entry.undoneAt ? 0.68 : 1 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                <div style={{ fontSize: 12, fontWeight: 900, color: 'var(--color-text)', minWidth: 0 }}>{entry.label}</div>
+                {entry.undoable && (
+                  <button
+                    type="button"
+                    onClick={() => onUndoHistoryEntry?.(entry)}
+                    disabled={!canUndo || loading}
+                    title={entry.undoneAt ? 'Action déjà annulée' : 'Revenir en arrière sur cette action IA'}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 6px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'transparent', color: entry.undoneAt ? 'var(--color-text-3)' : 'var(--color-primary)', cursor: canUndo && !loading ? 'pointer' : 'default', opacity: canUndo && !loading ? 1 : 0.45, fontSize: 10, fontWeight: 900, flexShrink: 0 }}
+                  >
+                    <Undo2 size={12} /> {entry.undoneAt ? 'Annulée' : 'Annuler'}
+                  </button>
+                )}
+              </div>
+              {entry.details && <div style={{ fontSize: 11, color: 'var(--color-text-2)', whiteSpace: 'pre-wrap', marginTop: 5, lineHeight: 1.35 }}>{entry.details}</div>}
+              <div style={{ fontSize: 10, color: 'var(--color-text-3)', marginTop: 3 }}>{entry.date}</div>
+            </div>
+            )
+          }) : <div style={{ fontSize: 12, color: 'var(--color-text-3)' }}>Aucune modification historisée dans cette session.</div>}
+        </div>
+      ) : (
+        <>
+          <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {messages.length ? messages.map(message => (
+              <div key={message.id} style={{ alignSelf: message.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '92%', padding: '9px 11px', borderRadius: 8, background: message.role === 'user' ? 'var(--color-primary)' : 'var(--color-input-bg)', color: message.role === 'user' ? '#fff' : 'var(--color-text)', fontSize: 12, lineHeight: 1.45, whiteSpace: 'pre-wrap' }}>{message.content}</div>
+            )) : <div style={{ margin: 'auto', color: 'var(--color-text-3)', fontSize: 12, textAlign: 'center' }}>Pose une question sur la grille, les lignes, les options ou les incohérences.</div>}
+            {loading && <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--color-primary)', fontSize: 12 }}><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} />Zerux IA réfléchit…</div>}
+            <div ref={endRef} />
+          </div>
+          <div style={{ padding: 10, borderTop: '1px solid var(--color-border)', display: 'flex', gap: 8 }}>
+            <textarea ref={inputRef} value={input} onChange={event => setInput?.(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submit() } }} placeholder="Dis à Zerux IA quoi vérifier..." rows={1} style={{ flex: 1, resize: 'none', minHeight: 34, maxHeight: 96, borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-input-bg)', color: 'var(--color-text)', padding: '8px 10px', fontSize: 12, outline: 'none' }} />
+            <button type="button" onClick={submit} disabled={loading || !String(input || '').trim()} title="Envoyer" style={{ width: 34, height: 34, borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-primary)', color: '#fff', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: loading || !String(input || '').trim() ? 'default' : 'pointer', opacity: loading || !String(input || '').trim() ? 0.55 : 1 }}><Send size={14} /></button>
+          </div>
+        </>
+      )}
+    </aside>
+  )
 }
 
 function extractRef(str) {
@@ -482,7 +648,7 @@ function performanceSearchText(row = {}) {
 function inferredPerformanceValue(row = {}, key) {
   const text = performanceSearchText(row)
   const upper = text.toUpperCase()
-  if (key === 'rc') return upper.match(/\bCR\s*([3-6])\b/)?.[0]?.replace(/\s+/g, '') || null
+  if (key === 'rc') return upper.match(/\bCR\s*([2-6])\b/)?.[0]?.replace(/\s+/g, '') || null
   if (key === 'pb') return upper.match(/\bFB\s*([4-7])\b/)?.[0]?.replace(/\s+/g, '') || null
   if (key === 'cf') {
     const match = upper.match(/\bEI\s*[²2]?\s*(30|60|90|120)\b/)
@@ -495,18 +661,69 @@ function inferredPerformanceValue(row = {}, key) {
   return null
 }
 
+/** Raw perf cell is empty (UI "—", Excel dash, etc.) — must not count as "filled" for +/− compact mode. */
+function isUnsetPerfRaw(val) {
+  if (val == null) return true
+  const s = String(val).trim()
+  if (!s) return true
+  if (/^[—–‐-−]+$/u.test(s)) return true
+  const low = s.toLowerCase()
+  if (low === 'null' || low === 'n/a' || low === 'na') return true
+  return false
+}
+
+/** Excel / JSON peuvent avoir RC=3 (nombre) : les PERF_OPTIONS attendent « CR3 ». */
+function coerceExcelPerfRawValue(val, key) {
+  if (val == null || (key !== 'rc' && key !== 'pb' && key !== 'cf')) return val
+  if (typeof val === 'number' && Number.isFinite(val)) {
+    const n = Math.trunc(val)
+    if (key === 'rc' && n >= 2 && n <= 6) return `CR${n}`
+    if (key === 'pb' && n >= 4 && n <= 7) return `FB${n}`
+    if (key === 'cf' && [30, 60, 90, 120].includes(n)) return `EI${n}`
+    return val
+  }
+  if (typeof val === 'string') {
+    const s = val.trim()
+    if (key === 'rc' && /^[2-6]$/.test(s)) return `CR${s}`
+    if (key === 'pb' && /^[4-7]$/.test(s)) return `FB${s}`
+  }
+  return val
+}
+
 function performanceValue(row = {}, resolved = {}, key) {
   const rawIndexByPerf = { rc: 3, pb: 4, cf: 5, blast: 6, belier: 7, prison: 8, acoustic: null }
   const hasManualPerf = row._perfOverrides && Object.keys(row._perfOverrides).length > 0
   if (hasManualPerf) {
     if (key === 'acoustic') return acousticValue(row._raw?.[16]) || null
     if (key === 'blast') return blastValue(row._raw?.[rawIndexByPerf[key]]) || null
-    return row._raw?.[rawIndexByPerf[key]] ?? null
+    const rawVal = coerceExcelPerfRawValue(row._raw?.[rawIndexByPerf[key]], key)
+    if (isUnsetPerfRaw(rawVal)) return null
+    return rawVal
   }
-  if (Array.isArray(row._raw) && row._raw[rawIndexByPerf[key]] === '') return null
+  if (Array.isArray(row._raw) && rawIndexByPerf[key] != null && isUnsetPerfRaw(row._raw[rawIndexByPerf[key]])) return null
   if (key === 'acoustic') return row._overrideAcoustic !== undefined ? row._overrideAcoustic : (resolved._acousticValue || inferredPerformanceValue(row, key))
   if (key === 'blast') return resolved._blastValue || blastValue(row._raw?.[rawIndexByPerf[key]]) || inferredPerformanceValue(row, key)
-  return row._raw?.[rawIndexByPerf[key]] ?? inferredPerformanceValue(row, key)
+  const rawFallback = coerceExcelPerfRawValue(row._raw?.[rawIndexByPerf[key]], key)
+  if (rawIndexByPerf[key] != null && rawFallback != null && isUnsetPerfRaw(rawFallback)) return null
+  return rawFallback ?? inferredPerformanceValue(row, key)
+}
+
+/**
+ * Perf values read only from _raw slots (no inference from designation / resolved row).
+ * Used for compact PERFS on all product rows (import + ligne blanche); expanded strip uses full performanceValue().
+ */
+function performanceValueRawSlotOnly(row, key) {
+  const rawIndexByPerf = { rc: 3, pb: 4, cf: 5, blast: 6, belier: 7, prison: 8, acoustic: null }
+  if (key === 'acoustic') {
+    if (row._overrideAcoustic !== undefined) return row._overrideAcoustic
+    return acousticValue(row._raw?.[16]) || null
+  }
+  if (key === 'blast') return blastValue(row._raw?.[6]) || null
+  const idx = rawIndexByPerf[key]
+  if (idx == null) return null
+  const rawVal = coerceExcelPerfRawValue(row._raw?.[idx], key)
+  if (isUnsetPerfRaw(rawVal)) return null
+  return rawVal ?? null
 }
 
 const amountHeaderCellStyle = {
@@ -1219,15 +1436,23 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
   const ruleSummary = row._ruleCheck?.summary || null
   const ruleIssues = blockingVerdicts(row)
   const ruleStale = isRuleCheckStale(row._ruleCheck, validationKnowledge)
-  const [showEmptyPerfs, setShowEmptyPerfs] = useState(false)
+  // Perf strip expand/collapse lives on the row so it survives remounts (new blank lines).
+  const showEmptyPerfs = row._perfStripShowAll === true
   const perfKeys = ['rc', 'pb', 'cf', 'blast', 'belier', 'prison', 'acoustic']
   const rawIndexByPerf = { rc: 3, pb: 4, cf: 5, blast: 6, belier: 7, prison: 8, acoustic: null }
-  const visiblePerfKeys = isAmountSection ? [] : (editMode && !showEmptyPerfs && !row._manualBlank
-    ? perfKeys.filter(key => performanceValue(row, r, key) != null)
+  // Compact = _raw slots only (xlsx / import parity) for every product row; "+" exposes empty slots, "−" folds after expand.
+  const perfKeyVisibleInStrip = (k) => {
+    if (showEmptyPerfs) return performanceValue(row, r, k)
+    return performanceValueRawSlotOnly(row, k)
+  }
+  const visiblePerfKeys = isAmountSection ? [] : (editMode && !showEmptyPerfs
+    ? perfKeys.filter(key => perfKeyVisibleInStrip(key) != null)
     : perfKeys)
   const hiddenPerfCount = perfKeys.length - visiblePerfKeys.length
-  const canCollapseEmptyPerfs = editMode && !isAmountSection && showEmptyPerfs && !row._manualBlank && hiddenPerfCount === 0
+  const canCollapseEmptyPerfs = editMode && !isAmountSection && showEmptyPerfs
   const assistantActive = Boolean(assistantHighlight)
+  const assistantFieldSet = new Set((assistantHighlight?.fieldsByIndex?.[index] || []).map(String))
+  const assistantCellStyle = (...fields) => fields.some(field => assistantFieldSet.has(field)) ? ASSISTANT_CELL_HIGHLIGHT_STYLE : {}
   return (
     <tr
       onClick={onToggle}
@@ -1251,7 +1476,7 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
         </span>
       </Td>
       {/* Désignation */}
-      <Td style={{ minWidth: 160, fontWeight: 600 }}>
+      <Td style={{ minWidth: 160, fontWeight: 600, ...assistantCellStyle('type', 'type_porte', 'designation', 'gamme', 'vantail') }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           {editMode ? (
             <div style={{ background: 'color-mix(in srgb, #fbbf24 12%, transparent)', borderRadius: 3 }}>
@@ -1289,7 +1514,7 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
         </div>
       </Td>
       {/* Localisation */}
-      <Td style={{ minWidth: 90, width: 110, padding: 0 }}>
+      <Td style={{ minWidth: 90, width: 110, padding: 0, ...assistantCellStyle('localisation') }}>
         {editMode && !isAmountSection ? (
           <EditableText
             value={row.localisation || ''}
@@ -1303,10 +1528,37 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
         )}
       </Td>
       {/* Performances */}
-      <Td style={{ minWidth: 430, width: 430, fontSize: 10, color: 'var(--color-text-2)' }}>
+      <Td style={{ minWidth: 430, width: 430, fontSize: 10, color: 'var(--color-text-2)', verticalAlign: 'top', ...assistantCellStyle('rc', 'pb', 'cf', 'blast', 'belier', 'prison', 'acoustic') }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'stretch' }}>
           {editMode ? (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'flex-end', minHeight: 35 }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'flex-end', minHeight: 35, width: '100%', overflowX: 'auto' }}>
+              {/* +/− first so they stay visible when perf controls wrap to several lines (narrow cell). */}
+              {canCollapseEmptyPerfs && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 1, flex: '0 0 28px' }}>
+                  <span style={{ height: 8, lineHeight: 1 }} />
+                  <button
+                    type="button"
+                    onClick={e => { e.stopPropagation(); onUpdate?.({ _perfStripShowAll: false }) }}
+                    title="Masquer les performances vides"
+                    style={perfActionButtonStyle}
+                  >
+                    <Minus size={13} strokeWidth={2.5} />
+                  </button>
+                </div>
+              )}
+              {!isAmountSection && hiddenPerfCount > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 1, flex: '0 0 28px' }}>
+                  <span style={{ height: 8, lineHeight: 1 }} />
+                  <button
+                    type="button"
+                    onClick={e => { e.stopPropagation(); onUpdate?.({ _perfStripShowAll: true }) }}
+                    title={`Afficher ${hiddenPerfCount} performance${hiddenPerfCount > 1 ? 's' : ''} vide${hiddenPerfCount > 1 ? 's' : ''}`}
+                    style={perfActionButtonStyle}
+                  >
+                    <Plus size={13} strokeWidth={2.5} />
+                  </button>
+                </div>
+              )}
               {visiblePerfKeys.map(key => {
                 const rawIdx = rawIndexByPerf[key]
                 const cur = performanceValue(row, r, key)
@@ -1319,7 +1571,9 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
                       value={cur ?? ''}
                       options={PERF_OPTIONS[key]}
                       onCommit={value => {
-                        const v = value || ''
+                        const s = value == null ? '' : String(value).trim()
+                        const cleared = value == null || value === '' || isUnsetPerfRaw(s)
+                        const v = cleared ? null : value
                         if (key === 'acoustic') {
                           // Rebuild _raw[16] with or without the acoustic value so the
                           // server recomputes the price (acoustic treatment is priced server-side).
@@ -1338,32 +1592,6 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
                   </div>
                 )
               })}
-              {!isAmountSection && hiddenPerfCount > 0 && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 1, flex: '0 0 28px' }}>
-                  <span style={{ height: 8, lineHeight: 1 }} />
-                  <button
-                    type="button"
-                    onClick={e => { e.stopPropagation(); setShowEmptyPerfs(true) }}
-                    title={`Afficher ${hiddenPerfCount} performance${hiddenPerfCount > 1 ? 's' : ''} vide${hiddenPerfCount > 1 ? 's' : ''}`}
-                    style={perfActionButtonStyle}
-                  >
-                    <Plus size={13} strokeWidth={2.5} />
-                  </button>
-                </div>
-              )}
-              {canCollapseEmptyPerfs && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 1, flex: '0 0 28px' }}>
-                  <span style={{ height: 8, lineHeight: 1 }} />
-                  <button
-                    type="button"
-                    onClick={e => { e.stopPropagation(); setShowEmptyPerfs(false) }}
-                    title="Masquer les performances vides"
-                    style={perfActionButtonStyle}
-                  >
-                    <Minus size={13} strokeWidth={2.5} />
-                  </button>
-                </div>
-              )}
             </div>
           ) : (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, fontSize: 9, minHeight: 20 }}>
@@ -1381,13 +1609,13 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
         </div>
       </Td>
       {/* H */}
-      <Td palette={editMode ? 'yellow' : 'normal'} style={{ textAlign: 'right', width: 55, padding: 0, ...dimensionHiddenStyle('haut_ht') }}>
+      <Td palette={editMode ? 'yellow' : 'normal'} style={{ textAlign: 'right', width: 55, padding: 0, ...assistantCellStyle('haut_mm', 'hauteur_mm'), ...dimensionHiddenStyle('haut_ht') }}>
         {editMode
           ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableNumber value={r.haut_mm} onCommit={v => onRecompute?.({ haut_mm: v })} step={10} min={100} max={9999} width="100%" textAlign="right" />)
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{r.haut_mm ?? '—'}</span>}
       </Td>
       {/* L */}
-      <Td palette={editMode ? 'yellow' : 'normal'} style={{ textAlign: 'right', width: 55, padding: 0, ...dimensionHiddenStyle('larg_ht') }}>
+      <Td palette={editMode ? 'yellow' : 'normal'} style={{ textAlign: 'right', width: 55, padding: 0, ...assistantCellStyle('larg_mm', 'largeur_mm'), ...dimensionHiddenStyle('larg_ht') }}>
         {editMode
           ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableNumber value={r.larg_mm} onCommit={v => onRecompute?.({ larg_mm: v })} step={10} min={100} max={9999} width="100%" textAlign="right" />)
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{r.larg_mm ?? '—'}</span>}
@@ -1405,7 +1633,7 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{r.largeur_pl_mm ?? '—'}</span>}
       </Td>
       {/* TL */}
-      <Td style={{ width: 74, textAlign: 'center', padding: 0 }}>
+      <Td style={{ width: 74, textAlign: 'center', padding: 0, ...assistantCellStyle('thermolaquage') }}>
         {isAmountSection ? <span style={{ fontSize: 9, color: 'var(--color-text-3)' }}>—</span> : editMode ? (
           <div onClick={e => e.stopPropagation()} style={{ display: 'flex', flexDirection: 'column', gap: 1, alignItems: 'center', padding: '2px 3px' }}>
             {r._thermolaquageRef && <span style={{ fontSize: 8, color: 'var(--color-text-3)', fontWeight: 700 }}>réf.{r._thermolaquageRef}</span>}
@@ -1432,25 +1660,25 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
         )}
       </Td>
       {/* Serrure */}
-      <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 80 }}>
+      <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 80, ...assistantCellStyle('serrure') }}>
         {editMode
           ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableText value={mainEquipLabel(row._raw?.[12] ?? r._serrureLabel ?? '')} onCommit={v => onRecompute?.({ [`_raw_12`]: v })} placeholder="serrure…" />)
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{mainEquipLabel(row._raw?.[12] || r._serrureLabel) || '—'}</span>}
       </Td>
       {/* Garn int */}
-      <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 70 }}>
+      <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 70, ...assistantCellStyle('garniture_int') }}>
         {editMode
           ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableText value={mainEquipLabel(row._raw?.[13] ?? r._garnIntLabel ?? '')} onCommit={v => onRecompute?.({ [`_raw_13`]: v })} placeholder="garn. int…" />)
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{mainEquipLabel(row._raw?.[13] || r._garnIntLabel) || '—'}</span>}
       </Td>
       {/* Garn ext */}
-      <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 70 }}>
+      <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 70, ...assistantCellStyle('garniture_ext') }}>
         {editMode
           ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableText value={mainEquipLabel(row._raw?.[14] ?? r._garnExtLabel ?? '')} onCommit={v => onRecompute?.({ [`_raw_14`]: v })} placeholder="garn. ext…" />)
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{mainEquipLabel(row._raw?.[14] || r._garnExtLabel) || '—'}</span>}
       </Td>
       {/* Vitrage */}
-      <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 130, ...(hiddenCols.has('vitrage') ? { display: 'none' } : {}) }}>
+      <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 130, ...assistantCellStyle('vitrage', 'notes'), ...(hiddenCols.has('vitrage') ? { display: 'none' } : {}) }}>
         {editMode
           ? (isAmountSection ? <EditableText value={row.notes || row.alertes?.[0] || ''} onCommit={v => onUpdate?.({ notes: v, alertes: v ? [v] : [] })} placeholder="note…" /> : <EditableText value={stripAcousticInfo(row._raw?.[16]) || mainEquipLabel(r._vitrageLabel) || ''} onCommit={v => onRecompute?.({ [`_raw_16`]: v })} placeholder="" />)
           : (r._vitrageLabel ? (
@@ -1462,13 +1690,13 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
           ) : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{isAcousticValue(row._raw?.[16]) ? '' : (row._raw?.[16] || '')}</span>)}
       </Td>
       {/* FP */}
-      <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 60, ...(hiddenCols.has('fp') ? { display: 'none' } : {}) }}>
+      <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 60, ...assistantCellStyle('ferme_porte'), ...(hiddenCols.has('fp') ? { display: 'none' } : {}) }}>
         {editMode
           ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableText value={mainEquipLabel(row._raw?.[15] ?? r._fpLabel ?? '')} onCommit={v => onRecompute?.({ [`_raw_15`]: v })} placeholder="FP…" />)
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{mainEquipLabel(row._raw?.[15] || r._fpLabel) || '—'}</span>}
       </Td>
       {/* Crémone */}
-      <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 110, ...(hiddenCols.has('cremone') ? { display: 'none' } : {}) }}>
+      <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 110, ...assistantCellStyle('cremone'), ...(hiddenCols.has('cremone') ? { display: 'none' } : {}) }}>
         {editMode
           ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableText value={row._overrideCremone !== undefined ? row._overrideCremone : mainEquipLabel(r._cremoneLabel ?? '')} onCommit={v => onUpdate?.({ _overrideCremone: v })} placeholder="crémone…" />)
           : (() => {
@@ -1483,7 +1711,7 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
             })()}
       </Td>
       {/* Autres équipements */}
-      <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 140, ...(hiddenCols.has('autres') ? { display: 'none' } : {}) }}>
+      <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 140, ...assistantCellStyle('autres'), ...(hiddenCols.has('autres') ? { display: 'none' } : {}) }}>
         {editMode
           ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableText value={row._overrideAutres !== undefined ? row._overrideAutres : (r._otherExtras?.map(e => mainEquipLabel(e.label)).join(', ') ?? '')} onCommit={v => onUpdate?.({ _overrideAutres: v })} placeholder="autres équip…" />)
           : (row._overrideAutres !== undefined
@@ -1501,7 +1729,7 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
                 ) : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', color: 'var(--color-text-2)' }}>—</span>))}
       </Td>
       {/* Acoustique */}
-      <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 90, ...(hiddenCols.has('acoustic') ? { display: 'none' } : {}) }}>
+      <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 90, ...assistantCellStyle('acoustic'), ...(hiddenCols.has('acoustic') ? { display: 'none' } : {}) }}>
         {isAmountSection
           ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span>
           : (r._acousticValue
@@ -1511,13 +1739,13 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
               : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', color: 'var(--color-text-2)' }}>—</span>)}
       </Td>
       {/* PU HT */}
-      <Td palette="gray" style={{ textAlign: 'right', fontWeight: 600, whiteSpace: 'nowrap' }}>
+      <Td palette="gray" style={{ textAlign: 'right', fontWeight: 600, whiteSpace: 'nowrap', ...assistantCellStyle('prix_base_ht') }}>
         {editMode && isAmountSection
           ? <EditableNumber value={r.prix_base_ht ?? 0} onCommit={v => onUpdate?.({ prix_base_ht: v, prix_total_min_ht: v, total_ligne_ht: v })} step={10} min={0} max={999999} width="100%" textAlign="right" />
           : (r._pu > 0 ? r._pu.toLocaleString('fr-FR') + ' €' : '—')}
       </Td>
       {/* Remise */}
-      <Td palette="yellow" style={{ textAlign: 'center', width: 90, padding: 0 }}>
+      <Td palette="yellow" style={{ textAlign: 'center', width: 90, padding: 0, ...assistantCellStyle('multiple') }}>
         <EditableNumber
           value={Number.isFinite(row.multiple) ? row.multiple : multGlobal}
           onCommit={v => onUpdate?.({ multiple: v })}
@@ -1529,7 +1757,7 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
         />
       </Td>
       {/* Q (toujours éditable) */}
-      <Td palette="yellow" style={{ textAlign: 'center', width: 90, padding: 0 }}>
+      <Td palette="yellow" style={{ textAlign: 'center', width: 90, padding: 0, ...assistantCellStyle('qty') }}>
         <EditableNumber value={qty} onCommit={v => onUpdate?.({ qty: v })} step={1} min={1} max={9999} width="100%" />
       </Td>
       {/* Total HT */}
@@ -1767,7 +1995,7 @@ function SubRowPrices({ row, hiddenCols = new Set(), visibleDimensionCount = 4 }
 
 // ─── Options statiques Performances ─────────────────────────────────────────
 const PERF_OPTIONS = {
-  rc:     [{ value: null, label: '—' }, { value: 'CR3', label: 'CR3' }, { value: 'CR4', label: 'CR4' }, { value: 'CR5', label: 'CR5' }, { value: 'CR6', label: 'CR6' }],
+  rc:     [{ value: null, label: '—' }, { value: 'CR2', label: 'CR2' }, { value: 'CR3', label: 'CR3' }, { value: 'CR4', label: 'CR4' }, { value: 'CR5', label: 'CR5' }, { value: 'CR6', label: 'CR6' }],
   pb:     [{ value: null, label: '—' }, { value: 'FB4', label: 'FB4' }, { value: 'FB5', label: 'FB5' }, { value: 'FB6', label: 'FB6' }, { value: 'FB7', label: 'FB7' }],
   cf:     [{ value: null, label: '—' }, { value: 'EI30', label: 'EI² 30' }, { value: 'EI60', label: 'EI² 60' }, { value: 'EI90', label: 'EI² 90' }, { value: 'EI120', label: 'EI² 120' }],
   blast:  [{ value: null, label: '—' }, { value: '2t/m²', label: 'Blast 2t' }, { value: '4t/m²', label: 'Blast 4t' }, { value: '5t/m²', label: 'Blast 5t' }],
@@ -1782,6 +2010,7 @@ Object.entries(PERF_OPTIONS).forEach(([k, opts]) => {
 
 const TYPE_OPTIONS = ['BP 1V', 'BP 2V', 'Chassis', 'Guichet'].map(value => ({ value, label: value }))
 
+/** New user-added product row ("ligne blanche"): empty at creation, not from xlsx import. */
 function createBlankGridRow() {
   const raw = new Array(17).fill(null)
   raw[16] = 'RAL'
@@ -1801,6 +2030,8 @@ function createBlankGridRow() {
     alertes: [],
     docs: [],
     _manualBlank: true,
+    /** When true, show all perf selectors (+ expanded); persisted on row like xlsx UX. */
+    _perfStripShowAll: false,
     _raw: raw,
   }
 }
@@ -1818,6 +2049,284 @@ const HEIGHT_AVIS_CHANTIER_RE = /hauteur\s+\d+\s*mm\s+d[ée]passe\s+le\s+max\s+c
 
 function sectionOf(row) {
   return SECTION_META[row?.line_section] ? row.line_section : 'products'
+}
+
+const GRID_INTENT_RAW_SLOTS = {
+  rc: 3,
+  pb: 4,
+  cf: 5,
+  blast: 6,
+  belier: 7,
+  prison: 8,
+  serrure: 12,
+  garniture_int: 13,
+  garniture_ext: 14,
+  ferme_porte: 15,
+}
+
+const GRID_INTENT_FIELD_LABELS = {
+  hauteur_mm: 'hauteur',
+  largeur_mm: 'largeur',
+  localisation: 'localisation',
+  designation: 'désignation',
+  type_porte: 'type produit',
+  gamme: 'gamme',
+  vantail: 'vantail',
+  prix_base_ht: 'prix base HT',
+  ref_base: 'référence base',
+  qty: 'quantité',
+  multiple: 'remise/coefficient',
+  rc: 'résistance CR/RC',
+  pb: 'pare-balles',
+  cf: 'coupe-feu',
+  blast: 'blast',
+  belier: 'anti-bélier',
+  prison: 'prison',
+  acoustic: 'acoustique',
+  serrure: 'serrure',
+  garniture_int: 'garniture int.',
+  garniture_ext: 'garniture ext.',
+  vitrage: 'vitrage/remplissage',
+  ferme_porte: 'ferme-porte',
+  cremone: 'crémone',
+  autres: 'autres équipements',
+  thermolaquage: 'thermolaquage',
+  notes: 'note',
+  options_add: 'option ajoutée',
+  options_remove: 'option supprimée',
+}
+
+const GRID_INTENT_HIGHLIGHT_FIELDS = {
+  hauteur_mm: ['haut_mm', 'hauteur_mm'],
+  largeur_mm: ['larg_mm', 'largeur_mm'],
+  type_porte: ['type', 'type_porte'],
+  designation: ['designation'],
+  localisation: ['localisation'],
+  gamme: ['gamme'],
+  vantail: ['vantail'],
+  prix_base_ht: ['prix_base_ht'],
+  ref_base: ['ref_base'],
+  qty: ['qty'],
+  multiple: ['multiple'],
+  rc: ['rc'],
+  pb: ['pb'],
+  cf: ['cf'],
+  blast: ['blast'],
+  belier: ['belier'],
+  prison: ['prison'],
+  acoustic: ['acoustic'],
+  serrure: ['serrure'],
+  garniture_int: ['garniture_int'],
+  garniture_ext: ['garniture_ext'],
+  vitrage: ['vitrage'],
+  ferme_porte: ['ferme_porte'],
+  cremone: ['cremone'],
+  autres: ['autres'],
+  thermolaquage: ['thermolaquage'],
+  notes: ['notes'],
+  options_add: ['autres'],
+  options_remove: ['autres'],
+}
+
+function cloneGridRow(row) {
+  try { return JSON.parse(JSON.stringify(row)) } catch { return { ...(row || {}) } }
+}
+
+function gridIntentHighlightFieldsForKey(key) {
+  return GRID_INTENT_HIGHLIGHT_FIELDS[key] || [key]
+}
+
+function gridIntentValueLabel(value) {
+  if (Array.isArray(value)) return value.join(', ')
+  if (value == null || value === '') return '—'
+  return String(value)
+}
+
+function compactGridRowForIntent(row, index) {
+  const resolved = resolveRow(row)
+  return {
+    rowKey: String(row._lineId || row.id || row._clientKey || `row-${index}`),
+    id: row._lineId || row.id || null,
+    ligne: rowLetterLabel(index),
+    line_section: sectionOf(row),
+    designation: row.designation || row.type || '',
+    type: row.type || row.type_porte || '',
+    gamme: row.gamme || '',
+    vantail: row.vantail || '',
+    haut_mm: row.haut_mm ?? row.hauteur_mm ?? resolved.haut_mm ?? null,
+    larg_mm: row.larg_mm ?? row.largeur_mm ?? resolved.larg_mm ?? null,
+    localisation: row.localisation || '',
+    ref_base: row.ref_base || '',
+    rc: performanceValue(row, resolved, 'rc'),
+    pb: performanceValue(row, resolved, 'pb'),
+    cf: performanceValue(row, resolved, 'cf'),
+    blast: performanceValue(row, resolved, 'blast'),
+    belier: performanceValue(row, resolved, 'belier'),
+    prison: performanceValue(row, resolved, 'prison'),
+    acoustic: performanceValue(row, resolved, 'acoustic'),
+    serrure: mainEquipLabel(row._raw?.[12] ?? resolved._serrureLabel ?? ''),
+    garniture_int: mainEquipLabel(row._raw?.[13] ?? resolved._garnIntLabel ?? ''),
+    garniture_ext: mainEquipLabel(row._raw?.[14] ?? resolved._garnExtLabel ?? ''),
+    ferme_porte: mainEquipLabel(row._raw?.[15] ?? resolved._fpLabel ?? ''),
+    vitrage: stripAcousticInfo(row._raw?.[16]) || mainEquipLabel(resolved._vitrageLabel || ''),
+    cremone: row._overrideCremone ?? mainEquipLabel(resolved._cremoneLabel || ''),
+    autres: row._overrideAutres ?? resolved._otherExtras?.map(item => mainEquipLabel(item.label)).join(', ') ?? '',
+    qty: row.qty ?? 1,
+    multiple: row.multiple ?? null,
+    prix_base_ht: row.prix_base_ht ?? null,
+    options: Array.isArray(row.options) ? row.options : [],
+    alertes: Array.isArray(row.alertes) ? row.alertes : [],
+    _raw: Array.isArray(row._raw) ? row._raw : [],
+  }
+}
+
+function normalizeIntentOptionList(value) {
+  const list = Array.isArray(value) ? value : String(value ?? '').split(/[,;|]+/u)
+  return list.map(item => String(item || '').trim()).filter(Boolean).slice(0, 12)
+}
+
+function buildGridIntentRowPatch(row, patch = {}) {
+  const raw = Array.isArray(row._raw) ? [...row._raw] : new Array(17).fill(null)
+  while (raw.length < 17) raw.push(null)
+  const rowPatch = {}
+  const labels = []
+  const fieldChanges = []
+  let rawChanged = false
+  let needsRecompute = false
+  let perfOverrides = row._perfOverrides || null
+
+  const setRaw = (index, value, perfKey = null) => {
+    raw[index] = value || null
+    rawChanged = true
+    needsRecompute = true
+    if (perfKey) perfOverrides = { ...(perfOverrides || {}), [perfKey]: true }
+  }
+  const addLabel = (key, value) => {
+    labels.push(`${GRID_INTENT_FIELD_LABELS[key] || key} → ${gridIntentValueLabel(value)}`)
+    fieldChanges.push({ field: key, fieldLabel: GRID_INTENT_FIELD_LABELS[key] || key, newValue: gridIntentValueLabel(value) })
+  }
+
+  for (const [key, value] of Object.entries(patch || {})) {
+    if (value == null || value === '') continue
+    if (key === 'hauteur_mm') {
+      const height = Number(value)
+      if (Number.isFinite(height)) {
+        rowPatch.haut_mm = height
+        rowPatch.hauteur_mm = height
+        raw[2] = height
+        rawChanged = true
+        needsRecompute = true
+        addLabel(key, height)
+      }
+    } else if (key === 'largeur_mm') {
+      const width = Number(value)
+      if (Number.isFinite(width)) {
+        rowPatch.larg_mm = width
+        rowPatch.largeur_mm = width
+        raw[1] = width
+        rawChanged = true
+        needsRecompute = true
+        addLabel(key, width)
+      }
+    } else if (key === 'type_porte') {
+      rowPatch.type = String(value)
+      rowPatch.type_porte = String(value)
+      raw[0] = String(value)
+      rawChanged = true
+      needsRecompute = true
+      addLabel(key, value)
+    } else if (key === 'localisation' || key === 'designation' || key === 'gamme' || key === 'vantail' || key === 'ref_base' || key === 'notes') {
+      rowPatch[key === 'notes' ? 'notes' : key] = String(value)
+      if (key === 'notes') rowPatch.alertes = [String(value)]
+      addLabel(key, value)
+    } else if (key === 'prix_base_ht') {
+      const amount = Number(value)
+      if (Number.isFinite(amount)) {
+        rowPatch.prix_base_ht = amount
+        rowPatch.prix_total_min_ht = amount
+        rowPatch.total_ligne_ht = amount
+        addLabel(key, amount)
+      }
+    } else if (key === 'qty') {
+      const qty = Number(value)
+      if (Number.isFinite(qty) && qty > 0) {
+        rowPatch.qty = Math.round(qty)
+        addLabel(key, rowPatch.qty)
+      }
+    } else if (key === 'multiple') {
+      const multiple = Number(value)
+      if (Number.isFinite(multiple)) {
+        rowPatch.multiple = multiple
+        addLabel(key, multiple)
+      }
+    } else if (Object.prototype.hasOwnProperty.call(GRID_INTENT_RAW_SLOTS, key)) {
+      setRaw(GRID_INTENT_RAW_SLOTS[key], String(value), ['rc', 'pb', 'cf', 'blast', 'belier', 'prison'].includes(key) ? key : null)
+      addLabel(key, value)
+    } else if (key === 'vitrage') {
+      const currentAcoustic = acousticValue(raw[16])
+      raw[16] = currentAcoustic ? `${String(value).trim()} ${currentAcoustic}` : String(value).trim()
+      rawChanged = true
+      needsRecompute = true
+      addLabel(key, value)
+    } else if (key === 'acoustic') {
+      const stripped = stripAcousticInfo(raw[16])
+      raw[16] = stripped ? `${stripped} ${value}` : String(value)
+      rawChanged = true
+      needsRecompute = true
+      perfOverrides = { ...(perfOverrides || {}), acoustic: true }
+      addLabel(key, value)
+    } else if (key === 'thermolaquage') {
+      raw[16] = setThermolaquageInRawValue(raw[16], value)
+      rawChanged = true
+      needsRecompute = true
+      addLabel(key, value)
+    } else if (key === 'cremone') {
+      rowPatch._overrideCremone = String(value)
+      addLabel(key, value)
+    } else if (key === 'autres') {
+      rowPatch._overrideAutres = String(value)
+      addLabel(key, value)
+    } else if (key === 'options_add') {
+      const additions = normalizeIntentOptionList(value)
+      if (additions.length) {
+        const existing = Array.isArray(row.options) ? row.options : []
+        rowPatch.options = [...existing, ...additions.map(label => ({ label, prix: 0, note: 'Ajout Zerux IA' }))]
+        addLabel(key, additions)
+      }
+    } else if (key === 'options_remove') {
+      const removals = normalizeIntentOptionList(value).map(item => item.toLowerCase())
+      if (removals.length) {
+        const existing = Array.isArray(row.options) ? row.options : []
+        rowPatch.options = existing.filter(option => !removals.some(removal => equipmentText(option).toLowerCase().includes(removal)))
+        addLabel(key, value)
+      }
+    }
+  }
+
+  if (rawChanged) rowPatch._raw = raw
+  if (perfOverrides) rowPatch._perfOverrides = perfOverrides
+  return { rowPatch, labels, fieldChanges, needsRecompute }
+}
+
+async function recomputeIntentRow(row, patch, qty) {
+  if (!hasAuthToken() || sectionOf(row) !== 'products') return row
+  const raw = Array.isArray(row._raw) ? [...row._raw] : new Array(17).fill(null)
+  while (raw.length < 17) raw.push(null)
+  const res = await api.post('/devis/recompute-row', { row: raw, qty: Number.isFinite(qty) && qty > 0 ? Math.round(qty) : 1 }, { timeout: 30000 })
+  if (!res?.result) return row
+  return {
+    ...row,
+    ...res.result,
+    ...patch,
+    _raw: raw,
+    _manualBlank: row._manualBlank,
+    _perfStripShowAll: row._perfStripShowAll,
+    _perfOverrides: patch._perfOverrides || row._perfOverrides,
+    qty: patch.qty ?? row.qty,
+    multiple: patch.multiple ?? row.multiple,
+    change_override: patch.change_override ?? row.change_override,
+    localisation: patch.localisation ?? row.localisation,
+  }
 }
 
 function rowHasFirePerformance(row) {
@@ -2091,13 +2600,16 @@ function PrettyCellSelect({ value, options, onCommit, title, width = 64, height 
   const normalizedOptions = (options || []).map(option => (
     typeof option === 'string' ? { value: option, label: option } : { value: option.value ?? '', label: option.label ?? option.value ?? '—' }
   ))
-  const selected = normalizedOptions.find(option => String(option.value ?? '') === String(value ?? '')) || normalizedOptions[0] || null
+  const selected = normalizedOptions.find(option => String(option.value ?? '') === String(value ?? ''))
+    || (value != null && value !== '' ? { value, label: String(value) } : null)
   return (
     <div title={title} onClick={event => event.stopPropagation()} style={{ width, height }}>
       <Select
         value={selected}
         options={normalizedOptions}
         onChange={(option) => onCommit(option ? option.value : null)}
+        getOptionValue={option => String(option.value ?? '')}
+        getOptionLabel={option => option.label ?? String(option.value ?? '')}
         isSearchable={false}
         isClearable={false}
         styles={prettyCellSelectStyles({ width, height, active })}
@@ -2691,6 +3203,9 @@ export function DevisGridWorkspace({
   onRowsCommit = null,
   onRowsBulkCommit = null,
   onRowsDelete = null,
+  onGridAssistantRowsCommit = null,
+  onGridAssistantAction = null,
+  showAssistantPanel = !embedded,
   title = 'Devis Grid',
   subtitle = null,
 }) {
@@ -2719,6 +3234,33 @@ export function DevisGridWorkspace({
   const [confirmDialog, setConfirmDialog] = useState(null)
   const [toast, setToast] = useState(null) // { msg, kind: 'success'|'error', id }
   const toastTimerRef = useRef(null)
+  const [assistantMessages, setAssistantMessages] = useState([])
+  const [assistantInput, setAssistantInput] = useState('')
+  const [assistantLoading, setAssistantLoading] = useState(false)
+  const assistantEndRef = useRef(null)
+  const assistantInputRef = useRef(null)
+  const [quickAssistantHighlights, setQuickAssistantHighlights] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('devisGridAssistantHighlights') || 'null')
+      return !embedded && saved && typeof saved === 'object' ? saved : null
+    } catch { return null }
+  })
+  const [gridHistoryEntries, setGridHistoryEntries] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('devisGridActionHistory') || '[]')
+      return !embedded && Array.isArray(saved) ? saved.slice(0, 80) : []
+    } catch { return [] }
+  })
+  const recordGridHistory = useCallback((label, details = '', meta = {}) => {
+    const entry = {
+      id: meta.id || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      label,
+      details,
+      date: new Date().toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }),
+      ...meta,
+    }
+    setGridHistoryEntries(previous => [entry, ...previous].slice(0, 80))
+  }, [embedded])
   const showToast = useCallback((msg, kind = 'success') => {
     clearTimeout(toastTimerRef.current)
     const id = Date.now()
@@ -2739,8 +3281,9 @@ export function DevisGridWorkspace({
     try { return localStorage.getItem('devisGridEditMode') !== '0' } catch { return true }
   })
   const [showSettings, setShowSettings] = useState(false)
-  const assistantHighlightIds = useMemo(() => new Set((assistantHighlights?.ids || []).map(String)), [assistantHighlights])
-  const assistantHighlightIndexes = useMemo(() => new Set(assistantHighlights?.indexes || []), [assistantHighlights])
+  const effectiveAssistantHighlights = assistantHighlights || quickAssistantHighlights
+  const assistantHighlightIds = useMemo(() => new Set((effectiveAssistantHighlights?.ids || []).map(String)), [effectiveAssistantHighlights])
+  const assistantHighlightIndexes = useMemo(() => new Set(effectiveAssistantHighlights?.indexes || []), [effectiveAssistantHighlights])
   useEffect(() => { try { localStorage.setItem('devisGridChange', String(change)) } catch { /* noop */ } }, [change])
   useEffect(() => { try { localStorage.setItem('devisGridTva', String(tva)) } catch { /* noop */ } }, [tva])
   useEffect(() => { try { localStorage.setItem('devisGridMultGlobal', String(multGlobal)) } catch { /* noop */ } }, [multGlobal])
@@ -2765,12 +3308,22 @@ export function DevisGridWorkspace({
       return new Set(Array.isArray(saved) ? saved.filter(key => DIMENSION_COLUMNS.includes(key)) : [])
     } catch { return new Set() }
   })
-  useEffect(() => {
-    if (Array.isArray(initialRows)) setRows(initialRows.length > 0 ? applyDefaultTransportAddress(normalizeCalculationRows(splitCalculationOptions(initialRows)), defaultTransportAddress) : (startWithBlank ? [createBlankGridRow()] : []))
-  }, [defaultTransportAddress, initialRows, startWithBlank])
   // Ref vers les rows courants — permet à recomputeRow de lire sans passer par un updater
   const rowsRef = useRef(rows)
   useEffect(() => { rowsRef.current = rows }, [rows])
+  const replaceRows = useCallback((nextRows) => {
+    rowsRef.current = nextRows
+    setRows(nextRows)
+  }, [])
+  const initialRowsInitializedRef = useRef(false)
+  useEffect(() => {
+    if (!Array.isArray(initialRows)) return
+    const nextRows = initialRows.length > 0
+      ? applyDefaultTransportAddress(normalizeCalculationRows(splitCalculationOptions(initialRows)), defaultTransportAddress)
+      : (initialRowsInitializedRef.current ? [] : (startWithBlank ? [createBlankGridRow()] : []))
+    initialRowsInitializedRef.current = true
+    replaceRows(nextRows)
+  }, [defaultTransportAddress, initialRows, replaceRows, startWithBlank])
   useEffect(() => {
     try { localStorage.setItem('devisGridSidebarCollapsed', sidebarCollapsed ? '1' : '0') } catch { /* noop */ }
   }, [sidebarCollapsed])
@@ -2827,38 +3380,207 @@ export function DevisGridWorkspace({
 
   const updateRow = useCallback((i, patch) => {
     const nextRows = rowsRef.current.map((r, idx) => idx === i ? { ...r, ...patch } : r)
-    setRows(nextRows)
+    replaceRows(nextRows)
     onRowsCommit?.(nextRows[i], i, patch)
-    showToast('Enregistré', 'success')
-  }, [onRowsCommit, showToast])
+    const silentUi = patch && Object.keys(patch).length === 1 && Object.prototype.hasOwnProperty.call(patch, '_perfStripShowAll')
+    if (!silentUi) {
+      recordGridHistory(`Ligne ${rowLetterLabel(i)} modifiée`)
+      showToast('Enregistré', 'success')
+    }
+  }, [onRowsCommit, recordGridHistory, replaceRows, showToast])
 
   const addRow = useCallback((newRow) => {
     const nextRows = [...rowsRef.current, newRow]
-    setRows(nextRows)
+    replaceRows(nextRows)
     onRowsCommit?.(newRow, nextRows.length - 1, { _created: true })
     if (newRow?.source === 'ia' || newRow?._ia) {
+      recordGridHistory(`Ligne ${rowLetterLabel(nextRows.length - 1)} ajoutée par IA`)
       showToast('Ligne IA ajoutée', 'success')
     } else {
+      recordGridHistory(`Ligne ${rowLetterLabel(nextRows.length - 1)} ajoutée`)
       showToast('Ligne ajoutée', 'success')
     }
-  }, [onRowsCommit, showToast])
+  }, [onRowsCommit, recordGridHistory, replaceRows, showToast])
 
   const addBlankRow = useCallback(() => {
     const nextRows = [...rowsRef.current, createBlankGridRow()]
-    setRows(nextRows)
+    replaceRows(nextRows)
     setEditMode(true)
     setExpandedRows(prev => new Set([...prev, nextRows.length - 1]))
+    recordGridHistory(`Ligne ${rowLetterLabel(nextRows.length - 1)} blanche ajoutée`)
     showToast('Ligne blanche ajoutée', 'success')
-  }, [showToast])
+  }, [recordGridHistory, replaceRows, showToast])
+
+  useEffect(() => {
+    if (embedded) return
+    try { localStorage.setItem('devisGridActionHistory', JSON.stringify(gridHistoryEntries)) } catch { /* noop */ }
+  }, [embedded, gridHistoryEntries])
+
+  useEffect(() => {
+    if (embedded) return
+    try {
+      if (quickAssistantHighlights) localStorage.setItem('devisGridAssistantHighlights', JSON.stringify(quickAssistantHighlights))
+      else localStorage.removeItem('devisGridAssistantHighlights')
+    } catch { /* noop */ }
+  }, [embedded, quickAssistantHighlights])
+
+  useEffect(() => {
+    assistantEndRef.current?.scrollIntoView({ block: 'end' })
+  }, [assistantMessages, assistantLoading])
+
+  const applyQuickGridIntentEdits = useCallback(async (edits = [], reply = '', prompt = '') => {
+    if (!Array.isArray(edits) || !edits.length) return null
+    let nextRows = rowsRef.current.map(row => ({ ...row }))
+    const applied = []
+    for (const edit of edits) {
+      const index = Number(edit?.lineIndex)
+      if (!Number.isInteger(index) || index < 0 || index >= nextRows.length) continue
+      const before = nextRows[index]
+      if (!before || sectionOf(before) !== 'products') continue
+      const { rowPatch, labels, fieldChanges, needsRecompute } = buildGridIntentRowPatch(before, edit.patch || {})
+      if (!Object.keys(rowPatch).length) continue
+      let after = { ...before, ...rowPatch }
+      if (needsRecompute) {
+        try {
+          after = await recomputeIntentRow(after, rowPatch, after.qty)
+        } catch (err) {
+          console.warn('[quick-grid-intent] recompute failed', err)
+        }
+      }
+      nextRows[index] = after
+      const highlightFields = [...new Set((fieldChanges || []).flatMap(change => gridIntentHighlightFieldsForKey(change.field)))]
+      applied.push({ index, labels, before: cloneGridRow(before), highlightFields })
+    }
+    if (!applied.length) return null
+    const beforeRows = rowsRef.current.map(row => cloneGridRow(row))
+    replaceRows(nextRows)
+    onRowsChange?.(nextRows)
+    if (onGridAssistantRowsCommit) await onGridAssistantRowsCommit(nextRows, { type: 'apply', applied, beforeRows })
+    else await onRowsBulkCommit?.(nextRows)
+    setExpandedRows(previous => new Set([...previous, ...applied.map(item => item.index)]))
+    const historyId = `${Date.now()}-${Math.random().toString(16).slice(2)}`
+    const highlights = {
+      id: historyId,
+      source: 'quick-grid-intent',
+      indexes: applied.map(item => item.index),
+      fieldsByIndex: applied.reduce((acc, item) => ({ ...acc, [item.index]: item.highlightFields }), {}),
+    }
+    setQuickAssistantHighlights(highlights)
+    const details = applied
+      .map(item => `Ligne ${rowLetterLabel(item.index)} : ${item.labels.join(', ')}`)
+      .join('\n')
+    recordGridHistory(`Zerux IA : ${applied.length} ligne${applied.length > 1 ? 's' : ''} modifiée${applied.length > 1 ? 's' : ''}`, details, {
+      id: historyId,
+      source: 'quick-grid-intent',
+      undoable: true,
+      undoRows: applied.map(item => ({ index: item.index, row: item.before, fields: item.highlightFields })),
+      highlights,
+    })
+    onGridAssistantAction?.({
+      id: historyId,
+      label: `Zerux IA : ${applied.length} ligne${applied.length > 1 ? 's' : ''} modifiée${applied.length > 1 ? 's' : ''}`,
+      prompt: prompt || reply,
+      origin: 'ai',
+      beforeRows,
+      afterRows: nextRows,
+      applied,
+    })
+    showToast(`Zerux IA a modifié ${applied.length} ligne${applied.length > 1 ? 's' : ''}`, 'success')
+    return [reply, details].filter(Boolean).join('\n\n')
+  }, [onGridAssistantAction, onGridAssistantRowsCommit, onRowsBulkCommit, onRowsChange, recordGridHistory, replaceRows, showToast])
+
+  const undoQuickGridHistoryEntry = useCallback(async (entry) => {
+    if (!entry?.undoable || entry.undoneAt || !Array.isArray(entry.undoRows) || !entry.undoRows.length) return
+    const restoreItems = entry.undoRows
+      .map(item => ({ index: Number(item.index), row: item.row, fields: Array.isArray(item.fields) ? item.fields : [] }))
+      .filter(item => Number.isInteger(item.index) && item.index >= 0 && item.index < rowsRef.current.length && item.row)
+    if (!restoreItems.length) return
+    const restoreMap = new Map(restoreItems.map(item => [item.index, cloneGridRow(item.row)]))
+    const nextRows = rowsRef.current.map((row, index) => restoreMap.has(index) ? restoreMap.get(index) : row)
+    const beforeRows = rowsRef.current.map(row => cloneGridRow(row))
+    replaceRows(nextRows)
+    onRowsChange?.(nextRows)
+    if (onGridAssistantRowsCommit) await onGridAssistantRowsCommit(nextRows, { type: 'undo', applied: restoreItems, beforeRows })
+    else await onRowsBulkCommit?.(nextRows)
+    setExpandedRows(previous => new Set([...previous, ...restoreItems.map(item => item.index)]))
+    const highlights = {
+      id: `${entry.id || Date.now()}-undo`,
+      source: 'quick-grid-intent-undo',
+      indexes: restoreItems.map(item => item.index),
+      fieldsByIndex: restoreItems.reduce((acc, item) => ({ ...acc, [item.index]: item.fields }), {}),
+    }
+    setQuickAssistantHighlights(highlights)
+    const undoneAt = new Date().toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+    setGridHistoryEntries(previous => previous.map(item => item.id === entry.id ? { ...item, undoneAt } : item))
+    onGridAssistantAction?.({
+      id: highlights.id,
+      label: 'Zerux IA : action annulée',
+      prompt: 'Annulation depuis l’historique grille',
+      origin: 'ai',
+      beforeRows,
+      afterRows: nextRows,
+      applied: restoreItems,
+      undoOf: entry.id,
+    })
+    showToast('Action IA annulée', 'success')
+  }, [onGridAssistantAction, onGridAssistantRowsCommit, onRowsBulkCommit, onRowsChange, replaceRows, showToast])
+
+  const looksLikeGridChangeRequest = useCallback((text) => /\b(modifi|changer|change|mettre|mets|passer|remplacer|ajouter|supprimer|retirer|hauteur|huteur|largeur|quantit[ée]|qte|serrure|garniture|vitrage|ferme.?porte|cr[2-6]|rc[2-6]|fb[4-7]|ei\s*(30|60|90|120)|anti.?feu|coupe.?feu|option|thermolaquage|ral|ncs)\b/i.test(String(text || '')), [])
+
+  const askQuickGridAssistant = useCallback(async (question = assistantInput) => {
+    const text = String(question || '').trim()
+    if (!text || assistantLoading) return
+    const nextUserMessage = { id: `${Date.now()}-user`, role: 'user', content: text }
+    setAssistantMessages(previous => [...previous, nextUserMessage])
+    setAssistantInput('')
+    setAssistantLoading(true)
+    try {
+      if (rowsRef.current.length) {
+        try {
+          const intent = await api.post('/devis/grid-intent', {
+            question: text,
+            rows: rowsRef.current.slice(0, 120).map(compactGridRowForIntent),
+          }, { timeout: 120000 })
+          if (intent?.ok && Array.isArray(intent.edits) && intent.edits.length) {
+            const appliedAnswer = await applyQuickGridIntentEdits(intent.edits, intent.reply || 'Modifications appliquées.', text)
+            if (appliedAnswer) {
+              setAssistantMessages(previous => [...previous, { id: `${Date.now()}-assistant`, role: 'assistant', content: appliedAnswer }])
+              return
+            }
+          }
+          if (looksLikeGridChangeRequest(text) && intent?.reply) {
+            setAssistantMessages(previous => [...previous, { id: `${Date.now()}-assistant-clarify`, role: 'assistant', content: intent.reply }])
+            return
+          }
+        } catch (intentErr) {
+          console.warn('[quick-grid-intent]', intentErr)
+        }
+      }
+      const data = await api.post('/devis/ask', {
+        rows: rowsRef.current,
+        question: text,
+        scope: 'all',
+        history: assistantMessages.slice(-8).map(message => ({ role: message.role, content: message.content })),
+        devis_id: devisId,
+        version_id: versionId,
+      }, { timeout: 120000 })
+      setAssistantMessages(previous => [...previous, { id: `${Date.now()}-assistant`, role: 'assistant', content: data?.answer || 'Je n’ai pas reçu de réponse exploitable.' }])
+    } catch (err) {
+      setAssistantMessages(previous => [...previous, { id: `${Date.now()}-assistant-error`, role: 'assistant', content: `Erreur IA : ${err?.error || err?.message || 'demande impossible'}` }])
+    } finally {
+      setAssistantLoading(false)
+    }
+  }, [applyQuickGridIntentEdits, assistantInput, assistantLoading, assistantMessages, devisId, looksLikeGridChangeRequest, versionId])
 
   const addSectionRow = useCallback((section) => {
     const nextRows = [...rowsRef.current, createAmountRow(section, '', { defaultTransportAddress })]
-    setRows(nextRows)
+    replaceRows(nextRows)
     setEditMode(true)
     setExpandedRows(prev => new Set([...prev, nextRows.length - 1]))
     onRowsCommit?.(nextRows[nextRows.length - 1], nextRows.length - 1, { _created: true })
+    recordGridHistory(section === 'transport' ? 'Ligne transport ajoutée' : 'Ligne calcul ajoutée')
     showToast(section === 'transport' ? 'Ligne transport ajoutée' : 'Ligne calcul ajoutée', 'success')
-  }, [defaultTransportAddress, onRowsCommit, showToast])
+  }, [defaultTransportAddress, onRowsCommit, recordGridHistory, replaceRows, showToast])
 
   const commitTransportAddress = useCallback(async (i, address) => {
     const current = rowsRef.current[i]
@@ -2875,7 +3597,7 @@ export function DevisGridWorkspace({
     let patch = basePatch
     if (!cleanAddress || (!parsed.canton && !parsed.country && !parsed.postal_code)) {
       const nextRows = rowsRef.current.map((row, idx) => idx === i ? { ...row, ...patch } : row)
-      setRows(nextRows)
+      replaceRows(nextRows)
       onRowsCommit?.(nextRows[i], i, patch)
       showToast(cleanAddress ? 'Adresse enregistrée, zone à vérifier' : 'Adresse transport vidée', cleanAddress ? 'error' : 'success')
       return
@@ -2906,9 +3628,9 @@ export function DevisGridWorkspace({
       showToast('Adresse enregistrée, recalcul transport impossible', 'error')
     }
     const nextRows = rowsRef.current.map((row, idx) => idx === i ? { ...row, ...patch } : row)
-    setRows(nextRows)
+    replaceRows(nextRows)
     onRowsCommit?.(nextRows[i], i, patch)
-  }, [onRowsCommit, showToast])
+  }, [onRowsCommit, replaceRows, showToast])
 
   const deleteRow = useCallback((i) => {
     const row = rowsRef.current[i]
@@ -2921,13 +3643,14 @@ export function DevisGridWorkspace({
       confirmLabel: 'Supprimer',
       onConfirm: () => {
         const nextRows = rowsRef.current.filter((_, idx) => idx !== i)
-        setRows(nextRows)
+        replaceRows(nextRows)
         setExpandedRows(prev => new Set([...prev].filter(idx => idx !== i).map(idx => idx > i ? idx - 1 : idx)))
         onRowsDelete?.(row, i)
+        recordGridHistory(`Ligne ${rowLetterLabel(i)} supprimée`)
         showToast('Ligne supprimée', 'success')
       },
     })
-  }, [onRowsDelete, showToast])
+  }, [onRowsDelete, recordGridHistory, replaceRows, showToast])
 
   const recomputeRow = useCallback((i, patch) => {
     // Lire les rows via ref (pas d'updater) pour éviter le double-appel Strict Mode
@@ -2952,10 +3675,10 @@ export function DevisGridWorkspace({
       const k = `_raw_${idx}`
       if (Object.prototype.hasOwnProperty.call(patch, k)) raw[idx] = patch[k]
     }
-    const { qty, multiple, change_override, _lineId, _dbPosition, _manualBlank, localisation } = cur
+    const { qty, multiple, change_override, _lineId, _dbPosition, _manualBlank, _perfStripShowAll, localisation } = cur
     const perfOverrides = patch._perfOverrides || cur._perfOverrides || null
     // Maj optimiste immédiate
-    setRows(prev => prev.map((r, idx) => idx === i ? {
+    replaceRows(rowsRef.current.map((r, idx) => idx === i ? {
       ...r,
       ...(patch.type != null ? { type: patch.type } : {}),
       ...(patch.haut_mm != null ? { haut_mm: patch.haut_mm } : {}),
@@ -2976,6 +3699,7 @@ export function DevisGridWorkspace({
           _lineId,
           _dbPosition,
           _manualBlank,
+          _perfStripShowAll,
           localisation,
           qty,
           multiple,
@@ -2983,7 +3707,7 @@ export function DevisGridWorkspace({
           ...(perfOverrides ? { _perfOverrides: perfOverrides } : {}),
           _recomputing: false,
         }
-        setRows(p2 => p2.map((r, idx) => idx === i ? {
+        replaceRows(rowsRef.current.map((r, idx) => idx === i ? {
           ...recomputedRow,
         } : r))
         onRowsCommit?.(recomputedRow, i, { _recomputed: true })
@@ -2991,10 +3715,10 @@ export function DevisGridWorkspace({
       })
       .catch(err => {
         console.error('recompute-row error', err)
-        setRows(p2 => p2.map((r, idx) => idx === i ? { ...r, _recomputing: false, _recomputeError: String(err?.error || err?.message || err) } : r))
+        replaceRows(rowsRef.current.map((r, idx) => idx === i ? { ...r, _recomputing: false, _recomputeError: String(err?.error || err?.message || err) } : r))
         showToast('Erreur recalcul', 'error')
       })
-  }, [onRowsCommit, showToast, updateRow])
+  }, [onRowsCommit, replaceRows, showToast, updateRow])
 
   // 0=serrure, 1=garnInt, 2=garnExt, 3=vitrage, 4=fp, 5=crémone, 6=autres
   const handleRefCommit = useCallback(async (rowIdx, colIdx, refVal) => {
@@ -3061,7 +3785,7 @@ export function DevisGridWorkspace({
       workingRows = workingRows.map((currentRow, rowIndex) => rowIndex === entry.index ? { ...currentRow, _ruleChecking: false, _ruleCheck: nextCheck } : currentRow)
       completed += 1
       const partialReport = buildValidationReport(workingRows, { mode, rulesCount, knowledge: latestKnowledge })
-      setRows(workingRows)
+      replaceRows(workingRows)
       onRowsChange?.(workingRows)
       setValidationProgress({ active: completed < total, mode, done: completed, total, issueRows: partialReport.issue_rows, technicalRows: partialReport.technical_rows })
     })
@@ -3073,7 +3797,7 @@ export function DevisGridWorkspace({
     setValidationSummaryModal(finalReport)
     await persistValidationReport(finalReport)
     return { rows: workingRows, report: finalReport }
-  }, [onRowsChange, persistValidationReport, validationKnowledge])
+  }, [onRowsChange, persistValidationReport, replaceRows, validationKnowledge])
 
   const handleFile = async (file) => {
     if (!file) return
@@ -3093,10 +3817,11 @@ export function DevisGridWorkspace({
       // api interceptor retourne déjà res.data → res = { results: [...] }
       const data = res?.results ?? (Array.isArray(res) ? res : [])
       const sectionedRows = applyDefaultTransportAddress(normalizeCalculationRows(splitCalculationOptions(Array.isArray(data) ? data : [])), defaultTransportAddress)
-      setRows(sectionedRows)
+      replaceRows(sectionedRows)
       onRowsChange?.(sectionedRows)
       await onRowsBulkCommit?.(sectionedRows)
       setFileName(file.name)
+      recordGridHistory(`Import XLSX : ${file.name} (${sectionedRows.length} ligne${sectionedRows.length !== 1 ? 's' : ''})`)
       setExpandedRows(new Set())
       const productEntries = sectionedRows
         .map((row, index) => ({ row, index }))
@@ -3105,7 +3830,7 @@ export function DevisGridWorkspace({
         setValidatingImport(true)
         const indexSet = new Set(productEntries.map(entry => entry.index))
         const checkingRows = sectionedRows.map((row, index) => indexSet.has(index) ? { ...row, _ruleChecking: true, _ruleCheck: null } : row)
-        setRows(checkingRows)
+        replaceRows(checkingRows)
         onRowsChange?.(checkingRows)
         try {
           const { rows: checkedRows, report } = await validateEntriesProgressively({ targetEntries: productEntries, baseRows: checkingRows, mode: 'import' })
@@ -3117,9 +3842,8 @@ export function DevisGridWorkspace({
           } else {
             showToast('Import contrôlé : règles et expériences OK', 'success')
           }
-          rowsRef.current = checkedRows
         } catch (validationError) {
-          setRows(prev => prev.map(row => ({ ...row, _ruleChecking: false })))
+          replaceRows(rowsRef.current.map(row => ({ ...row, _ruleChecking: false })))
           setValidationProgress(null)
           showToast(validationError?.error || validationError?.message || 'Contrôle règles impossible', 'error')
         } finally {
@@ -3147,13 +3871,14 @@ export function DevisGridWorkspace({
         setError(null)
         try {
           await onRowsBulkCommit?.(nextRows)
-          setRows(nextRows)
+          replaceRows(nextRows)
           setFileName(null)
           setImportValidationSummary(null)
           setLastValidationReport(null)
           setValidationSummaryModal(null)
           setValidationProgress(null)
           setExpandedRows(new Set())
+          recordGridHistory('Grille vidée')
           try {
             localStorage.removeItem('devisGridRows')
             localStorage.removeItem('devisGridFileName')
@@ -3169,7 +3894,7 @@ export function DevisGridWorkspace({
         }
       },
     })
-  }, [fileName, onRowsBulkCommit, onRowsChange, showToast])
+  }, [fileName, onRowsBulkCommit, onRowsChange, recordGridHistory, replaceRows, showToast])
 
   const onDrop = (e) => {
     e.preventDefault()
@@ -3224,10 +3949,10 @@ export function DevisGridWorkspace({
   const applyRuleCheckResult = useCallback((rowIdx, nextCheck, knowledge = null) => {
     if (knowledge) setValidationKnowledge(knowledge)
     const nextRows = rowsRef.current.map((row, index) => index === rowIdx ? { ...row, _ruleChecking: false, _ruleCheck: nextCheck } : row)
-    setRows(nextRows)
+    replaceRows(nextRows)
     onRowsChange?.(nextRows)
     showToast('Analyse IA mise à jour', 'success')
-  }, [onRowsChange, showToast])
+  }, [onRowsChange, replaceRows, showToast])
 
   const rerunRuleChecksForIndexes = useCallback(async (rowIndexes = null) => {
     const freshKnowledge = await refreshValidationKnowledge()
@@ -3247,7 +3972,7 @@ export function DevisGridWorkspace({
     const indexSet = new Set(targetEntries.map(entry => entry.index))
     setRefreshingRuleChecks(true)
     const checkingRows = currentRows.map((row, index) => indexSet.has(index) ? { ...row, _ruleChecking: true } : row)
-    setRows(checkingRows)
+    replaceRows(checkingRows)
     onRowsChange?.(checkingRows)
     try {
       const { report } = await validateEntriesProgressively({ targetEntries, baseRows: checkingRows, mode: 'manual' })
@@ -3260,7 +3985,7 @@ export function DevisGridWorkspace({
         showToast('Analyse IA à jour', 'success')
       }
     } catch (validationError) {
-      setRows(prev => prev.map((row, index) => indexSet.has(index) ? { ...row, _ruleChecking: false } : row))
+      replaceRows(rowsRef.current.map((row, index) => indexSet.has(index) ? { ...row, _ruleChecking: false } : row))
       setValidationProgress(null)
       showToast(validationError?.error || validationError?.details || validationError?.message || 'Mise à jour IA impossible', 'error')
     } finally {
@@ -3314,6 +4039,14 @@ export function DevisGridWorkspace({
       {sidebarCollapsed ? (
         <div style={{ width: 36, flexShrink: 0, borderRight: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '8px 0', gap: 8 }}>
           <button
+            type="button"
+            onClick={() => navigate('/home')}
+            title="Retour à l'accueil"
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-2)', padding: 4, display: 'flex' }}
+          >
+            <ArrowLeft size={16} />
+          </button>
+          <button
             onClick={() => setSidebarCollapsed(false)}
             title="Afficher la barre latérale"
             style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-2)', padding: 4, display: 'flex' }}
@@ -3332,14 +4065,20 @@ export function DevisGridWorkspace({
       <div style={{ width: 240, flexShrink: 0, borderRight: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 8 }}>
           <button
-            onClick={() => navigate('/devis/legacy')}
+            onClick={() => navigate('/home')}
             style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-3)', padding: 2, display: 'flex' }}
-            title="Retour legacy"
+            title="Retour à l'accueil"
           >
               <ArrowLeft size={14} />
           </button>
-          <span style={{ fontSize: 12, fontWeight: 700 }}>{title}</span>
-          <span style={{ fontSize: 9, padding: '1px 5px', background: 'var(--color-primary)', color: '#fff', borderRadius: 4, fontWeight: 700 }}>BETA</span>
+          <button
+            type="button"
+            onClick={() => navigate('/home')}
+            title="Retour à l'accueil"
+            style={{ background: 'none', border: 'none', padding: 0, color: 'var(--color-text)', cursor: 'pointer', fontSize: 12, fontWeight: 700, font: 'inherit', textAlign: 'left' }}
+          >
+            {title}
+          </button>
           <button
             onClick={() => setSidebarCollapsed(true)}
             title="Réduire la barre latérale"
@@ -3675,14 +4414,14 @@ export function DevisGridWorkspace({
                         onUpdate={(patch) => updateRow(i, patch)}
                         onTransportAddressCommit={(address) => commitTransportAddress(i, address)}
                         onDelete={() => deleteRow(i)}
-                        assistantHighlight={(assistantHighlightIds.has(String(row._lineId)) || assistantHighlightIndexes.has(i)) ? assistantHighlights : null}
+                        assistantHighlight={(assistantHighlightIds.has(String(row._lineId)) || assistantHighlightIndexes.has(i)) ? effectiveAssistantHighlights : null}
                         hiddenDimensionCount={hiddenDimensionCols.size}
                       />
                     )
                   }
                   return (
                   <Fragment key={`row-${i}-${entryIndex}`}>
-                    <MainRow row={row} index={i} displayIndex={entry.displayIndex} expanded={expandedRows.has(i)} onToggle={() => toggleRow(i)} change={change} tva={tva} multGlobal={multGlobal} editMode={editMode} onUpdate={(patch) => updateRow(i, patch)} onRecompute={(patch) => recomputeRow(i, patch)} onDelete={() => deleteRow(i)} onSaveAsRule={() => handleSaveAsRule(i)} onVerifyRules={() => handleVerifyRules(i)} assistantHighlight={(assistantHighlightIds.has(String(row._lineId)) || assistantHighlightIndexes.has(i)) ? assistantHighlights : null} validationKnowledge={validationKnowledge} hiddenCols={hiddenCols} hiddenDimensionCols={hiddenDimensionCols} />
+                    <MainRow row={row} index={i} displayIndex={entry.displayIndex} expanded={expandedRows.has(i)} onToggle={() => toggleRow(i)} change={change} tva={tva} multGlobal={multGlobal} editMode={editMode} onUpdate={(patch) => updateRow(i, patch)} onRecompute={(patch) => recomputeRow(i, patch)} onDelete={() => deleteRow(i)} onSaveAsRule={() => handleSaveAsRule(i)} onVerifyRules={() => handleVerifyRules(i)} assistantHighlight={(assistantHighlightIds.has(String(row._lineId)) || assistantHighlightIndexes.has(i)) ? effectiveAssistantHighlights : null} validationKnowledge={validationKnowledge} hiddenCols={hiddenCols} hiddenDimensionCols={hiddenDimensionCols} />
                     {expandedRows.has(i) && (
                       <Fragment>
                         <SubRowRefs row={row} editMode={editMode} onRefCommit={(colIdx, ref) => handleRefCommit(i, colIdx, ref)} hiddenCols={hiddenCols} visibleDimensionCount={visibleDimensionCount} />
@@ -3762,6 +4501,27 @@ export function DevisGridWorkspace({
           Estimatif — tarif NEXUS 2026-01 · Cliquer sur une ligne pour voir les références et les prix détaillés
         </div>
       </div>
+
+      {showAssistantPanel && (
+        <QuickGridAssistantPanel
+          rows={rows}
+          messages={assistantMessages}
+          input={assistantInput}
+          setInput={setAssistantInput}
+          loading={assistantLoading}
+          onAsk={askQuickGridAssistant}
+          historyEntries={gridHistoryEntries}
+          verificationReport={lastValidationReport}
+          verificationProgress={validationProgress}
+          verificationSummary={importValidationSummary}
+          onRunVerification={() => rerunRuleChecksForIndexes(productRowEntries.map(entry => entry.index))}
+          onOpenVerificationReport={() => lastValidationReport && setValidationSummaryModal(lastValidationReport)}
+          onClearHistory={() => { setGridHistoryEntries([]); setQuickAssistantHighlights(null) }}
+          onUndoHistoryEntry={undoQuickGridHistoryEntry}
+          endRef={assistantEndRef}
+          inputRef={assistantInputRef}
+        />
+      )}
 
       {/* Modale ajout de ligne */}
       {showAddModal && <AddLineModal onClose={() => setShowAddModal(false)} onAdd={addRow} />}

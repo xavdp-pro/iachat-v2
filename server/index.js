@@ -22,11 +22,14 @@ import knowledgeRoutes from './routes/knowledge.js'
 import rulesRoutes from './routes/rules.js'
 import { ensureDbSchema } from './db/ensureSchema.js'
 import { warmupMemory } from './services/memory.js'
+import { getMaintenanceSettings } from './services/appSettings.js'
+import { getClientIpInfo, isIpAllowedByMaintenanceBypass, maintenanceMode } from './middleware/maintenance.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const app = express()
 // v2: API on 7608 so v1 can keep 7598. Set PORT in .env if needed.
 const PORT = process.env.PORT || 7608
+app.set('trust proxy', true)
 
 // Middleware
 app.use(cors())
@@ -41,6 +44,20 @@ try {
   /* ignore */
 }
 app.use('/uploads', express.static(uploadDir))
+
+app.get('/api/maintenance-status', async (req, res) => {
+  try {
+    const settings = await getMaintenanceSettings()
+    const ipInfo = getClientIpInfo(req)
+    const clientIp = ipInfo.ip
+    const bypassed = isIpAllowedByMaintenanceBypass(clientIp, settings.bypassIps)
+    res.json({ ...settings, clientIp, ipSource: ipInfo.source, ipRaw: ipInfo.raw, ipChain: ipInfo.forwardedForChain, bypassed })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.use(maintenanceMode)
 
 // Routes
 app.use('/api/auth', authRoutes)

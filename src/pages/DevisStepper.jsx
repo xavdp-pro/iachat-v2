@@ -12,7 +12,7 @@ import {
   Wrench, Package, Sparkles, RefreshCw, Plus,
   Clock, FolderOpen, LayoutGrid,
   Briefcase, User, Hash, ExternalLink, Download, Columns3, Columns2, Columns,
-  Pencil, Trash2, BookOpen, Undo2, Redo2,
+  Pencil, Trash2, BookOpen, Undo2, Redo2, History,
 } from 'lucide-react'
 import { MarkdownRenderer } from '../components/MarkdownRenderer.jsx'
 import api from '../api/index.js'
@@ -335,6 +335,33 @@ function withLineField(line, field, value) {
   return { ...line, [field]: value }
 }
 
+/** Same whitelist as server POST /devis/grid-intent (sanitized patches only). */
+function filterFreestyleGridPatch(patch) {
+  if (!patch || typeof patch !== 'object') return {}
+  const allowed = new Set([
+    'hauteur_mm', 'largeur_mm', 'localisation', 'designation', 'type_porte',
+    'gamme', 'vantail', 'prix_base_ht', 'ref_base',
+  ])
+  const out = {}
+  for (const [key, value] of Object.entries(patch)) {
+    if (!allowed.has(key) || value === null || value === undefined) continue
+    if (key === 'hauteur_mm' || key === 'largeur_mm') {
+      const n = Number(value)
+      if (Number.isFinite(n) && n >= 100 && n <= 14000) out[key] = Math.round(n)
+    } else if (key === 'prix_base_ht') {
+      const n = Number(value)
+      if (Number.isFinite(n) && n >= 0 && n < 1e10) out[key] = n
+    } else if (key === 'gamme' || key === 'vantail' || key === 'ref_base') {
+      const s = String(value).trim()
+      if (s.length > 0 && s.length <= 120) out[key] = s
+    } else {
+      const s = String(value).trim()
+      if (s.length > 0 && s.length <= 4000) out[key] = s
+    }
+  }
+  return out
+}
+
 function parsePerformanceChangeCommand(value) {
   const text = String(value || '')
   const token = '(C\\s*R|R\\s*C)\\s*([2-6])'
@@ -592,7 +619,12 @@ function StepperAssistantPanel({
   const [draft, setDraft] = useState(input || '')
   const [pastedImages, setPastedImages] = useState([])
   const [activeTab, setActiveTab] = useState(() => {
-    try { return localStorage.getItem('devis_stepper_assistant_tab') === 'ia-verif' ? 'ia-verif' : 'chat' } catch { return 'chat' }
+    try {
+      const t = localStorage.getItem('devis_stepper_assistant_tab')
+      if (t === 'ia-verif') return 'ia-verif'
+      if (t === 'historique') return 'historique'
+      return 'chat'
+    } catch { return 'chat' }
   })
   // Stocke la dernière explication IA
   const [lastIaVerification, setLastIaVerification] = useState(null)
@@ -690,6 +722,11 @@ function StepperAssistantPanel({
     try { localStorage.setItem('devis_stepper_assistant_tab', activeTab) } catch { /* noop */ }
   }, [activeTab])
 
+  // Grid history tab only exists on step 3; avoid a stuck invisible panel on other steps.
+  useEffect(() => {
+    if (step !== 3 && activeTab === 'historique') setActiveTab('chat')
+  }, [step, activeTab])
+
   useEffect(() => { resizeDraft() }, [draft])
 
   useEffect(() => {
@@ -757,6 +794,11 @@ function StepperAssistantPanel({
         <button type="button" onClick={() => setActiveTab('ia-verif')} style={{ ...ghostBtn(), flex: 1, justifyContent: 'center', background: activeTab === 'ia-verif' ? 'var(--color-input-bg)' : 'transparent', color: activeTab === 'ia-verif' ? 'var(--color-text)' : 'var(--color-text-2)' }} title="Vérification IA">
           <Sparkles size={16} />
         </button>
+        {step === 3 && (
+          <button type="button" onClick={() => setActiveTab('historique')} style={{ ...ghostBtn(), flex: 1, justifyContent: 'center', background: activeTab === 'historique' ? 'var(--color-input-bg)' : 'transparent', color: activeTab === 'historique' ? 'var(--color-text)' : 'var(--color-text-2)' }} title="Historique des modifications IA sur la grille">
+            <History size={16} />
+          </button>
+        )}
       </div>
 
       {activeTab === 'ia-verif' ? (
@@ -774,130 +816,134 @@ function StepperAssistantPanel({
             </div>
           ) : <div style={{ color: 'var(--color-text-3)', fontSize: 12 }}>Aucune vérification IA récente.</div>}
         </div>
-      ) : activeTab === 'chat' ? <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
-          <strong style={{ fontSize: 13, color: 'var(--color-text)', display: 'inline-flex', alignItems: 'center', gap: 6 }}><Bot size={14} />Chatbot</strong>
-          <button type="button" onClick={onClearMessages} disabled={!messages.length || loading} title="Vider le chat" style={{ ...iconBtn(), border: '1px solid var(--color-border)', color: '#dc2626', opacity: messages.length && !loading ? 1 : 0.45 }}>
-            <Trash2 size={13} />
-          </button>
-        </div>
-        {historyLoading && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--color-text-3)', fontSize: 12, padding: '6px 2px' }}>
-            <Loader2 size={14} style={{ animation: 'spin 0.8s linear infinite' }} /> Chargement des dernières conversations…
+      ) : activeTab === 'historique' ? (
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+            <strong style={{ fontSize: 13, color: 'var(--color-text)', display: 'inline-flex', alignItems: 'center', gap: 6 }}><History size={14} />Historique grille</strong>
+            <button type="button" onClick={onClearGridHistory} disabled={!gridActionHistory.length || loading} title="Vider l'historique" style={{ ...iconBtn(), border: '1px solid var(--color-border)', color: '#dc2626', opacity: gridActionHistory.length && !loading ? 1 : 0.45 }}>
+              <Trash2 size={13} />
+            </button>
           </div>
-        )}
-        {messages.map((message, index) => (
-          <div key={index} style={{ marginBottom: 10, display: 'flex', justifyContent: message.role === 'user' ? 'flex-end' : 'flex-start' }}>
-            <div style={{ maxWidth: '94%', minWidth: 0 }}>
-              <div style={{ display: 'flex', justifyContent: message.role === 'user' ? 'flex-end' : 'flex-start', gap: 3, marginBottom: 3 }}>
-                <button type="button" onClick={() => copyMessage(message.content)} title="Copier ce message" style={{ ...iconBtn(), padding: 3, color: 'var(--color-text-3)' }}>
-                  <Copy size={11} />
-                </button>
-                {message.role === 'user' && message.id && (
-                  <button type="button" onClick={() => startEditMessage(message)} title="Modifier ce message" style={{ ...iconBtn(), padding: 3, color: 'var(--color-text-3)' }}>
-                    <Pencil size={11} />
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+            <button type="button" onClick={onUndoGridAction} disabled={!canUndoGrid || loading} style={{ ...ghostBtn(), justifyContent: 'center', opacity: canUndoGrid && !loading ? 1 : 0.45 }}>
+              <Undo2 size={13} /> Retour arrière
+            </button>
+            <button type="button" onClick={onRedoGridAction} disabled={!canRedoGrid || loading} style={{ ...ghostBtn(), justifyContent: 'center', opacity: canRedoGrid && !loading ? 1 : 0.45 }}>
+              <Redo2 size={13} /> Rétablir
+            </button>
+          </div>
+          <div style={{ padding: 10, borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-input-bg)', fontSize: 11, lineHeight: 1.45, color: 'var(--color-text-2)' }}>
+            Chaque action IA conserve l’ancienne valeur et la nouvelle valeur. Le retour arrière restaure aussi la base, puis surligne les lignes touchées.
+          </div>
+          {!gridActionHistory.length ? (
+            <div style={{ padding: 18, textAlign: 'center', color: 'var(--color-text-3)', fontSize: 12 }}>Aucune modification IA enregistrée pour cette grille.</div>
+          ) : [...gridActionHistory].map((action, index) => ({ action, index })).reverse().map(({ action, index }) => {
+            const undone = index >= gridHistoryCursor
+            return (
+              <div key={action.id || index} style={{ border: `1px solid ${undone ? 'var(--color-border)' : 'var(--color-primary)'}`, borderRadius: 8, padding: '10px 10px 12px', background: undone ? 'var(--color-surface)' : 'color-mix(in srgb, var(--color-primary) 7%, var(--color-surface))', opacity: undone ? 0.65 : 1, display: 'flex', flexDirection: 'column', minHeight: 90 }}>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+                    <strong style={{ fontSize: 12, color: 'var(--color-text)' }}>{action.label || 'Action IA'}</strong>
+                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                      <button
+                        type="button"
+                        onClick={() => onRestoreGridHistoryTo?.(index)}
+                        disabled={loading}
+                        title="Revenir à ce point et oublier les modifications suivantes"
+                        style={{ ...iconBtn(), width: 24, height: 24, border: '1px solid var(--color-border)', color: 'var(--color-primary)', opacity: loading ? 0.45 : 1 }}
+                      >
+                        <Undo2 size={12} />
+                      </button>
+                      <span style={{ fontSize: 9, fontWeight: 900, color: undone ? 'var(--color-text-3)' : 'var(--color-primary)', textTransform: 'uppercase' }}>{undone ? 'annulée' : 'active'}</span>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {(action.changes || []).slice(0, 8).map((change, changeIndex) => (
+                      <div key={`${action.id || index}-${changeIndex}`} style={{ fontSize: 11, color: 'var(--color-text-2)' }}>
+                        Ligne {repLetter(change.index)} · {change.fieldLabel || change.field} : <strong>{change.oldValue ?? '—'}</strong> → <strong>{change.newValue ?? '—'}</strong>
+                      </div>
+                    ))}
+                    {(action.changes || []).length > 8 && <div style={{ fontSize: 10, color: 'var(--color-text-3)' }}>+ {(action.changes || []).length - 8} autre(s) ligne(s)</div>}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', flexWrap: 'wrap', gap: '3px 10px', marginTop: 10, paddingTop: 8, borderTop: '1px solid color-mix(in srgb, var(--color-border) 65%, transparent)', lineHeight: 1.25 }}>
+                  <span style={{ fontSize: 9, color: 'var(--color-text-3)', fontWeight: 700, whiteSpace: 'nowrap' }}>{action.user || 'Utilisateur'}</span>
+                  <span style={{ fontSize: 9, color: 'var(--color-text-3)', whiteSpace: 'nowrap' }}>{new Date(action.createdAt || Date.now()).toLocaleString('fr-FR')}</span>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      ) : (
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+            <strong style={{ fontSize: 13, color: 'var(--color-text)', display: 'inline-flex', alignItems: 'center', gap: 6 }}><Bot size={14} />Chatbot</strong>
+            <button type="button" onClick={onClearMessages} disabled={!messages.length || loading} title="Vider le chat" style={{ ...iconBtn(), border: '1px solid var(--color-border)', color: '#dc2626', opacity: messages.length && !loading ? 1 : 0.45 }}>
+              <Trash2 size={13} />
+            </button>
+          </div>
+          {historyLoading && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--color-text-3)', fontSize: 12, padding: '6px 2px' }}>
+              <Loader2 size={14} style={{ animation: 'spin 0.8s linear infinite' }} /> Chargement des dernières conversations…
+            </div>
+          )}
+          {messages.map((message, index) => (
+            <div key={index} style={{ marginBottom: 10, display: 'flex', justifyContent: message.role === 'user' ? 'flex-end' : 'flex-start' }}>
+              <div style={{ maxWidth: '94%', minWidth: 0 }}>
+                <div style={{ display: 'flex', justifyContent: message.role === 'user' ? 'flex-end' : 'flex-start', gap: 3, marginBottom: 3 }}>
+                  <button type="button" onClick={() => copyMessage(message.content)} title="Copier ce message" style={{ ...iconBtn(), padding: 3, color: 'var(--color-text-3)' }}>
+                    <Copy size={11} />
                   </button>
-                )}
-              </div>
-              <div style={{ padding: '8px 10px', borderRadius: 10, background: message.role === 'user' ? 'var(--color-primary)' : 'var(--color-input-bg)', color: message.role === 'user' ? '#fff' : 'var(--color-text)', fontSize: 12, lineHeight: 1.5 }}>
-                {parseGemmaImages(message.images_json).length > 0 && (
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 7 }}>
-                    {parseGemmaImages(message.images_json).map((image, imageIndex) => {
-                      const src = image.dataUrl || image.data_url
-                      const isImage = String(image.type || '').startsWith('image/') || /^data:image\//i.test(src || '')
-                      return isImage ? (
-                        <img key={`${message.id || index}-${imageIndex}`} src={src} alt={image.name || 'image'} style={{ width: 74, height: 74, borderRadius: 7, objectFit: 'cover', border: '1px solid rgba(255,255,255,0.28)', background: 'var(--color-surface)' }} />
-                      ) : (
-                        <div key={`${message.id || index}-${imageIndex}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, maxWidth: 170, padding: '5px 7px', borderRadius: 7, border: '1px solid rgba(255,255,255,0.28)', background: 'rgba(255,255,255,0.12)', fontSize: 10, fontWeight: 800 }}>
-                          <FileText size={12} />
-                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{image.name || 'document'}</span>
-                        </div>
-                      )
-                    })}
-                  </div>
-                )}
-                {editingId === message.id ? (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    <textarea
-                      value={editingContent}
-                      onChange={(event) => setEditingContent(event.target.value)}
-                      rows={4}
-                      style={{ width: '100%', resize: 'vertical', borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-surface)', color: 'var(--color-text)', fontSize: 12, padding: 8, outline: 'none' }}
-                    />
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
-                      <button type="button" onClick={() => setEditingId(null)} style={{ ...ghostBtn(), background: 'var(--color-surface)', color: 'var(--color-text-2)' }}><X size={12} /> Annuler</button>
-                      <button type="button" onClick={saveEditMessage} style={{ ...ghostBtn(), background: 'var(--color-surface)', color: 'var(--color-primary)' }}><Check size={12} /> Sauver</button>
-                    </div>
-                  </div>
-                ) : message.role === 'assistant' ? <MarkdownRenderer content={message.content} /> : message.content}
-                {message.edited_at && <div style={{ marginTop: 4, fontSize: 9, opacity: 0.72 }}>modifié</div>}
-              </div>
-            </div>
-          </div>
-        ))}
-        {loading && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--color-text-3)', fontSize: 12 }}>
-            <Loader2 size={14} style={{ animation: 'spin 0.8s linear infinite' }} /> Zerux IA travaille…
-          </div>
-        )}
-        <div ref={endRef} />
-      </div> : <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-          <strong style={{ fontSize: 13, color: 'var(--color-text)' }}>Historique</strong>
-          <button type="button" onClick={onClearGridHistory} disabled={!gridActionHistory.length || loading} title="Vider l'historique" style={{ ...iconBtn(), border: '1px solid var(--color-border)', color: '#dc2626', opacity: gridActionHistory.length && !loading ? 1 : 0.45 }}>
-            <Trash2 size={13} />
-          </button>
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-          <button type="button" onClick={onUndoGridAction} disabled={!canUndoGrid || loading} style={{ ...ghostBtn(), justifyContent: 'center', opacity: canUndoGrid && !loading ? 1 : 0.45 }}>
-            <Undo2 size={13} /> Retour arrière
-          </button>
-          <button type="button" onClick={onRedoGridAction} disabled={!canRedoGrid || loading} style={{ ...ghostBtn(), justifyContent: 'center', opacity: canRedoGrid && !loading ? 1 : 0.45 }}>
-            <Redo2 size={13} /> Rétablir
-          </button>
-        </div>
-        <div style={{ padding: 10, borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-input-bg)', fontSize: 11, lineHeight: 1.45, color: 'var(--color-text-2)' }}>
-          Chaque action IA conserve l’ancienne valeur et la nouvelle valeur. Le retour arrière restaure aussi la base, puis surligne les lignes touchées.
-        </div>
-        {!gridActionHistory.length ? (
-          <div style={{ padding: 18, textAlign: 'center', color: 'var(--color-text-3)', fontSize: 12 }}>Aucune modification IA enregistrée pour cette grille.</div>
-        ) : [...gridActionHistory].map((action, index) => ({ action, index })).reverse().map(({ action, index }) => {
-          const undone = index >= gridHistoryCursor
-          return (
-            <div key={action.id || index} style={{ border: `1px solid ${undone ? 'var(--color-border)' : 'var(--color-primary)'}`, borderRadius: 8, padding: '10px 10px 12px', background: undone ? 'var(--color-surface)' : 'color-mix(in srgb, var(--color-primary) 7%, var(--color-surface))', opacity: undone ? 0.65 : 1, display: 'flex', flexDirection: 'column', minHeight: 90 }}>
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
-                  <strong style={{ fontSize: 12, color: 'var(--color-text)' }}>{action.label || 'Action IA'}</strong>
-                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-                    <button
-                      type="button"
-                      onClick={() => onRestoreGridHistoryTo?.(index)}
-                      disabled={loading}
-                      title="Revenir à ce point et oublier les modifications suivantes"
-                      style={{ ...iconBtn(), width: 24, height: 24, border: '1px solid var(--color-border)', color: 'var(--color-primary)', opacity: loading ? 0.45 : 1 }}
-                    >
-                      <Undo2 size={12} />
+                  {message.role === 'user' && message.id && (
+                    <button type="button" onClick={() => startEditMessage(message)} title="Modifier ce message" style={{ ...iconBtn(), padding: 3, color: 'var(--color-text-3)' }}>
+                      <Pencil size={11} />
                     </button>
-                    <span style={{ fontSize: 9, fontWeight: 900, color: undone ? 'var(--color-text-3)' : 'var(--color-primary)', textTransform: 'uppercase' }}>{undone ? 'annulée' : 'active'}</span>
-                  </div>
+                  )}
                 </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {(action.changes || []).slice(0, 8).map((change, changeIndex) => (
-                    <div key={`${action.id || index}-${changeIndex}`} style={{ fontSize: 11, color: 'var(--color-text-2)' }}>
-                      Ligne {repLetter(change.index)} · {change.fieldLabel || change.field} : <strong>{change.oldValue ?? '—'}</strong> → <strong>{change.newValue ?? '—'}</strong>
+                <div style={{ padding: '8px 10px', borderRadius: 10, background: message.role === 'user' ? 'var(--color-primary)' : 'var(--color-input-bg)', color: message.role === 'user' ? '#fff' : 'var(--color-text)', fontSize: 12, lineHeight: 1.5 }}>
+                  {parseGemmaImages(message.images_json).length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 7 }}>
+                      {parseGemmaImages(message.images_json).map((image, imageIndex) => {
+                        const src = image.dataUrl || image.data_url
+                        const isImage = String(image.type || '').startsWith('image/') || /^data:image\//i.test(src || '')
+                        return isImage ? (
+                          <img key={`${message.id || index}-${imageIndex}`} src={src} alt={image.name || 'image'} style={{ width: 74, height: 74, borderRadius: 7, objectFit: 'cover', border: '1px solid rgba(255,255,255,0.28)', background: 'var(--color-surface)' }} />
+                        ) : (
+                          <div key={`${message.id || index}-${imageIndex}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, maxWidth: 170, padding: '5px 7px', borderRadius: 7, border: '1px solid rgba(255,255,255,0.28)', background: 'rgba(255,255,255,0.12)', fontSize: 10, fontWeight: 800 }}>
+                            <FileText size={12} />
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{image.name || 'document'}</span>
+                          </div>
+                        )
+                      })}
                     </div>
-                  ))}
-                  {(action.changes || []).length > 8 && <div style={{ fontSize: 10, color: 'var(--color-text-3)' }}>+ {(action.changes || []).length - 8} autre(s) ligne(s)</div>}
+                  )}
+                  {editingId === message.id ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <textarea
+                        value={editingContent}
+                        onChange={(event) => setEditingContent(event.target.value)}
+                        rows={4}
+                        style={{ width: '100%', resize: 'vertical', borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-surface)', color: 'var(--color-text)', fontSize: 12, padding: 8, outline: 'none' }}
+                      />
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
+                        <button type="button" onClick={() => setEditingId(null)} style={{ ...ghostBtn(), background: 'var(--color-surface)', color: 'var(--color-text-2)' }}><X size={12} /> Annuler</button>
+                        <button type="button" onClick={saveEditMessage} style={{ ...ghostBtn(), background: 'var(--color-surface)', color: 'var(--color-primary)' }}><Check size={12} /> Sauver</button>
+                      </div>
+                    </div>
+                  ) : message.role === 'assistant' ? <MarkdownRenderer content={message.content} /> : message.content}
+                  {message.edited_at && <div style={{ marginTop: 4, fontSize: 9, opacity: 0.72 }}>modifié</div>}
                 </div>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', flexWrap: 'wrap', gap: '3px 10px', marginTop: 10, paddingTop: 8, borderTop: '1px solid color-mix(in srgb, var(--color-border) 65%, transparent)', lineHeight: 1.25 }}>
-                <span style={{ fontSize: 9, color: 'var(--color-text-3)', fontWeight: 700, whiteSpace: 'nowrap' }}>{action.user || 'Utilisateur'}</span>
-                <span style={{ fontSize: 9, color: 'var(--color-text-3)', whiteSpace: 'nowrap' }}>{new Date(action.createdAt || Date.now()).toLocaleString('fr-FR')}</span>
               </div>
             </div>
-          )
-        })}
-      </div>}
+          ))}
+          {loading && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--color-text-3)', fontSize: 12 }}>
+              <Loader2 size={14} style={{ animation: 'spin 0.8s linear infinite' }} /> Zerux IA travaille…
+            </div>
+          )}
+          <div ref={endRef} />
+        </div>
+      )}
 
       {activeTab === 'chat' && <div style={{ padding: 10, borderTop: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', gap: 7, flexShrink: 0 }}>
         {pastedImages.length > 0 && (
@@ -2693,6 +2739,57 @@ function StepEditor({
     }
   }, [devisId, setLines])
 
+  const commitAssistantGridRows = useCallback(async (rows, meta = {}) => {
+    if (!devisId || !Array.isArray(rows)) return []
+    const targetIndexes = [...new Set((meta.applied || [])
+      .map(item => Number(item.index))
+      .filter(index => Number.isInteger(index) && index >= 0 && index < rows.length))]
+    if (!targetIndexes.length) return []
+    setSaving('assistant-grid')
+    try {
+      const saved = []
+      for (const index of targetIndexes) {
+        const row = rows[index]
+        const payload = gridRowToLinePayload(row, index)
+        if (row?._lineId) {
+          saved.push(await api.put(`/devis/${devisId}/lines/${row._lineId}`, payload))
+        } else {
+          saved.push(await api.post(`/devis/${devisId}/lines`, payload))
+        }
+      }
+      await onRefresh()
+      return saved
+    } catch (err) {
+      console.error('Grid assistant commit error:', err)
+      throw err
+    } finally {
+      setSaving(null)
+    }
+  }, [devisId, onRefresh])
+
+  const recordGridAssistantAction = useCallback((action) => {
+    const changedIndexes = [...new Set((action?.applied || [])
+      .map(item => Number(item.index))
+      .filter(index => Number.isInteger(index) && index >= 0))]
+    const changes = []
+    for (const index of changedIndexes) {
+      const beforeRow = action?.beforeRows?.[index]
+      const afterRow = action?.afterRows?.[index]
+      if (!beforeRow || !afterRow) continue
+      const lineId = beforeRow._lineId || afterRow._lineId
+      const beforeLine = { id: lineId, ...gridRowToLinePayload(beforeRow, index) }
+      const afterLine = { id: lineId, ...gridRowToLinePayload(afterRow, index) }
+      changes.push(...buildGridLineChanges({ beforeLine, afterLine, index, source: action?.origin || 'ai' }))
+    }
+    if (!changes.length) return
+    onGridAction?.({
+      label: action?.label || 'Zerux IA : modification grille',
+      prompt: action?.prompt || 'Instruction Zerux IA depuis la grille',
+      origin: action?.origin || 'ai',
+      changes,
+    })
+  }, [onGridAction])
+
   return (
     <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <div style={{ padding: '8px 14px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0, background: 'var(--color-surface)' }}>
@@ -2727,6 +2824,9 @@ function StepEditor({
           onRowsCommit={commitGridRow}
           onRowsBulkCommit={bulkCommitGridRows}
           onRowsDelete={deleteGridRow}
+          onGridAssistantRowsCommit={commitAssistantGridRows}
+          onGridAssistantAction={recordGridAssistantAction}
+          showAssistantPanel
           title="Sheet devis"
           subtitle={saving ? 'Enregistrement en cours…' : `${lines.length} lignes synchronisées`}
         />
@@ -4090,6 +4190,45 @@ export default function DevisStepper() {
     return `C'est fait : ligne ${repLetter(lineIndex)}, ${fieldLabel} mis à jour.`
   }, [currentDevisId, flashAssistantRows, lines, recordGridAction, refreshLines, setLines])
 
+  const applyFreestyleGridIntentEdits = useCallback(async (edits, userPrompt = '') => {
+    if (!Array.isArray(edits) || !edits.length || !currentDevisId) return null
+    let working = lines.map((line) => ({ ...line }))
+    for (const edit of edits) {
+      const patch = filterFreestyleGridPatch(edit?.patch || {})
+      if (!Object.keys(patch).length) continue
+      let idx = Number.isInteger(edit.lineIndex) ? edit.lineIndex : -1
+      if (idx < 0 || idx >= working.length || String(working[idx]?.id) !== String(edit.lineId)) {
+        idx = working.findIndex((line) => String(line.id) === String(edit.lineId))
+      }
+      if (idx < 0 || idx >= working.length) continue
+      working[idx] = { ...working[idx], ...patch }
+    }
+    const allChanges = []
+    for (let index = 0; index < working.length; index++) {
+      const beforeLine = lines[index]
+      const afterLine = working[index]
+      if (!beforeLine || !afterLine || String(beforeLine.id) !== String(afterLine.id)) continue
+      allChanges.push(...buildGridLineChanges({ beforeLine, afterLine, index, source: 'ai' }))
+    }
+    if (!allChanges.length) return null
+    setLines(working)
+    flashAssistantRows(allChanges.map((c) => ({ index: c.index, id: c.lineId })), 'Modifications Zerux IA')
+    const uniqueIds = [...new Set(allChanges.map((c) => String(c.lineId)))]
+    await Promise.all(uniqueIds.map((lineId) => {
+      const index = working.findIndex((line) => String(line.id) === lineId)
+      if (index < 0) return Promise.resolve()
+      return api.put(`/devis/${currentDevisId}/lines/${lineId}`, gridRowToLinePayload(dbLineToGridRow(working[index]), index))
+    }))
+    recordGridAction({
+      label: 'Modifications (langage naturel)',
+      prompt: String(userPrompt || '').trim() || 'Instruction en langage naturel',
+      origin: 'ai',
+      changes: allChanges,
+    })
+    await refreshLines()
+    return 'Les modifications ont été enregistrées. Tu peux annuler via l’onglet Historique grille.'
+  }, [currentDevisId, flashAssistantRows, lines, recordGridAction, refreshLines, setLines])
+
   const goStep = (n) => {
     setStep(n)
     if (n > maxReached) setMaxReached(n)
@@ -4317,9 +4456,32 @@ export default function DevisStepper() {
         setEditorAiMessages(prev => [...prev, savedAssistant || { id: `tmp-assistant-${Date.now()}`, role: 'assistant', content: localAction }])
         return
       }
-      // Send current lines as context
       const casualQuestion = isCasualAssistantMessage(q) && imagesForAI.length === 0
       const imageOnlyQuestion = imagesForAI.length > 0 && /\b(image|capture|photo|screenshot|visuel|vois|voir|montre|regarde|pdf|document|fichier|pi[èe]ce jointe)\b/i.test(q)
+
+      if (!pastedImages.length && currentDevisId && lines.length && !casualQuestion) {
+        try {
+          const rowsPayload = lines.slice(0, 120).map((line, index) => ({
+            ...compactLineForAI(line, index),
+            id: line.id,
+            line_section: line.line_section || 'products',
+          }))
+          const intent = await api.post('/devis/grid-intent', { question: q, rows: rowsPayload })
+          if (intent?.ok && Array.isArray(intent.edits) && intent.edits.length) {
+            const appliedNote = await applyFreestyleGridIntentEdits(intent.edits, q)
+            if (appliedNote) {
+              const content = [String(intent.reply || '').trim(), appliedNote].filter(Boolean).join('\n\n')
+              const savedAssistant = await saveGemmaMessage({ role: 'assistant', content, agent_slug: 'Zerux IA grille' }).catch(() => null)
+              setEditorAiMessages(prev => [...prev, savedAssistant || { id: `tmp-assistant-${Date.now()}`, role: 'assistant', content }])
+              return
+            }
+          }
+        } catch (intentErr) {
+          console.warn('[grid-intent]', intentErr)
+        }
+      }
+
+      // Send current lines as context
       const compactRows = (casualQuestion || imageOnlyQuestion) ? [] : lines.slice(0, 120).map(compactLineForAI)
       const compactDocs = [...new Set(compactRows.flatMap(row => Array.isArray(row.docs) ? row.docs : []))]
       const data = await api.post('/devis/ask', {
@@ -4444,29 +4606,31 @@ export default function DevisStepper() {
             />
           )}
         </div>
-        <StepperAssistantPanel
-          step={step}
-          currentDevis={currentDevis}
-          selectedCompany={selectedCompany}
-          selectedDeal={selectedDeal}
-          lines={lines}
-          messages={editorAiMessages}
-          input={editorAiInput}
-          setInput={setEditorAiInput}
-          loading={editorAiLoading}
-          historyLoading={editorAiHistoryLoading}
-          onAsk={askAIEditor}
-          onEditMessage={editGemmaMessage}
-          onClearMessages={clearGemmaMessages}
-          gridActionHistory={gridActionHistory}
-          gridHistoryCursor={gridHistoryCursor}
-          onUndoGridAction={undoGridAction}
-          onRedoGridAction={redoGridAction}
-          onRestoreGridHistoryTo={restoreGridHistoryTo}
-          onClearGridHistory={clearGridActionHistory}
-          inputRef={editorAiInputRef}
-          endRef={editorAiEndRef}
-        />
+        {step !== 3 && (
+          <StepperAssistantPanel
+            step={step}
+            currentDevis={currentDevis}
+            selectedCompany={selectedCompany}
+            selectedDeal={selectedDeal}
+            lines={lines}
+            messages={editorAiMessages}
+            input={editorAiInput}
+            setInput={setEditorAiInput}
+            loading={editorAiLoading}
+            historyLoading={editorAiHistoryLoading}
+            onAsk={askAIEditor}
+            onEditMessage={editGemmaMessage}
+            onClearMessages={clearGemmaMessages}
+            gridActionHistory={gridActionHistory}
+            gridHistoryCursor={gridHistoryCursor}
+            onUndoGridAction={undoGridAction}
+            onRedoGridAction={redoGridAction}
+            onRestoreGridHistoryTo={restoreGridHistoryTo}
+            onClearGridHistory={clearGridActionHistory}
+            inputRef={editorAiInputRef}
+            endRef={editorAiEndRef}
+          />
+        )}
         {confirmDialog && (
           <div onClick={() => setConfirmDialog(null)} style={{ position: 'fixed', inset: 0, zIndex: 9500, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
             <div onClick={event => event.stopPropagation()} style={{ width: 360, maxWidth: '92vw', borderRadius: 10, border: '1px solid var(--color-border)', background: 'var(--color-surface)', boxShadow: '0 14px 40px rgba(0,0,0,0.28)', padding: 16 }}>

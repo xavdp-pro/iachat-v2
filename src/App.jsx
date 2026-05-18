@@ -1,4 +1,4 @@
-import { useEffect, Suspense, lazy } from 'react'
+import { useEffect, Suspense, lazy, useState } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { MotionConfig } from 'framer-motion'
 import { useAuthStore } from './store/useAuthStore.js'
@@ -10,7 +10,6 @@ const Home = lazy(() => import('./pages/Home.jsx'))
 const Admin = lazy(() => import('./pages/Admin.jsx'))
 const Chat = lazy(() => import('./pages/Chat.jsx'))
 const Experiences = lazy(() => import('./pages/Experiences.jsx'))
-const Devis = lazy(() => import('./pages/Devis.jsx'))
 const Prospects = lazy(() => import('./pages/Prospects.jsx'))
 const ProspectQuotes = lazy(() => import('./pages/ProspectQuotes.jsx'))
 const DevisStepper = lazy(() => import('./pages/DevisStepper.jsx'))
@@ -38,7 +37,37 @@ const PageLoader = () => (
   </div>
 )
 
+function MaintenanceScreen({ status }) {
+  return (
+    <div className="login-page maintenance-page">
+      <main className="login-page-inner">
+        <div className="login-card maintenance-card">
+          <div className="login-card-body">
+            <div className="login-brand maintenance-brand">
+              <div className="login-logo">
+                <img
+                  src={`${import.meta.env.BASE_URL}zerux-logo.png`}
+                  alt="Zerux"
+                  className="login-logo-img"
+                  width={112}
+                  height={112}
+                  decoding="async"
+                />
+              </div>
+            </div>
+
+            <section className="maintenance-content" aria-labelledby="maintenance-title">
+              <h1 id="maintenance-title" className="maintenance-title">Maintenance<br />en cours</h1>
+            </section>
+          </div>
+        </div>
+      </main>
+    </div>
+  )
+}
+
 export default function App() {
+  const [maintenanceStatus, setMaintenanceStatus] = useState(null)
   const { init: initAuth } = useAuthStore()
   const { init: initTheme, fetchSkins } = useThemeStore()
 
@@ -47,6 +76,21 @@ export default function App() {
     fetchSkins()
     initAuth()
   }, [fetchSkins, initAuth, initTheme])
+
+  useEffect(() => {
+    const onMaintenance = (event) => setMaintenanceStatus(event.detail || { message: 'Maintenance en cours.' })
+    window.addEventListener('app:maintenance', onMaintenance)
+    fetch('/api/maintenance-status')
+      .then(response => response.ok ? response.json() : null)
+      .then(status => {
+        if (status?.enabled && !status?.bypassed) setMaintenanceStatus(status)
+        else setMaintenanceStatus(null)
+      })
+      .catch(() => {})
+    return () => window.removeEventListener('app:maintenance', onMaintenance)
+  }, [])
+
+  if (maintenanceStatus) return <MaintenanceScreen status={maintenanceStatus} />
 
   return (
     <MotionConfig transition={{ duration: 0 }}>
@@ -96,7 +140,7 @@ export default function App() {
             } />
             <Route path="/devis/legacy" element={
               <PrivateRoute>
-                <Devis />
+                <Navigate to="/home" replace />
               </PrivateRoute>
             } />
             <Route path="/devis/grid" element={

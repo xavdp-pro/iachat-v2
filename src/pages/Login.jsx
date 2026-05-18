@@ -65,11 +65,6 @@ export default function Login() {
                   decoding="async"
                 />
               </div>
-              <div>
-                <p className="login-brand-mark">{t('login.brandMark')}</p>
-                <h1 className="login-title">{t('common.appName')}</h1>
-                <p className="login-subtitle">{t('login.subtitle')}</p>
-              </div>
             </div>
 
             <form className="login-form" onSubmit={handleSubmit} noValidate>
@@ -141,8 +136,6 @@ export default function Login() {
             </form>
           </div>
         </div>
-
-        <p className="login-footer">{t('login.footer')}</p>
       </motion.div>
     </div>
   )

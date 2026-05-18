@@ -228,6 +228,16 @@ textarea::placeholder {
   object-fit: contain;
 }
 
+.login-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 1.5rem;
+  padding: 1rem 1.25rem;
+  border-radius: 10px;
+  background: #15191b;
+}
+
 .login-card-body {
   padding: clamp(1.75rem, 5vw, 2.5rem);
 }
@@ -338,6 +348,38 @@ textarea::placeholder {
 .login-submit:disabled {
   opacity: 0.65;
   cursor: not-allowed;
+}
+
+.maintenance-page .login-page-inner {
+  max-width: 26rem;
+}
+
+.maintenance-card .login-card-body {
+  padding-bottom: clamp(1.75rem, 5vw, 2.25rem);
+}
+
+.maintenance-brand {
+  margin-bottom: 1.75rem;
+}
+
+.maintenance-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  text-align: center;
+}
+
+.maintenance-kicker {
+  margin: 0;
+  color: var(--color-text-3);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.maintenance-title {
+  margin: 0;
+  font-size: clamp(1.65rem, 7vw, 2.15rem);
 }
 
 /* ── Streaming chat cursor ──────────────────────────────────────────────────── */
@@ -1170,11 +1212,19 @@ textarea::placeholder {
 
 .home-sidebar-tools button {
   height: 2.4rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   border-radius: var(--radius-md);
   border: 1px solid var(--color-border);
   background: var(--color-surface);
   color: var(--color-text-2);
   cursor: pointer;
+}
+
+.home-sidebar-tools button svg {
+  display: block;
+  flex-shrink: 0;
 }
 
 .home-sidebar-tools button:hover {

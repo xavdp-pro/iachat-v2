@@ -111,6 +111,14 @@ npm run dev
 app.listen(7598, () => console.log('API running on :7598'))
 ```
 
+### Mode maintenance admin
+
+- L'onglet Admin > Maintenance pilote `app_settings` (`maintenance_enabled`, `maintenance_message`, `maintenance_bypass_ips`).
+- Quand le mode est actif, le middleware Express bloque les routes API avec `503 MAINTENANCE_MODE`, sauf `/api/health`, `/api/maintenance-status` et les IP de bypass.
+- Avant activation, le backend vérifie que l'IP courante est dans `maintenance_bypass_ips` pour éviter de se bloquer hors de l'admin.
+- Les IP acceptent une entrée par ligne et les CIDR IPv4 simples (ex. `82.65.12.34` ou `192.168.1.0/24`).
+- La vraie IP client doit traverser toute la chaîne Nginx -> Vite -> Express via `X-Forwarded-For`. Le backend lit la première IP de cette chaîne avant `X-Real-IP`, et le proxy Vite recopie explicitement ces headers vers l'API.
+
 ---
 
 ---

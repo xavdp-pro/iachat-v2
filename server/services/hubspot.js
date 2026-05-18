@@ -217,7 +217,7 @@ async function getDefaultDealPlacement() {
   }
 }
 
-export async function createDealForCompany({ companyId, dealname, amount = null, pipeline = null, dealstage = null }) {
+export async function createDealForCompany({ companyId, dealname, amount = null, pipeline = null, dealstage = null, ownerId = null }) {
   const name = String(dealname || '').trim()
   if (!name) {
     const err = new Error('dealname is required')
@@ -241,6 +241,7 @@ export async function createDealForCompany({ companyId, dealname, amount = null,
   if (amount != null && amount !== '') properties.amount = Number(amount)
   if (resolvedPipeline) properties.pipeline = resolvedPipeline
   if (resolvedDealstage) properties.dealstage = resolvedDealstage
+  if (ownerId) properties.hubspot_owner_id = String(ownerId)
 
   const deal = await hubspotFetch('/crm/v3/objects/deals', {
     method: 'POST',
@@ -296,6 +297,13 @@ export async function listUsers({ after, limit = 25 } = {}) {
   if (after) query.after = after
 
   return hubspotFetch('/crm/v3/objects/users', { query })
+}
+
+export async function listOwners({ after, limit = 100 } = {}) {
+  const lim = Math.min(Math.max(Number(limit) || 100, 1), 100)
+  const query = { limit: lim, archived: 'false' }
+  if (after) query.after = after
+  return hubspotFetch('/crm/v3/owners', { query })
 }
 
 function associationIds(company, type) {
