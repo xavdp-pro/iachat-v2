@@ -20,6 +20,13 @@ const CELL = {
 const SUBROW_BG = 'rgba(0,0,0,0.07)'
 const GRID_TOTAL_COLS = 22
 const DIMENSION_COLUMNS = ['haut_ht', 'larg_ht', 'haut_pl', 'larg_pl']
+const FINAL_AMOUNT_COLUMNS = {
+  pu: { width: 82, minWidth: 82 },
+  remise: { width: 58, minWidth: 58 },
+  qty: { width: 42, minWidth: 42 },
+  total: { width: 112, minWidth: 112 },
+  actions: { width: 32, minWidth: 32 },
+}
 const VALIDATION_PARALLELISM = 3
 const ASSISTANT_CELL_HIGHLIGHT_STYLE = {
   background: 'rgba(34,197,94,0.26)',
@@ -301,6 +308,7 @@ function thermolaquageTypeFromText(value) {
 }
 
 function thermolaquageInfo(row = {}) {
+  if (row._thermolaquageDisabled) return { type: null, ref: null, prix: null, label: '', note: null }
   const equipments = Array.isArray(row.equip_extra) ? row.equip_extra : []
   const equipment = equipments.find(item => /THERMOLAQUAGE|\bRAL\b|\bNCS\b|LAQUAGE/i.test(equipmentText(item)))
   const type = row.thermolaquage_type || thermolaquageTypeFromText(equipment) || thermolaquageTypeFromText(row._raw?.[16]) || (row.thermolaquage ? 'RAL' : null)
@@ -332,13 +340,13 @@ function findExtraEquipment(row, pattern) {
 }
 
 function nonCremoneExtraEquipments(row) {
-  const cremoneRe = /cr[ée]mone|semi.?fixe|vam/i
   const thermolaquageRe = /thermolaquage|\bRAL\b|\bNCS\b|laquage/i
+  const dynamicEquipmentRe = /cr[ée]mone|semi.?fixe|vam|ferme.?porte|\bts[- ]?\d+|contact|position|reed|passe.?c[âa]ble|cable|câble|plinthe|ventouse|remplissage|vitrage|judas|oculus|oeilleton|œilleton|paumelle|pivot/i
   const optionEquipmentRe = /judas|oeilleton|œilleton|plinthe|seuil|ventouse|contact|g[âa]che|b[ée]quille|poign[ée]e|garniture|serrure|ferme.?porte|anti.?panique|barre|paumelle|pivot|but[ée]e/i
-  const extras = (row?.equip_extra || []).filter(e => typeof e === 'object' && !cremoneRe.test(equipmentText(e)) && !thermolaquageRe.test(equipmentText(e)))
+  const extras = (row?.equip_extra || []).filter(e => typeof e === 'object' && !dynamicEquipmentRe.test(equipmentText(e)) && !thermolaquageRe.test(equipmentText(e)))
   const optionExtras = (row?.options || [])
-    .filter(o => optionEquipmentRe.test(equipmentText(o)) && !cremoneRe.test(equipmentText(o)))
-    .filter(o => !/acoustique|\b(30|35|40|45)\s*dB\b|remplissage|vitrage|ferme.?porte|garniture|serrure|msl|lss|kel|d[ée]ny/i.test(equipmentText(o)))
+    .filter(o => (optionEquipmentRe.test(equipmentText(o)) || isAcousticValue(equipmentText(o))) && !dynamicEquipmentRe.test(equipmentText(o)))
+    .filter(o => !/remplissage|vitrage|ferme.?porte|garniture|serrure|msl|lss|kel|d[ée]ny/i.test(equipmentText(o)))
     .map(optionAsEquipment)
     .filter(Boolean)
   return [...extras, ...optionExtras]
@@ -347,6 +355,47 @@ function nonCremoneExtraEquipments(row) {
 function isColumnEquipmentOption(option) {
   const text = equipmentText(option)
   return /cr[ée]mone|semi.?fixe|vam|judas|oeilleton|œilleton|plinthe|seuil|ventouse|contact|g[âa]che|anti.?panique|barre|paumelle|pivot|but[ée]e/i.test(text)
+}
+
+const EQUIPMENT_COLUMNS = [
+  { key: 'cremone', label: 'Crémone', minWidth: 110, fields: ['cremone'], pattern: /cr[ée]mone|semi.?fixe|vam/i },
+  { key: 'fp', label: 'Ferme-porte', minWidth: 92, fields: ['ferme_porte'], pattern: /ferme.?porte|\bts[- ]?\d+/i },
+  { key: 'contact', label: 'Contact', minWidth: 86, fields: ['contact'], pattern: /contact|position|reed/i },
+  { key: 'passeCable', label: 'Passe-câble', minWidth: 96, fields: ['passe_cable'], pattern: /passe.?c[âa]ble|cable|câble/i },
+  { key: 'plinthes', label: 'Plinthe', minWidth: 82, fields: ['plinthes'], pattern: /plinthe/i },
+  { key: 'ventouse', label: 'Ventouse', minWidth: 86, fields: ['ventouse'], pattern: /ventouse/i },
+  { key: 'vitrage', label: 'Vitrage', minWidth: 130, fields: ['vitrage', 'notes'], pattern: /remplissage|vitrage/i },
+  { key: 'judas', label: 'Judas', minWidth: 82, fields: ['judas'], pattern: /judas|oculus|oeilleton|œilleton/i },
+  { key: 'paumelle', label: 'Paumelle', minWidth: 90, fields: ['paumelle'], pattern: /paumelle|pivot/i },
+]
+
+function appendOtherEquipment(rawValue, value) {
+  const next = String(value || '').trim()
+  if (!next) return rawValue || null
+  const current = String(rawValue || '').trim()
+  return current ? `${current}, ${next}` : next
+}
+
+function equipmentAdditionPatch(raw, value) {
+  const text = String(value || '').trim()
+  if (!text) return null
+  const ref = extractRef(text)
+  const fpRefs = new Set(['3640', '3660', '3667', '4928'])
+  const raw16Refs = new Set(['4185', '4401', '4402', '4450', '4452', '4455', '4456', '4458', '4459', '4470', '4472', '4474', '4476'])
+  if (fpRefs.has(ref)) return { _raw_15: text }
+  if (raw16Refs.has(ref)) return { _raw_16: appendOtherEquipment(raw?.[16], text) }
+  const fpColumn = EQUIPMENT_COLUMNS.find(column => column.key === 'fp')
+  if (fpColumn?.pattern.test(text)) return { _raw_15: text }
+  return { _raw_16: appendOtherEquipment(raw?.[16], text) }
+}
+
+function hasVisibleEquipmentValue(row, column, resolved = resolveRow(row)) {
+  if (column.key === 'vitrage') return !!(resolved._vitrageLabel || resolved._vitrageRef)
+  if (column.key === 'fp') return !!(row?._raw?.[15] || resolved._fpLabel || resolved._fpRef)
+  if (column.key === 'cremone') return !!(resolved._cremoneLabel || resolved._cremoneRef)
+  if (column.key === 'plinthes') return !!(resolved._plintheLabel || resolved._plintheRef)
+  const equipment = resolved._equipmentByColumn?.[column.key]
+  return !!(equipment?.label || equipment?.ref || extractRef(equipment?.note))
 }
 
 function mainEquipLabel(value) {
@@ -383,6 +432,21 @@ function stripAcousticInfo(value) {
     .replace(/^\s*[·,;|/+-]\s*/u, '')
     .replace(/\s{2,}/g, ' ')
     .trim()
+}
+
+function stripThermolaquageInfo(value) {
+  return String(value || '')
+    .replace(/\b(?:thermolaquage|laquage)\s*(?:RAL|NCS)?\b/giu, '')
+    .replace(/\b(?:RAL|NCS)\b/giu, '')
+    .replace(/\s*,\s*,+/g, ',')
+    .replace(/^\s*[·,;|/+-]\s*/u, '')
+    .replace(/\s*[·,;|/+-]\s*$/u, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+}
+
+function stripEquipmentDisplayNoise(value) {
+  return stripThermolaquageInfo(stripAcousticInfo(value))
 }
 
 function isBlockingUnpricedRow(row) {
@@ -484,17 +548,19 @@ export function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
   const serrure   = r.serrure?.ref  || null
   // options spécifiques
   const optionsText = (r.options || []).map(o => equipmentText(o)).join(' ')
-  const optVitrage = (r.options || []).find(o => /remplissage|vitrage/i.test(equipmentText(o)) && stripAcousticInfo(equipmentText(o)))
+  const optVitrage = (r.options || []).find(o => /remplissage|vitrage/i.test(equipmentText(o)) && stripEquipmentDisplayNoise(equipmentText(o)))
   const optFP      = (r.options || []).find(o => /ferme.porte/i.test(o.label))
   const optSerrure = (r.options || []).find(o => /serrure|msl|lss|kel|dény/i.test(o.label))
   const optGarnInt = (r.options || []).find(o => /garniture int/i.test(o.label))
   const optGarnExt = (r.options || []).find(o => /garniture ext/i.test(o.label))
   const cremone = findExtraEquipment(r, /cr[ée]mone|semi.?fixe|vam/i)
+  const plinthe = findExtraEquipment(r, /plinthe/i)
+  const equipmentByColumn = Object.fromEntries(EQUIPMENT_COLUMNS.map(column => [column.key, findExtraEquipment(r, column.pattern)]))
   const otherExtras = nonCremoneExtraEquipments(r)
   const vitrageRef = optVitrage ? extractRef(optVitrage.note) || extractRef(optVitrage.label) : null
-  const rawVitrage = stripAcousticInfo(r._raw?.[16]) || null
-  const vitrageLabel = stripAcousticInfo(optVitrage?.label || optVitrage?.designation || optVitrage?.name) || rawVitrage
-  const vitrageNote = stripAcousticInfo(optVitrage?.note || optVitrage?.description)
+  const rawVitrage = stripEquipmentDisplayNoise(r._raw?.[16]) || null
+  const vitrageLabel = stripEquipmentDisplayNoise(optVitrage?.label || optVitrage?.designation || optVitrage?.name) || rawVitrage
+  const vitrageNote = stripEquipmentDisplayNoise(optVitrage?.note || optVitrage?.description)
   const serrureRef = extractRef(r.serrure?.ref) || extractOptionRef(optSerrure) || extractRef(r.serrure?.from)
   const fpRef     = extractOptionRef(optFP) || extractRef(r.ferme_porte?.ref)
   const garnIntLabel = r.garnitures?.int || r._raw?.[13] || optGarnInt?.label
@@ -542,6 +608,10 @@ export function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
     _cremoneLabel: cremone?.label || null,
     _cremoneNote: cremone?.note || null,
     _cremonePrix: cremone?.prix ?? null,
+    _plintheRef: extractRef(plinthe?.ref) || extractRef(plinthe?.note) || extractRef(plinthe?.label),
+    _plintheLabel: plinthe?.label || null,
+    _plintheNote: plinthe?.note || null,
+    _plinthePrix: plinthe?.prix ?? null,
     _otherExtras: otherExtras,
     _otherExtrasRefs: otherExtras.map(e => e.ref || extractRef(e.note) || extractRef(e.label)).filter(Boolean),
     _otherExtrasPrix: otherExtras.reduce((sum, e) => sum + (Number(e.prix) || 0), 0),
@@ -558,6 +628,7 @@ export function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
     _optSerrure: optSerrure,
     _optGarnInt: optGarnInt,
     _optGarnExt: optGarnExt,
+    _equipmentByColumn: equipmentByColumn,
   }
 }
 
@@ -620,6 +691,9 @@ function GammeBadge({ gamme, fullWidth }) {
 // Largeur calculée automatiquement après PERF_OPTIONS
 const PERF_CONTROL_WIDTH = {}
 const PERF_LABELS = { rc: 'RC', pb: 'PB', cf: 'CF', blast: 'Blast', belier: 'Bélier', prison: 'Prison', acoustic: 'dB' }
+const PERF_CONTROL_MIN_WIDTH = 62
+const PERF_CONTROL_DEFAULT_WIDTH = 72
+const PERF_MENU_MIN_WIDTH = 136
 
 const perfActionButtonStyle = {
   width: 28,
@@ -635,6 +709,7 @@ const perfActionButtonStyle = {
   cursor: 'pointer',
   lineHeight: 1,
 }
+const PERF_CELL_COMPACT_WIDTH = 28 + (PERF_CONTROL_MIN_WIDTH * 2) + (4 * 2) + 12
 
 function performanceSearchText(row = {}) {
   return [
@@ -1428,7 +1503,8 @@ function ValidationSummaryModal({ report, onClose, onReviewLine }) {
 }
 
 // ─── Composant ligne principale ──────────────────────────────────────────────
-function MainRow({ row, index, displayIndex = index, expanded, onToggle, change, tva, multGlobal, editMode, onUpdate, onRecompute, onDelete, onSaveAsRule, onVerifyRules, assistantHighlight = null, validationKnowledge = null, hiddenCols = new Set(), hiddenDimensionCols = new Set() }) {
+function MainRow({ row, index, displayIndex = index, expanded, onToggle, change, tva, multGlobal, editMode, onUpdate, onRecompute, onDelete, onSaveAsRule, onVerifyRules, assistantHighlight = null, validationKnowledge = null, hiddenCols = new Set(), hiddenDimensionCols = new Set(), visibleEquipmentColumns = [], showOtherEquipmentColumn = true }) {
+  const [perfPopoverAnchor, setPerfPopoverAnchor] = useState(null)
   const r = resolveRow(row, change, tva, multGlobal)
   const qty = Number.isFinite(r.qty) ? r.qty : 1
   const isAmountSection = sectionOf(row) !== 'products'
@@ -1450,6 +1526,15 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
     : perfKeys)
   const hiddenPerfCount = perfKeys.length - visiblePerfKeys.length
   const canCollapseEmptyPerfs = editMode && !isAmountSection && showEmptyPerfs
+  const perfButtonSlots = (canCollapseEmptyPerfs ? 1 : 0) + (!isAmountSection && hiddenPerfCount > 0 ? 1 : 0)
+  const perfVisibleWidths = visiblePerfKeys.map(key => perfSelectedControlWidth(key, performanceValue(row, r, key)))
+  const compactPerfWidths = perfVisibleWidths.slice(0, 2)
+  const perfCellGapCount = (slotCount) => Math.max(0, slotCount - 1)
+  const perfCellContentWidth = (buttonSlots, controlWidths) => (
+    (buttonSlots * 28) + controlWidths.reduce((sum, width) => sum + width, 0) + (perfCellGapCount(buttonSlots + controlWidths.length) * 4) + 12
+  )
+  const perfCellMinWidth = isAmountSection ? 120 : Math.max(PERF_CELL_COMPACT_WIDTH, perfCellContentWidth(1, compactPerfWidths))
+  const perfCellWidth = isAmountSection ? 120 : Math.max(perfCellMinWidth, perfCellContentWidth(perfButtonSlots, perfVisibleWidths))
   const assistantActive = Boolean(assistantHighlight)
   const assistantFieldSet = new Set((assistantHighlight?.fieldsByIndex?.[index] || []).map(String))
   const assistantCellStyle = (...fields) => fields.some(field => assistantFieldSet.has(field)) ? ASSISTANT_CELL_HIGHLIGHT_STYLE : {}
@@ -1528,10 +1613,10 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
         )}
       </Td>
       {/* Performances */}
-      <Td style={{ minWidth: 430, width: 430, fontSize: 10, color: 'var(--color-text-2)', verticalAlign: 'top', ...assistantCellStyle('rc', 'pb', 'cf', 'blast', 'belier', 'prison', 'acoustic') }}>
+      <Td style={{ minWidth: perfCellMinWidth, width: perfCellWidth, fontSize: 10, color: 'var(--color-text-2)', verticalAlign: 'top', ...assistantCellStyle('rc', 'pb', 'cf', 'blast', 'belier', 'prison', 'acoustic') }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'stretch' }}>
           {editMode ? (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'flex-end', minHeight: 35, width: '100%', overflowX: 'auto' }}>
+            <div style={{ display: 'flex', flexWrap: 'nowrap', gap: 4, alignItems: 'flex-end', minHeight: 35, width: 'max-content', maxWidth: '100%', overflowX: 'auto' }}>
               {/* +/− first so they stay visible when perf controls wrap to several lines (narrow cell). */}
               {canCollapseEmptyPerfs && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 1, flex: '0 0 28px' }}>
@@ -1551,7 +1636,11 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
                   <span style={{ height: 8, lineHeight: 1 }} />
                   <button
                     type="button"
-                    onClick={e => { e.stopPropagation(); onUpdate?.({ _perfStripShowAll: true }) }}
+                    onClick={e => {
+                      e.stopPropagation()
+                      const rect = e.currentTarget.getBoundingClientRect()
+                      setPerfPopoverAnchor({ top: rect.bottom + 6, left: rect.left })
+                    }}
                     title={`Afficher ${hiddenPerfCount} performance${hiddenPerfCount > 1 ? 's' : ''} vide${hiddenPerfCount > 1 ? 's' : ''}`}
                     style={perfActionButtonStyle}
                   >
@@ -1563,7 +1652,8 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
                 const rawIdx = rawIndexByPerf[key]
                 const cur = performanceValue(row, r, key)
                 const isSet = cur != null
-                const controlWidth = Math.max(PERF_CONTROL_WIDTH[key] || 58, 76)
+                const controlWidth = perfSelectedControlWidth(key, cur)
+                const menuWidth = PERF_CONTROL_WIDTH[key] || PERF_MENU_MIN_WIDTH
                 return (
                   <div key={key} onClick={e => e.stopPropagation()} style={{ position: 'relative', flex: `0 0 ${controlWidth}px`, display: 'flex', flexDirection: 'column', gap: 1 }}>
                     <span style={{ fontSize: 8, lineHeight: 1, color: 'var(--color-text-3)', fontWeight: 900, textTransform: 'uppercase', textAlign: 'center' }}>{PERF_LABELS[key]}</span>
@@ -1587,6 +1677,7 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
                       }}
                       title={key === 'acoustic' ? 'Acoustique' : key.toUpperCase()}
                       width={controlWidth}
+                      menuWidth={menuWidth}
                       active={isSet}
                     />
                   </div>
@@ -1604,6 +1695,55 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
                   </span>
                 )
               })}
+            </div>
+          )}
+          {perfPopoverAnchor && (
+            <div
+              onClick={e => { e.stopPropagation(); setPerfPopoverAnchor(null) }}
+              style={{ position: 'fixed', inset: 0, zIndex: 9000, background: 'transparent' }}
+            >
+              <div
+                onClick={e => e.stopPropagation()}
+                style={{ position: 'fixed', top: perfPopoverAnchor.top, left: `min(${perfPopoverAnchor.left}px, calc(100vw - 380px))`, width: 360, maxWidth: 'calc(100vw - 16px)', background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 8, boxShadow: '0 14px 36px rgba(0,0,0,0.24)', padding: 12 }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 12 }}>
+                  <div style={{ fontSize: 13, fontWeight: 900, color: 'var(--color-text)' }}>Performances ligne {rowLetterLabel(displayIndex)}</div>
+                  <button type="button" onClick={() => setPerfPopoverAnchor(null)} style={{ border: 'none', background: 'transparent', color: 'var(--color-text-3)', cursor: 'pointer', padding: 4 }}><X size={15} /></button>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8 }}>
+                  {perfKeys.map(key => {
+                    const rawIdx = rawIndexByPerf[key]
+                    const cur = performanceValue(row, r, key)
+                    const isSet = cur != null
+                    return (
+                      <div key={key} style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                        <span style={{ fontSize: 9, lineHeight: 1, color: 'var(--color-text-3)', fontWeight: 900, textTransform: 'uppercase' }}>{PERF_LABELS[key]}</span>
+                        <PrettyCellSelect
+                          value={cur ?? ''}
+                          options={PERF_OPTIONS[key]}
+                          onCommit={value => {
+                            const s = value == null ? '' : String(value).trim()
+                            const cleared = value == null || value === '' || isUnsetPerfRaw(s)
+                            const v = cleared ? null : value
+                            if (key === 'acoustic') {
+                              const raw16 = String(row._raw?.[16] ?? '')
+                              const stripped = stripAcousticInfo(raw16)
+                              const newRaw16 = v ? (stripped ? `${stripped} ${v}` : v) : (stripped || '')
+                              onRecompute?.({ _raw_16: newRaw16, _perfOverrides: { ...(row._perfOverrides || {}), [key]: true } })
+                            } else {
+                              onRecompute?.({ [`_raw_${rawIdx}`]: v, _perfOverrides: { ...(row._perfOverrides || {}), [key]: true } })
+                            }
+                          }}
+                          title={key === 'acoustic' ? 'Acoustique' : key.toUpperCase()}
+                          width={112}
+                          menuWidth={PERF_CONTROL_WIDTH[key] || PERF_MENU_MIN_WIDTH}
+                          active={isSet}
+                        />
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
             </div>
           )}
         </div>
@@ -1633,29 +1773,27 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{r.largeur_pl_mm ?? '—'}</span>}
       </Td>
       {/* TL */}
-      <Td style={{ width: 74, textAlign: 'center', padding: 0, ...assistantCellStyle('thermolaquage') }}>
+      <Td style={{ width: 38, minWidth: 38, textAlign: 'center', padding: 0, ...assistantCellStyle('thermolaquage') }}>
         {isAmountSection ? <span style={{ fontSize: 9, color: 'var(--color-text-3)' }}>—</span> : editMode ? (
-          <div onClick={e => e.stopPropagation()} style={{ display: 'flex', flexDirection: 'column', gap: 1, alignItems: 'center', padding: '2px 3px' }}>
-            {r._thermolaquageRef && <span style={{ fontSize: 8, color: 'var(--color-text-3)', fontWeight: 700 }}>réf.{r._thermolaquageRef}</span>}
-            <PrettyCellSelect
-              value={r._thermolaquageType || ''}
-              options={[{ value: '', label: '—' }, { value: 'RAL', label: 'RAL' }, { value: 'NCS', label: 'NCS' }]}
-              onCommit={value => {
-                const raw = Array.isArray(row._raw) ? [...row._raw] : new Array(17).fill(null)
-                while (raw.length < 17) raw.push(null)
-                raw[16] = setThermolaquageInRawValue(raw[16], value || null)
-                onRecompute?.({ _raw_override: raw })
-              }}
-              title="Thermolaquage"
-              width={74}
-              height={24}
-              active={!!r.thermolaquage}
-            />
-          </div>
+          <button
+            type="button"
+            onClick={e => {
+              e.stopPropagation()
+              const current = String(e.currentTarget.textContent || r._thermolaquageType || '').trim().toUpperCase()
+              const next = current === 'RAL' ? 'NCS' : current === 'NCS' ? '' : 'RAL'
+              const raw = Array.isArray(row._raw) ? [...row._raw] : new Array(17).fill(null)
+              while (raw.length < 17) raw.push(null)
+              raw[16] = setThermolaquageInRawValue(raw[16], next || null)
+              onRecompute?.({ _raw_override: raw, _thermolaquageTypeOverride: next || null, _thermolaquageDisabled: !next })
+            }}
+            title="Thermolaquage : RAL puis NCS puis aucun"
+            style={{ width: 34, height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: `1px solid ${r.thermolaquage ? '#d97706' : 'var(--color-border)'}`, borderRadius: 6, background: r.thermolaquage ? '#fbbf24' : 'var(--color-surface)', color: r.thermolaquage ? '#111827' : 'var(--color-text-3)', fontSize: 9, fontWeight: 900, cursor: 'pointer', padding: 0 }}
+          >
+            {r._thermolaquageType || '—'}
+          </button>
         ) : (
           <span title={r._thermolaquageLabel || ''} style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 1, fontSize: 9, fontWeight: 800, color: r.thermolaquage ? '#b45309' : 'var(--color-text-3)' }}>
             <span>{r._thermolaquageType || '—'}</span>
-            {r._thermolaquageRef && <span style={{ fontSize: 8, color: 'var(--color-text-3)' }}>réf.{r._thermolaquageRef}</span>}
           </span>
         )}
       </Td>
@@ -1677,75 +1815,55 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
           ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableText value={mainEquipLabel(row._raw?.[14] ?? r._garnExtLabel ?? '')} onCommit={v => onRecompute?.({ [`_raw_14`]: v })} placeholder="garn. ext…" />)
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{mainEquipLabel(row._raw?.[14] || r._garnExtLabel) || '—'}</span>}
       </Td>
-      {/* Vitrage */}
-      <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 130, ...assistantCellStyle('vitrage', 'notes'), ...(hiddenCols.has('vitrage') ? { display: 'none' } : {}) }}>
-        {editMode
-          ? (isAmountSection ? <EditableText value={row.notes || row.alertes?.[0] || ''} onCommit={v => onUpdate?.({ notes: v, alertes: v ? [v] : [] })} placeholder="note…" /> : <EditableText value={stripAcousticInfo(row._raw?.[16]) || mainEquipLabel(r._vitrageLabel) || ''} onCommit={v => onRecompute?.({ [`_raw_16`]: v })} placeholder="" />)
-          : (r._vitrageLabel ? (
-            <Popover content={r._vitrageNote || r._vitrageLabel}>
-              <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', fontWeight: 600 }}>
-                {mainEquipLabel(r._vitrageLabel)}{r._vitrageRef ? ` · réf.${r._vitrageRef}` : ''}{r._vitragePrix != null ? ` · ${Number(r._vitragePrix).toLocaleString('fr-FR')} €` : ''}
-              </span>
-            </Popover>
-          ) : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{isAcousticValue(row._raw?.[16]) ? '' : (row._raw?.[16] || '')}</span>)}
-      </Td>
-      {/* FP */}
-      <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 60, ...assistantCellStyle('ferme_porte'), ...(hiddenCols.has('fp') ? { display: 'none' } : {}) }}>
-        {editMode
-          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableText value={mainEquipLabel(row._raw?.[15] ?? r._fpLabel ?? '')} onCommit={v => onRecompute?.({ [`_raw_15`]: v })} placeholder="FP…" />)
-          : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{mainEquipLabel(row._raw?.[15] || r._fpLabel) || '—'}</span>}
-      </Td>
-      {/* Crémone */}
-      <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 110, ...assistantCellStyle('cremone'), ...(hiddenCols.has('cremone') ? { display: 'none' } : {}) }}>
-        {editMode
-          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableText value={row._overrideCremone !== undefined ? row._overrideCremone : mainEquipLabel(r._cremoneLabel ?? '')} onCommit={v => onUpdate?.({ _overrideCremone: v })} placeholder="crémone…" />)
-          : (() => {
-              const label = row._overrideCremone !== undefined ? row._overrideCremone : r._cremoneLabel
-              return label ? (
-                <Popover content={r._cremoneNote || label}>
-                  <span style={{ display: 'inline-block', padding: '2px 4px', fontSize: 11, fontWeight: 600, color: 'var(--color-text-2)' }}>
-                    {mainEquipLabel(label)}{r._cremoneRef ? ` · réf.${r._cremoneRef}` : ''}{r._cremonePrix != null ? ` · ${Number(r._cremonePrix).toLocaleString('fr-FR')} €` : ''}
+      {visibleEquipmentColumns.map(column => {
+        const equipment = r._equipmentByColumn?.[column.key]
+        const ref = column.key === 'vitrage' ? r._vitrageRef : column.key === 'fp' ? r._fpRef : column.key === 'cremone' ? r._cremoneRef : column.key === 'plinthes' ? r._plintheRef : (equipment?.ref || extractRef(equipment?.note) || extractRef(equipment?.label))
+        const label = column.key === 'vitrage' ? r._vitrageLabel : column.key === 'fp' ? (row._raw?.[15] || r._fpLabel) : column.key === 'cremone' ? r._cremoneLabel : column.key === 'plinthes' ? r._plintheLabel : equipment?.label
+        const note = column.key === 'vitrage' ? r._vitrageNote : column.key === 'fp' ? r._fpLabel : column.key === 'cremone' ? r._cremoneNote : column.key === 'plinthes' ? r._plintheNote : equipment?.note
+        const price = column.key === 'vitrage' ? r._vitragePrix : column.key === 'fp' ? r._optFP?.prix : column.key === 'cremone' ? r._cremonePrix : column.key === 'plinthes' ? r._plinthePrix : equipment?.prix
+        const editValue = column.key === 'fp' ? mainEquipLabel(row._raw?.[15] ?? r._fpLabel ?? '') : column.key === 'vitrage' ? (stripEquipmentDisplayNoise(row._raw?.[16]) || mainEquipLabel(r._vitrageLabel) || '') : mainEquipLabel(label || '')
+        const hasValue = hasVisibleEquipmentValue(row, column, r)
+        return (
+          <Td key={column.key} palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: column.minWidth, ...assistantCellStyle(...column.fields) }}>
+            {editMode
+              ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableText value={editValue} onCommit={v => onRecompute?.(column.key === 'fp' ? { _raw_15: v } : { _raw_16: v })} placeholder={column.label.toLowerCase()} />)
+              : (hasValue ? (
+                <Popover content={note || label || ''}>
+                  <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', fontWeight: 600, color: 'var(--color-text-2)' }}>
+                    {mainEquipLabel(label)}{ref ? ` · réf.${ref}` : ''}{price != null ? ` · ${Number(price).toLocaleString('fr-FR')} €` : ''}
                   </span>
                 </Popover>
-              ) : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', color: 'var(--color-text-2)' }}>—</span>
-            })()}
-      </Td>
-      {/* Autres équipements */}
-      <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 140, ...assistantCellStyle('autres'), ...(hiddenCols.has('autres') ? { display: 'none' } : {}) }}>
-        {editMode
-          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableText value={row._overrideAutres !== undefined ? row._overrideAutres : (r._otherExtras?.map(e => mainEquipLabel(e.label)).join(', ') ?? '')} onCommit={v => onUpdate?.({ _overrideAutres: v })} placeholder="autres équip…" />)
-          : (row._overrideAutres !== undefined
-              ? (row._overrideAutres ? <span style={{ fontSize: 11, padding: '2px 4px', display: 'inline-block', fontWeight: 600, color: 'var(--color-text-2)' }}>{row._overrideAutres}</span> : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', color: 'var(--color-text-2)' }}>—</span>)
-              : (r._otherExtras?.length ? (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    {r._otherExtras.map((e, extraIndex) => (
-                      <Popover key={`${e.ref || e.label || extraIndex}`} content={e.note || e.label}>
-                        <span style={{ display: 'inline-block', padding: '1px 4px', fontSize: 11, fontWeight: 600, color: 'var(--color-text-2)' }}>
-                          {mainEquipLabel(e.label)}{e.ref ? ` · réf.${e.ref}` : ''}{e.prix != null ? ` · ${Number(e.prix).toLocaleString('fr-FR')} €` : ''}
-                        </span>
-                      </Popover>
-                    ))}
-                  </div>
-                ) : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', color: 'var(--color-text-2)' }}>—</span>))}
-      </Td>
-      {/* Acoustique */}
-      <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 90, ...assistantCellStyle('acoustic'), ...(hiddenCols.has('acoustic') ? { display: 'none' } : {}) }}>
-        {isAmountSection
-          ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span>
-          : (r._acousticValue
-              ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', fontWeight: 600 }}>
-                  {r._acousticValue}{r._acousticRef ? ` · réf.${r._acousticRef}` : ''}
-                </span>
-              : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', color: 'var(--color-text-2)' }}>—</span>)}
-      </Td>
+              ) : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', color: 'var(--color-text-2)' }}>—</span>)}
+          </Td>
+        )
+      })}
+      {showOtherEquipmentColumn && (
+        <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 140, ...assistantCellStyle('autres') }}>
+          {editMode
+            ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableText value="" onCommit={v => { const patch = equipmentAdditionPatch(row._raw, v); if (patch) onRecompute?.(patch) }} placeholder="ajouter équip…" />)
+            : (row._overrideAutres !== undefined
+                ? (row._overrideAutres ? <span style={{ fontSize: 11, padding: '2px 4px', display: 'inline-block', fontWeight: 600, color: 'var(--color-text-2)' }}>{row._overrideAutres}</span> : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', color: 'var(--color-text-2)' }}>—</span>)
+                : (r._otherExtras?.length ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      {r._otherExtras.map((e, extraIndex) => (
+                        <Popover key={`${e.ref || e.label || extraIndex}`} content={e.note || e.label}>
+                          <span style={{ display: 'inline-block', padding: '1px 4px', fontSize: 11, fontWeight: 600, color: 'var(--color-text-2)' }}>
+                            {mainEquipLabel(e.label)}{e.ref ? ` · réf.${e.ref}` : ''}{e.prix != null ? ` · ${Number(e.prix).toLocaleString('fr-FR')} €` : ''}
+                          </span>
+                        </Popover>
+                      ))}
+                    </div>
+                  ) : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', color: 'var(--color-text-2)' }}>—</span>))}
+        </Td>
+      )}
       {/* PU HT */}
-      <Td palette="gray" style={{ textAlign: 'right', fontWeight: 600, whiteSpace: 'nowrap', ...assistantCellStyle('prix_base_ht') }}>
+      <Td palette="gray" style={{ textAlign: 'right', fontWeight: 600, whiteSpace: 'nowrap', ...FINAL_AMOUNT_COLUMNS.pu, ...assistantCellStyle('prix_base_ht') }}>
         {editMode && isAmountSection
           ? <EditableNumber value={r.prix_base_ht ?? 0} onCommit={v => onUpdate?.({ prix_base_ht: v, prix_total_min_ht: v, total_ligne_ht: v })} step={10} min={0} max={999999} width="100%" textAlign="right" />
           : (r._pu > 0 ? r._pu.toLocaleString('fr-FR') + ' €' : '—')}
       </Td>
       {/* Remise */}
-      <Td palette="yellow" style={{ textAlign: 'center', width: 90, padding: 0, ...assistantCellStyle('multiple') }}>
+      <Td palette="yellow" style={{ textAlign: 'center', padding: 0, ...FINAL_AMOUNT_COLUMNS.remise, ...assistantCellStyle('multiple') }}>
         <EditableNumber
           value={Number.isFinite(row.multiple) ? row.multiple : multGlobal}
           onCommit={v => onUpdate?.({ multiple: v })}
@@ -1757,14 +1875,14 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
         />
       </Td>
       {/* Q (toujours éditable) */}
-      <Td palette="yellow" style={{ textAlign: 'center', width: 90, padding: 0, ...assistantCellStyle('qty') }}>
+      <Td palette="yellow" style={{ textAlign: 'center', padding: 0, ...FINAL_AMOUNT_COLUMNS.qty, ...assistantCellStyle('qty') }}>
         <EditableNumber value={qty} onCommit={v => onUpdate?.({ qty: v })} step={1} min={1} max={9999} width="100%" />
       </Td>
       {/* Total HT */}
-      <Td palette="blue" style={{ textAlign: 'right', fontWeight: 800, whiteSpace: 'nowrap', fontSize: 12, minWidth: 116 }}>
+      <Td palette="blue" style={{ textAlign: 'right', fontWeight: 800, whiteSpace: 'nowrap', fontSize: 12, ...FINAL_AMOUNT_COLUMNS.total }}>
         {r._pu > 0 ? r._totalHt.toLocaleString('fr-FR') + ' €' : '—'}
       </Td>
-      <Td style={{ width: editMode ? 72 : 32, textAlign: 'center', padding: 0 }}>
+      <Td style={{ width: editMode ? 72 : FINAL_AMOUNT_COLUMNS.actions.width, minWidth: editMode ? 72 : FINAL_AMOUNT_COLUMNS.actions.minWidth, textAlign: 'center', padding: 0 }}>
         {(editMode || !isAmountSection) && (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2 }}>
             {!isAmountSection && (
@@ -1808,9 +1926,9 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
   )
 }
 
-function AmountSectionColumns({ section, hiddenDimensionCount = 0 }) {
+function AmountSectionColumns({ section, gridTotalCols }) {
   const isTransport = section === 'transport'
-  const detailSpan = Math.max(1, 5 - hiddenDimensionCount)
+  const detailSpan = Math.max(1, gridTotalCols - 17)
   return (
     <tr>
       <td style={{ ...amountHeaderCellStyle, ...stickyRowMarkerHeaderStyle }}>#</td>
@@ -1818,16 +1936,16 @@ function AmountSectionColumns({ section, hiddenDimensionCount = 0 }) {
       <td colSpan={detailSpan} style={amountHeaderCellStyle}>{isTransport ? 'Destination / note' : 'Détail / condition'}</td>
       <td colSpan={3} style={amountHeaderCellStyle}>{isTransport ? 'Règle' : 'Référence'}</td>
       <td colSpan={2} style={amountHeaderCellStyle}>{isTransport ? 'Tranches' : 'Source'}</td>
-      <td style={{ ...amountHeaderCellStyle, ...CELL.gray, textAlign: 'right' }}>PU HT</td>
-      <td style={{ ...amountHeaderCellStyle, ...CELL.yellow, textAlign: 'center' }}>Remise</td>
-      <td style={{ ...amountHeaderCellStyle, ...CELL.yellow, textAlign: 'center' }}>Q.</td>
-      <td style={{ ...amountHeaderCellStyle, ...CELL.blue, textAlign: 'right', minWidth: 116, whiteSpace: 'nowrap' }}>Total HT</td>
-      <td style={{ ...amountHeaderCellStyle, width: 32 }}></td>
+      <td style={{ ...amountHeaderCellStyle, ...CELL.gray, ...FINAL_AMOUNT_COLUMNS.pu, textAlign: 'right' }}>PU HT</td>
+      <td style={{ ...amountHeaderCellStyle, ...CELL.yellow, ...FINAL_AMOUNT_COLUMNS.remise, textAlign: 'center' }}>Remise</td>
+      <td style={{ ...amountHeaderCellStyle, ...CELL.yellow, ...FINAL_AMOUNT_COLUMNS.qty, textAlign: 'center' }}>Q.</td>
+      <td style={{ ...amountHeaderCellStyle, ...CELL.blue, ...FINAL_AMOUNT_COLUMNS.total, textAlign: 'right', whiteSpace: 'nowrap' }}>Total HT</td>
+      <td style={{ ...amountHeaderCellStyle, ...FINAL_AMOUNT_COLUMNS.actions }}></td>
     </tr>
   )
 }
 
-function AmountRow({ row, index, displayIndex = index, change, tva, multGlobal, editMode, defaultTransportAddress = '', onUpdate, onTransportAddressCommit, onDelete, assistantHighlight = null, hiddenDimensionCount = 0 }) {
+function AmountRow({ row, index, displayIndex = index, change, tva, multGlobal, editMode, defaultTransportAddress = '', onUpdate, onTransportAddressCommit, onDelete, assistantHighlight = null, gridTotalCols }) {
   const r = resolveRow(row, change, tva, multGlobal)
   const section = sectionOf(row)
   const isTransport = section === 'transport'
@@ -1837,7 +1955,7 @@ function AmountRow({ row, index, displayIndex = index, change, tva, multGlobal, 
   const source = isTransport
     ? (row.tranche_count ? `${row.tranche_count} tranche${row.tranche_count > 1 ? 's' : ''}` : 'recalcul auto')
     : (row._generatedFrom || '—')
-  const detailSpan = Math.max(1, 5 - hiddenDimensionCount)
+  const detailSpan = Math.max(1, gridTotalCols - 17)
   const assistantActive = Boolean(assistantHighlight)
 
   return (
@@ -1892,23 +2010,23 @@ function AmountRow({ row, index, displayIndex = index, change, tva, multGlobal, 
       <Td colSpan={2} style={{ minWidth: 120, color: 'var(--color-text-3)' }}>
         {source}
       </Td>
-      <Td palette="gray" style={{ textAlign: 'right', fontWeight: 700, whiteSpace: 'nowrap', padding: 0 }}>
+      <Td palette="gray" style={{ textAlign: 'right', fontWeight: 700, whiteSpace: 'nowrap', padding: 0, ...FINAL_AMOUNT_COLUMNS.pu }}>
         {editMode ? (
           <EditableNumber value={r.prix_base_ht ?? 0} onCommit={value => onUpdate?.({ prix_base_ht: value, prix_total_min_ht: value, total_ligne_ht: value })} step={10} min={0} max={999999} width="100%" textAlign="right" />
         ) : (
           <span style={{ display: 'inline-block', padding: '2px 8px' }}>{amountEuro(r._pu)}</span>
         )}
       </Td>
-      <Td palette="yellow" style={{ textAlign: 'center', width: 60, padding: 0 }}>
+      <Td palette="yellow" style={{ textAlign: 'center', padding: 0, ...FINAL_AMOUNT_COLUMNS.remise }}>
         <EditableNumber value={Number.isFinite(row.multiple) ? row.multiple : multGlobal} onCommit={value => onUpdate?.({ multiple: value })} step={0.01} min={0} max={10} width="100%" textAlign="center" />
       </Td>
-      <Td palette="yellow" style={{ textAlign: 'center', width: 36, padding: 0 }}>
+      <Td palette="yellow" style={{ textAlign: 'center', padding: 0, ...FINAL_AMOUNT_COLUMNS.qty }}>
         <EditableNumber value={qty} onCommit={value => onUpdate?.({ qty: value })} step={1} min={1} max={9999} width="100%" />
       </Td>
-      <Td palette="blue" style={{ textAlign: 'right', fontWeight: 800, whiteSpace: 'nowrap', fontSize: 12, minWidth: 116 }}>
+      <Td palette="blue" style={{ textAlign: 'right', fontWeight: 800, whiteSpace: 'nowrap', fontSize: 12, ...FINAL_AMOUNT_COLUMNS.total }}>
         {amountEuro(r._totalHt)}
       </Td>
-      <Td style={{ width: 32, textAlign: 'center', padding: 0 }}>
+      <Td style={{ textAlign: 'center', padding: 0, ...FINAL_AMOUNT_COLUMNS.actions }}>
         {editMode && (
           <button
             type="button"
@@ -1925,72 +2043,87 @@ function AmountRow({ row, index, displayIndex = index, change, tva, multGlobal, 
 }
 
 // ─── Sous-row références ─────────────────────────────────────────────────────
-function SubRowRefs({ row, editMode, onRefCommit, hiddenCols = new Set(), visibleDimensionCount = 4 }) {
+function SubRowRefs({ row, editMode, onRefCommit, hiddenCols = new Set(), visibleDimensionCount = 4, visibleEquipmentColumns = [], showOtherEquipmentColumn = true }) {
   const r = resolveRow(row)
-  const cells = [
-    r._serrureRef, r._garnIntRef, r._garnExtRef,
-    r._vitrageRef,
-    r._fpRef, r._cremoneRef, r._otherExtrasRefs?.join(', ') || null,
-    r._acousticRef,
-  ]
-  const colKeys = [null, null, null, 'vitrage', 'fp', 'cremone', 'autres', 'acoustic']
-  return (
-    <tr style={{ background: SUBROW_BG }}>
-      <td colSpan={4} style={{ padding: '3px 8px 3px 40px', fontSize: 10, fontWeight: 700, color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }}>
-        Références
-      </td>
-      {visibleDimensionCount > 0 && <td colSpan={visibleDimensionCount} style={{ padding: '3px 8px', fontSize: 10, color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }}></td>}
-      <td style={{ padding: '3px 8px', fontSize: 10, color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)', fontWeight: 700, textAlign: 'center' }}>
-        {r._thermolaquageRef || '—'}
-      </td>
-      {cells.map((ref, i) => (
-        <td key={i} style={{ padding: 0, fontSize: 11, fontWeight: 700, ...CELL.yellow, borderBottom: '1px solid var(--color-border)', ...(colKeys[i] && hiddenCols.has(colKeys[i]) ? { display: 'none' } : {}) }}>
-          {editMode
-            ? <EditableText
-                value={ref || ''}
-                onCommit={v => onRefCommit?.(i, v)}
-                placeholder="réf…"
-                fontSize={11}
-              />
-            : <span style={{ display: 'block', padding: '3px 8px' }}>{ref || '—'}</span>}
-        </td>
-      ))}
-      <td colSpan={5} style={{ borderBottom: '1px solid var(--color-border)', ...CELL.gray }}></td>
-    </tr>
-  )
+  // Construction stricte : 1 cellule par colonne, pas de colSpan
+  const cells = []
+  // #
+  cells.push(<td key="ref-rowmarker" style={{ background: SUBROW_BG }}></td>)
+  // Désignation
+  cells.push(<td key="ref-label" style={{ background: SUBROW_BG, fontWeight: 700, fontSize: 10, padding: '3px 8px 3px 40px', color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }}>Références</td>)
+  // Localisation
+  cells.push(<td key="ref-loc" style={{ background: SUBROW_BG }}></td>)
+  // Perfs
+  cells.push(<td key="ref-perfs" style={{ background: SUBROW_BG }}></td>)
+  // Dimensions dynamiques
+  for (let i = 0; i < visibleDimensionCount; ++i) cells.push(<td key={`ref-dim-${i}`} style={{ background: SUBROW_BG }}></td>)
+  // TL
+  cells.push(<td key="ref-tl" style={{ background: SUBROW_BG, textAlign: 'center', fontWeight: 700, borderBottom: '1px solid var(--color-border)' }}>{r._thermolaquageRef || '—'}</td>)
+  // Serrure
+  cells.push(<td key="ref-serrure" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}>{editMode ? <EditableText value={r._serrureRef || ''} onCommit={v => onRefCommit?.(0, v)} placeholder="réf…" fontSize={11} /> : <span style={{ display: 'block', padding: '3px 8px' }}>{r._serrureRef || '—'}</span>}</td>)
+  // Garniture int.
+  cells.push(<td key="ref-garnint" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}>{editMode ? <EditableText value={r._garnIntRef || ''} onCommit={v => onRefCommit?.(1, v)} placeholder="réf…" fontSize={11} /> : <span style={{ display: 'block', padding: '3px 8px' }}>{r._garnIntRef || '—'}</span>}</td>)
+  // Garniture ext.
+  cells.push(<td key="ref-garnext" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}>{editMode ? <EditableText value={r._garnExtRef || ''} onCommit={v => onRefCommit?.(2, v)} placeholder="réf…" fontSize={11} /> : <span style={{ display: 'block', padding: '3px 8px' }}>{r._garnExtRef || '—'}</span>}</td>)
+  // Colonnes équipements dynamiques
+  visibleEquipmentColumns.forEach((column, idx) => {
+    const equipment = r._equipmentByColumn?.[column.key]
+    let ref = null
+    if (column.key === 'vitrage') ref = r._vitrageRef
+    else if (column.key === 'fp') ref = r._fpRef
+    else if (column.key === 'cremone') ref = r._cremoneRef
+    else if (column.key === 'plinthes') ref = r._plintheRef
+    else ref = equipment?.ref || extractRef(equipment?.note) || extractRef(equipment?.label) || null
+    cells.push(<td key={`ref-equip-${column.key}`} style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}>{editMode ? <EditableText value={ref || ''} onCommit={v => onRefCommit?.(3 + idx, v)} placeholder="réf…" fontSize={11} /> : <span style={{ display: 'block', padding: '3px 8px' }}>{ref || '—'}</span>}</td>)
+  })
+  // Autres équipements
+  if (showOtherEquipmentColumn) cells.push(<td key="ref-autres" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}></td>)
+  // PU HT, Remise, Q, Total HT, actions
+  for (let i = 0; i < 5; ++i) cells.push(<td key={`ref-end-${i}`} style={{ background: SUBROW_BG, borderBottom: '1px solid var(--color-border)' }}></td>)
+  return <tr style={{ background: SUBROW_BG }}>{cells}</tr>
 }
 
 // ─── Sous-row prix ────────────────────────────────────────────────────────────
-function SubRowPrices({ row, hiddenCols = new Set(), visibleDimensionCount = 4 }) {
+function SubRowPrices({ row, hiddenCols = new Set(), visibleDimensionCount = 4, visibleEquipmentColumns = [], showOtherEquipmentColumn = true }) {
   const r = resolveRow(row)
-  const prices = [
-    r._optSerrure?.prix, r._garnIntPrix, r._garnExtPrix,
-    r._vitragePrix, r._optFP?.prix, r._cremonePrix, r._otherExtrasPrix || null,
-    r._acousticPrix,
-  ]
-  const colKeys = [null, null, null, 'vitrage', 'fp', 'cremone', 'autres', 'acoustic']
-  const visiblePrices = r._unpriced ? prices.map(() => undefined) : prices
-  return (
-    <tr style={{ background: SUBROW_BG }}>
-      <td colSpan={4} style={{ padding: '3px 8px 3px 40px', fontSize: 10, fontWeight: 700, color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }}>
-        Prix unitaires
-      </td>
-      {visibleDimensionCount > 0 && <td colSpan={visibleDimensionCount} style={{ padding: '3px 8px', borderBottom: '1px solid var(--color-border)', ...CELL.gray }}></td>}
-      <td style={{ padding: '3px 8px', fontSize: 11, textAlign: 'right', borderBottom: '1px solid var(--color-border)', ...CELL.gray }}>
-        {r._unpriced ? '—' : (r._thermolaquagePrix != null ? r._thermolaquagePrix.toLocaleString('fr-FR') + ' €' : <span style={{ color: 'var(--color-text-3)' }}>—</span>)}
-      </td>
-      {visiblePrices.map((p, i) => (
-        <td key={i} style={{ padding: '3px 8px', fontSize: 11, ...CELL.gray, borderBottom: '1px solid var(--color-border)', textAlign: 'right', ...(colKeys[i] && hiddenCols.has(colKeys[i]) ? { display: 'none' } : {}) }}>
-          {p === undefined ? '—' : (p != null ? p.toLocaleString('fr-FR') + ' €' : <span style={{ color: 'var(--color-text-3)' }}>de série</span>)}
-        </td>
-      ))}
-      {/* PU base dans la colonne PU HT */}
-      <td style={{ padding: '3px 8px', fontSize: 11, textAlign: 'right', ...CELL.gray, borderBottom: '1px solid var(--color-border)', color: 'var(--color-text-3)' }}>
-        base: {r._unpriced ? '—' : (r.prix_base_ht?.toLocaleString('fr-FR') ?? '—')} €
-      </td>
-      <td colSpan={4} style={{ borderBottom: '1px solid var(--color-border)', ...CELL.blue }}></td>
-    </tr>
-  )
+  // Construction stricte : 1 cellule par colonne, pas de colSpan
+  const cells = []
+  // #
+  cells.push(<td key="price-rowmarker" style={{ background: SUBROW_BG }}></td>)
+  // Désignation
+  cells.push(<td key="price-label" style={{ background: SUBROW_BG, fontWeight: 700, fontSize: 10, padding: '3px 8px 3px 40px', color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }}>Prix unitaires</td>)
+  // Localisation
+  cells.push(<td key="price-loc" style={{ background: SUBROW_BG }}></td>)
+  // Perfs
+  cells.push(<td key="price-perfs" style={{ background: SUBROW_BG }}></td>)
+  // Dimensions dynamiques
+  for (let i = 0; i < visibleDimensionCount; ++i) cells.push(<td key={`price-dim-${i}`} style={{ background: SUBROW_BG }}></td>)
+  // TL
+  cells.push(<td key="price-tl" style={{ background: SUBROW_BG, textAlign: 'center', fontWeight: 700, borderBottom: '1px solid var(--color-border)' }}>{r._unpriced ? '—' : (r._thermolaquagePrix != null ? r._thermolaquagePrix.toLocaleString('fr-FR') + ' €' : <span style={{ color: 'var(--color-text-3)' }}>—</span>)}</td>)
+  // Serrure
+  cells.push(<td key="price-serrure" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}><span style={{ display: 'block', padding: '3px 8px' }}>{r._optSerrure?.prix != null ? r._optSerrure.prix.toLocaleString('fr-FR') + ' €' : '—'}</span></td>)
+  // Garniture int.
+  cells.push(<td key="price-garnint" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}><span style={{ display: 'block', padding: '3px 8px' }}>{r._garnIntPrix != null ? r._garnIntPrix.toLocaleString('fr-FR') + ' €' : '—'}</span></td>)
+  // Garniture ext.
+  cells.push(<td key="price-garnext" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}><span style={{ display: 'block', padding: '3px 8px' }}>{r._garnExtPrix != null ? r._garnExtPrix.toLocaleString('fr-FR') + ' €' : '—'}</span></td>)
+  // Colonnes équipements dynamiques
+  visibleEquipmentColumns.forEach((column) => {
+    const equipment = r._equipmentByColumn?.[column.key]
+    let prix = null
+    if (column.key === 'vitrage') prix = r._vitragePrix
+    else if (column.key === 'fp') prix = r._optFP?.prix
+    else if (column.key === 'cremone') prix = r._cremonePrix
+    else if (column.key === 'plinthes') prix = r._plinthePrix
+    else prix = equipment?.prix ?? null
+    cells.push(<td key={`price-equip-${column.key}`} style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}><span style={{ display: 'block', padding: '3px 8px' }}>{prix != null ? prix.toLocaleString('fr-FR') + ' €' : '—'}</span></td>)
+  })
+  // Autres équipements
+  if (showOtherEquipmentColumn) cells.push(<td key="price-autres" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}></td>)
+  // PU HT (base)
+  cells.push(<td key="price-base" style={{ background: SUBROW_BG, ...CELL.gray, borderBottom: '1px solid var(--color-border)', textAlign: 'right', color: 'var(--color-text-3)' }}>base: {r._unpriced ? '—' : (r.prix_base_ht?.toLocaleString('fr-FR') ?? '—')} €</td>)
+  // Remise, Q, Total HT, actions
+  for (let i = 0; i < 4; ++i) cells.push(<td key={`price-end-${i}`} style={{ background: SUBROW_BG, borderBottom: '1px solid var(--color-border)' }}></td>)
+  return <tr style={{ background: SUBROW_BG }}>{cells}</tr>
 }
 
 // ─── Options statiques Performances ─────────────────────────────────────────
@@ -2003,9 +2136,14 @@ const PERF_OPTIONS = {
   prison: [{ value: null, label: '—' }, { value: 'Prison', label: 'Prison' }],
   acoustic: [{ value: null, label: '—' }, { value: '30 dB', label: '30 dB' }, { value: '35 dB', label: '35 dB' }, { value: '40 dB', label: '40 dB' }, { value: '45 dB', label: '45 dB' }],
 }
-// Largeur dynamique : longueur du label le plus long × 9px + 32px (padding + flèche), min 52
+const perfLabelWidth = (label, charWidth = 8) => String(label || '').length * charWidth + 38
+const perfSelectedControlWidth = (key, value) => {
+  const selected = (PERF_OPTIONS[key] || []).find(option => String(option.value ?? '') === String(value ?? ''))
+  const label = selected?.label ?? value ?? '—'
+  return Math.max(PERF_CONTROL_MIN_WIDTH, Math.min(PERF_CONTROL_DEFAULT_WIDTH, perfLabelWidth(label)))
+}
 Object.entries(PERF_OPTIONS).forEach(([k, opts]) => {
-  PERF_CONTROL_WIDTH[k] = Math.max(52, Math.max(...opts.map(o => o.label.length)) * 9 + 32)
+  PERF_CONTROL_WIDTH[k] = Math.max(PERF_MENU_MIN_WIDTH, ...opts.map(o => perfLabelWidth(o.label, 9)))
 })
 
 const TYPE_OPTIONS = ['BP 1V', 'BP 2V', 'Chassis', 'Guichet'].map(value => ({ value, label: value }))
@@ -2168,7 +2306,7 @@ function compactGridRowForIntent(row, index) {
     garniture_int: mainEquipLabel(row._raw?.[13] ?? resolved._garnIntLabel ?? ''),
     garniture_ext: mainEquipLabel(row._raw?.[14] ?? resolved._garnExtLabel ?? ''),
     ferme_porte: mainEquipLabel(row._raw?.[15] ?? resolved._fpLabel ?? ''),
-    vitrage: stripAcousticInfo(row._raw?.[16]) || mainEquipLabel(resolved._vitrageLabel || ''),
+    vitrage: stripEquipmentDisplayNoise(row._raw?.[16]) || mainEquipLabel(resolved._vitrageLabel || ''),
     cremone: row._overrideCremone ?? mainEquipLabel(resolved._cremoneLabel || ''),
     autres: row._overrideAutres ?? resolved._otherExtras?.map(item => mainEquipLabel(item.label)).join(', ') ?? '',
     qty: row.qty ?? 1,
@@ -2539,7 +2677,7 @@ const selectCellStyles = {
   }),
 }
 
-const prettyCellSelectStyles = ({ width = 64, height = 26, active = false } = {}) => ({
+const prettyCellSelectStyles = ({ width = 64, menuWidth = null, height = 26, active = false } = {}) => ({
   control: (base, state) => ({
     ...base,
     width,
@@ -2556,18 +2694,18 @@ const prettyCellSelectStyles = ({ width = 64, height = 26, active = false } = {}
     fontSize: 10,
     fontWeight: 900,
   }),
-  valueContainer: (base) => ({ ...base, height, padding: '0 2px 0 7px' }),
+  valueContainer: (base) => ({ ...base, height, padding: '0 0 0 6px' }),
   input: (base) => ({ ...base, margin: 0, padding: 0, color: active ? '#111827' : 'var(--color-text)' }),
   singleValue: (base) => ({ ...base, color: active ? '#111827' : 'var(--color-text-2)', fontSize: 10, fontWeight: 900, overflow: 'visible', maxWidth: 'none' }),
   placeholder: (base) => ({ ...base, color: 'var(--color-text-3)', fontSize: 10, fontWeight: 900 }),
   indicatorsContainer: (base) => ({ ...base, height }),
   indicatorSeparator: () => ({ display: 'none' }),
-  dropdownIndicator: (base) => ({ ...base, padding: '0 4px 0 1px', color: active ? '#111827' : 'var(--color-text-3)' }),
+  dropdownIndicator: (base) => ({ ...base, padding: '0 2px 0 0', color: active ? '#111827' : 'var(--color-text-3)' }),
   clearIndicator: () => ({ display: 'none' }),
   menu: (base) => ({
     ...base,
-    width: Math.max(width, 112),
-    minWidth: Math.max(width, 112),
+    width: Math.max(menuWidth || width, width),
+    minWidth: Math.max(menuWidth || width, width),
     fontSize: 12,
     zIndex: 9999,
     background: 'var(--color-surface)',
@@ -2596,7 +2734,7 @@ const prettyCellSelectStyles = ({ width = 64, height = 26, active = false } = {}
   }),
 })
 
-function PrettyCellSelect({ value, options, onCommit, title, width = 64, height = 26, active = false }) {
+function PrettyCellSelect({ value, options, onCommit, title, width = 64, menuWidth = null, height = 26, active = false }) {
   const normalizedOptions = (options || []).map(option => (
     typeof option === 'string' ? { value: option, label: option } : { value: option.value ?? '', label: option.label ?? option.value ?? '—' }
   ))
@@ -2612,7 +2750,7 @@ function PrettyCellSelect({ value, options, onCommit, title, width = 64, height 
         getOptionLabel={option => option.label ?? String(option.value ?? '')}
         isSearchable={false}
         isClearable={false}
-        styles={prettyCellSelectStyles({ width, height, active })}
+        styles={prettyCellSelectStyles({ width, menuWidth, height, active })}
         menuPortalTarget={typeof document !== 'undefined' ? document.body : null}
         menuPosition="fixed"
       />
@@ -3211,7 +3349,7 @@ export function DevisGridWorkspace({
 }) {
   const navigate = useNavigate()
   const [rows, setRows] = useState(() => {
-    if (Array.isArray(initialRows)) return initialRows.length > 0 ? applyDefaultTransportAddress(normalizeCalculationRows(splitCalculationOptions(initialRows)), defaultTransportAddress) : (startWithBlank ? [createBlankGridRow()] : [])
+    if (Array.isArray(initialRows)) return initialRows.length > 0 ? applyDefaultTransportAddress(initialRows, defaultTransportAddress) : (startWithBlank ? [createBlankGridRow()] : [])
     try {
       const saved = localStorage.getItem('devisGridRows')
       if (saved) return normalizeCalculationRows(JSON.parse(saved) || [])
@@ -3319,7 +3457,7 @@ export function DevisGridWorkspace({
   useEffect(() => {
     if (!Array.isArray(initialRows)) return
     const nextRows = initialRows.length > 0
-      ? applyDefaultTransportAddress(normalizeCalculationRows(splitCalculationOptions(initialRows)), defaultTransportAddress)
+      ? applyDefaultTransportAddress(initialRows, defaultTransportAddress)
       : (initialRowsInitializedRef.current ? [] : (startWithBlank ? [createBlankGridRow()] : []))
     initialRowsInitializedRef.current = true
     replaceRows(nextRows)
@@ -3677,6 +3815,18 @@ export function DevisGridWorkspace({
     }
     const { qty, multiple, change_override, _lineId, _dbPosition, _manualBlank, _perfStripShowAll, localisation } = cur
     const perfOverrides = patch._perfOverrides || cur._perfOverrides || null
+    const hasThermolaquageTypeOverride = Object.prototype.hasOwnProperty.call(patch, '_thermolaquageTypeOverride')
+    const thermolaquageTypeOverride = hasThermolaquageTypeOverride ? patch._thermolaquageTypeOverride : undefined
+    const thermolaquageOverride = hasThermolaquageTypeOverride ? {
+      thermolaquage: thermolaquageTypeOverride || null,
+      thermolaquage_type: thermolaquageTypeOverride || null,
+      _thermolaquageType: thermolaquageTypeOverride || null,
+      _thermolaquageRef: thermolaquageTypeOverride ? cur._thermolaquageRef : null,
+      _thermolaquageLabel: thermolaquageTypeOverride ? cur._thermolaquageLabel : '',
+      _thermolaquageNote: thermolaquageTypeOverride ? cur._thermolaquageNote : null,
+      _thermolaquagePrix: thermolaquageTypeOverride ? cur._thermolaquagePrix : null,
+      _thermolaquageDisabled: patch._thermolaquageDisabled === true,
+    } : (cur._thermolaquageDisabled ? { _thermolaquageDisabled: true } : {})
     // Maj optimiste immédiate
     replaceRows(rowsRef.current.map((r, idx) => idx === i ? {
       ...r,
@@ -3684,6 +3834,7 @@ export function DevisGridWorkspace({
       ...(patch.haut_mm != null ? { haut_mm: patch.haut_mm } : {}),
       ...(patch.larg_mm != null ? { larg_mm: patch.larg_mm } : {}),
       ...(perfOverrides ? { _perfOverrides: perfOverrides } : {}),
+      ...thermolaquageOverride,
       _raw: raw,
       _recomputing: true,
     } : r))
@@ -3705,6 +3856,7 @@ export function DevisGridWorkspace({
           multiple,
           change_override,
           ...(perfOverrides ? { _perfOverrides: perfOverrides } : {}),
+          ...thermolaquageOverride,
           _recomputing: false,
         }
         replaceRows(rowsRef.current.map((r, idx) => idx === i ? {
@@ -4000,15 +4152,16 @@ export function DevisGridWorkspace({
   const productRowEntries = rows.map((row, index) => ({ row, index })).filter(({ row }) => sectionOf(row) === 'products')
   const ruleUpdateEntries = productRowEntries.filter(({ row }) => needsRuleCheckUpdate(row, validationKnowledge))
   const ruleUpdateCount = ruleUpdateEntries.length
-  const hasVitrage = productRows.some(r => { const rv = resolveRow(r); return !!(rv._vitrageLabel) })
-  const hasFP = productRows.some(r => { const rv = resolveRow(r); return !!(rv._fpLabel || r._raw?.[15]) })
-  const hasCremone = productRows.some(r => { const rv = resolveRow(r); return !!(r._overrideCremone !== undefined ? r._overrideCremone : rv._cremoneLabel) })
-  const hasAutres = productRows.some(r => { const rv = resolveRow(r); return !!(r._overrideAutres !== undefined ? r._overrideAutres : rv._otherExtras?.length) })
-  const hasAcoustic = productRows.some(r => { const rv = resolveRow(r); return !!(rv._acousticValue) })
-  const hiddenCols = hideEmptyCols
-    ? new Set([...(!hasVitrage ? ['vitrage'] : []), ...(!hasFP ? ['fp'] : []), ...(!hasCremone ? ['cremone'] : []), ...(!hasAutres ? ['autres'] : []), ...(!hasAcoustic ? ['acoustic'] : [])])
-    : new Set()
+  const nonEmptyEquipmentColumns = EQUIPMENT_COLUMNS.filter(column => productRows.some(row => hasVisibleEquipmentValue(row, column)))
+  const visibleEquipmentColumns = hideEmptyCols ? nonEmptyEquipmentColumns : EQUIPMENT_COLUMNS
+  const showOtherEquipmentColumn = productRows.some(row => {
+    const resolved = resolveRow(row)
+    return row._overrideAutres !== undefined ? Boolean(row._overrideAutres) : Boolean(resolved._otherExtras?.length)
+  })
+  const hiddenCols = new Set()
   const visibleDimensionCount = DIMENSION_COLUMNS.length - hiddenDimensionCols.size
+  const gridTotalCols = 13 + visibleDimensionCount + visibleEquipmentColumns.length + (showOtherEquipmentColumn ? 1 : 0)
+  const optionNoteColSpan = Math.max(1, gridTotalCols - 8)
   const dimensionHeader = (key, label, title) => (
     <Th
       style={{ width: key.includes('pl') ? 58 : 55, cursor: 'pointer', userSelect: 'none', background: 'color-mix(in srgb, var(--color-primary) 5%, transparent)' }}
@@ -4355,7 +4508,7 @@ export function DevisGridWorkspace({
                   <Th style={stickyRowMarkerHeaderStyle}>#</Th>
                   <Th style={{ minWidth: 140 }}>Désignation</Th>
                   <Th style={{ minWidth: 90, width: 110 }}>Localisation</Th>
-                  <Th style={{ minWidth: 430, width: 430 }}>Perfs</Th>
+                  <Th style={{ minWidth: PERF_CELL_COMPACT_WIDTH, width: PERF_CELL_COMPACT_WIDTH }}>Perfs</Th>
                   {!hiddenDimensionCols.has('haut_ht') && dimensionHeader('haut_ht', 'H (HT)')}
                   {!hiddenDimensionCols.has('larg_ht') && dimensionHeader('larg_ht', 'L (HT)')}
                   {!hiddenDimensionCols.has('haut_pl') && dimensionHeader('haut_pl', 'H (PL)', 'Passage libre ou clair de vitrage pour châssis. Cliquer pour masquer.')}
@@ -4364,16 +4517,13 @@ export function DevisGridWorkspace({
                   <Th>Serrure</Th>
                   <Th>Garniture int.</Th>
                   <Th>Garniture ext.</Th>
-                  <Th style={hiddenCols.has('vitrage') ? { display: 'none' } : {}}>Vitrage</Th>
-                  <Th style={hiddenCols.has('fp') ? { display: 'none' } : {}}>Ferme-porte</Th>
-                  <Th style={hiddenCols.has('cremone') ? { display: 'none' } : {}}>Crémone</Th>
-                  <Th style={hiddenCols.has('autres') ? { display: 'none' } : {}}>Autres équipements</Th>
-                  <Th style={hiddenCols.has('acoustic') ? { display: 'none' } : {}}>Acoustique</Th>
-                  <Th style={{ ...CELL.gray, width: 90 }}>PU HT</Th>
-                  <Th style={{ ...CELL.yellow, width: 90 }}>Remise</Th>
-                  <Th style={{ ...CELL.yellow, width: 90 }}>Q.</Th>
-                  <Th style={{ ...CELL.blue, width: 116, minWidth: 116, whiteSpace: 'nowrap' }}>Total HT</Th>
-                  <Th style={{ width: 32 }}></Th>
+                  {visibleEquipmentColumns.map(column => <Th key={column.key}>{column.label}</Th>)}
+                  {showOtherEquipmentColumn && <Th>Autres équipements</Th>}
+                  <Th style={{ ...CELL.gray, ...FINAL_AMOUNT_COLUMNS.pu, textAlign: 'right' }}>PU HT</Th>
+                  <Th style={{ ...CELL.yellow, ...FINAL_AMOUNT_COLUMNS.remise, textAlign: 'center' }}>Remise</Th>
+                  <Th style={{ ...CELL.yellow, ...FINAL_AMOUNT_COLUMNS.qty, textAlign: 'center' }}>Q.</Th>
+                  <Th style={{ ...CELL.blue, ...FINAL_AMOUNT_COLUMNS.total, textAlign: 'right', whiteSpace: 'nowrap' }}>Total HT</Th>
+                  <Th style={FINAL_AMOUNT_COLUMNS.actions}></Th>
                 </tr>
               </thead>
               <tbody>
@@ -4384,7 +4534,7 @@ export function DevisGridWorkspace({
                     return (
                       <Fragment key={`section-${entry.section}`}>
                         <tr>
-                          <td colSpan={GRID_TOTAL_COLS - hiddenDimensionCols.size} style={{ position: 'sticky', top: 31, zIndex: 1, padding: '7px 12px', background: 'color-mix(in srgb, var(--color-primary) 7%, var(--color-surface))', borderTop: '1px solid var(--color-border)', borderBottom: '1px solid var(--color-border)' }}>
+                          <td colSpan={gridTotalCols} style={{ position: 'sticky', top: 31, zIndex: 1, padding: '7px 12px', background: 'color-mix(in srgb, var(--color-primary) 7%, var(--color-surface))', borderTop: '1px solid var(--color-border)', borderBottom: '1px solid var(--color-border)' }}>
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
                               <span style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 11, fontWeight: 900, letterSpacing: '0.02em', textTransform: 'uppercase' }}>
                                 <Icon size={13} /> {meta.label} <span style={{ color: 'var(--color-text-3)', fontWeight: 700 }}>({entry.count})</span>
@@ -4393,7 +4543,7 @@ export function DevisGridWorkspace({
                             </div>
                           </td>
                         </tr>
-                        {entry.section !== 'products' && <AmountSectionColumns section={entry.section} hiddenDimensionCount={hiddenDimensionCols.size} />}
+                        {entry.section !== 'products' && <AmountSectionColumns section={entry.section} gridTotalCols={gridTotalCols} />}
                       </Fragment>
                     )
                   }
@@ -4415,24 +4565,24 @@ export function DevisGridWorkspace({
                         onTransportAddressCommit={(address) => commitTransportAddress(i, address)}
                         onDelete={() => deleteRow(i)}
                         assistantHighlight={(assistantHighlightIds.has(String(row._lineId)) || assistantHighlightIndexes.has(i)) ? effectiveAssistantHighlights : null}
-                        hiddenDimensionCount={hiddenDimensionCols.size}
+                        gridTotalCols={gridTotalCols}
                       />
                     )
                   }
                   return (
                   <Fragment key={`row-${i}-${entryIndex}`}>
-                    <MainRow row={row} index={i} displayIndex={entry.displayIndex} expanded={expandedRows.has(i)} onToggle={() => toggleRow(i)} change={change} tva={tva} multGlobal={multGlobal} editMode={editMode} onUpdate={(patch) => updateRow(i, patch)} onRecompute={(patch) => recomputeRow(i, patch)} onDelete={() => deleteRow(i)} onSaveAsRule={() => handleSaveAsRule(i)} onVerifyRules={() => handleVerifyRules(i)} assistantHighlight={(assistantHighlightIds.has(String(row._lineId)) || assistantHighlightIndexes.has(i)) ? effectiveAssistantHighlights : null} validationKnowledge={validationKnowledge} hiddenCols={hiddenCols} hiddenDimensionCols={hiddenDimensionCols} />
+                    <MainRow row={row} index={i} displayIndex={entry.displayIndex} expanded={expandedRows.has(i)} onToggle={() => toggleRow(i)} change={change} tva={tva} multGlobal={multGlobal} editMode={editMode} onUpdate={(patch) => updateRow(i, patch)} onRecompute={(patch) => recomputeRow(i, patch)} onDelete={() => deleteRow(i)} onSaveAsRule={() => handleSaveAsRule(i)} onVerifyRules={() => handleVerifyRules(i)} assistantHighlight={(assistantHighlightIds.has(String(row._lineId)) || assistantHighlightIndexes.has(i)) ? effectiveAssistantHighlights : null} validationKnowledge={validationKnowledge} hiddenCols={hiddenCols} hiddenDimensionCols={hiddenDimensionCols} visibleEquipmentColumns={visibleEquipmentColumns} showOtherEquipmentColumn={showOtherEquipmentColumn} />
                     {expandedRows.has(i) && (
                       <Fragment>
-                        <SubRowRefs row={row} editMode={editMode} onRefCommit={(colIdx, ref) => handleRefCommit(i, colIdx, ref)} hiddenCols={hiddenCols} visibleDimensionCount={visibleDimensionCount} />
-                        <SubRowPrices row={row} hiddenCols={hiddenCols} visibleDimensionCount={visibleDimensionCount} />
+                        <SubRowRefs row={row} editMode={editMode} onRefCommit={(colIdx, ref) => handleRefCommit(i, colIdx, ref)} hiddenCols={hiddenCols} visibleDimensionCount={visibleDimensionCount} visibleEquipmentColumns={visibleEquipmentColumns} showOtherEquipmentColumn={showOtherEquipmentColumn} />
+                        <SubRowPrices row={row} hiddenCols={hiddenCols} visibleDimensionCount={visibleDimensionCount} visibleEquipmentColumns={visibleEquipmentColumns} showOtherEquipmentColumn={showOtherEquipmentColumn} />
                         {/* Options supplémentaires */}
                         {(row.options || []).filter(o => !isColumnEquipmentOption(o) && !/acoustique|\b(30|35|40|45)\s*dB\b|remplissage|vitrage|ferme.?porte|garniture|serrure|msl|lss|kel|d[ée]ny/i.test(equipmentText(o))).map((opt, oi) => (
                           <tr key={`opt-${i}-${oi}`} style={{ background: SUBROW_BG }}>
                             <td colSpan={3} style={{ padding: '2px 8px 2px 52px', fontSize: 10, color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }}>
                               ↳ {opt.label}
                             </td>
-                            <td colSpan={10} style={{ padding: '2px 8px', fontSize: 10, color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }}>
+                            <td colSpan={optionNoteColSpan} style={{ padding: '2px 8px', fontSize: 10, color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }}>
                               {opt.note}
                             </td>
                             <td style={{ padding: '2px 8px', fontSize: 11, textAlign: 'right', fontWeight: 600, ...CELL.gray, borderBottom: '1px solid var(--color-border)' }}>
@@ -4444,7 +4594,7 @@ export function DevisGridWorkspace({
                         {/* Alertes */}
                         {(row.alertes || []).filter(a => a.startsWith('❌') || a.startsWith('⚠️')).map((a, ai) => (
                           <tr key={`alerte-${i}-${ai}`} style={{ background: 'rgba(160,106,44,0.06)' }}>
-                            <td colSpan={GRID_TOTAL_COLS - hiddenDimensionCols.size} style={{ padding: '2px 8px 2px 52px', fontSize: 10, color: a.startsWith('❌') ? '#a33c3c' : '#a06a2c', borderBottom: '1px solid var(--color-border)' }}>
+                            <td colSpan={gridTotalCols} style={{ padding: '2px 8px 2px 52px', fontSize: 10, color: a.startsWith('❌') ? '#a33c3c' : '#a06a2c', borderBottom: '1px solid var(--color-border)' }}>
                               {a}
                             </td>
                           </tr>
@@ -4453,7 +4603,7 @@ export function DevisGridWorkspace({
                           const style = VERDICT_STYLE[verdict.status] || VERDICT_STYLE.warning
                           return (
                             <tr key={`rule-${i}-${vi}`} style={{ background: style.bg }}>
-                              <td colSpan={GRID_TOTAL_COLS - hiddenDimensionCols.size} style={{ padding: '4px 8px 4px 52px', fontSize: 10, color: style.text, borderBottom: '1px solid var(--color-border)' }}>
+                              <td colSpan={gridTotalCols} style={{ padding: '4px 8px 4px 52px', fontSize: 10, color: style.text, borderBottom: '1px solid var(--color-border)' }}>
                                 <strong>{verdict.rule_code ? `${verdict.rule_code} — ` : ''}{verdict.rule_title}</strong>
                                 {verdict.reason ? ` : ${verdict.reason}` : ''}
                                 {verdict.fix ? <span style={{ marginLeft: 8, color: 'var(--color-text-2)' }}>Correctif : {verdict.fix}</span> : null}
@@ -4469,7 +4619,7 @@ export function DevisGridWorkspace({
               </tbody>
               <tfoot>
                 <tr>
-                  <td colSpan={GRID_TOTAL_COLS - hiddenDimensionCols.size} style={{ padding: '8px 12px', borderTop: '1px solid var(--color-border)', background: 'var(--color-surface)' }}>
+                  <td colSpan={gridTotalCols} style={{ padding: '8px 12px', borderTop: '1px solid var(--color-border)', background: 'var(--color-surface)' }}>
                     <button
                       type="button"
                       onClick={addBlankRow}
@@ -4480,15 +4630,15 @@ export function DevisGridWorkspace({
                   </td>
                 </tr>
                 <tr style={{ background: 'var(--color-surface)' }}>
-                  <td colSpan={16 - hiddenDimensionCols.size} style={{ padding: '8px 16px', fontWeight: 700, fontSize: 12, borderTop: '2px solid var(--color-border)' }}>
+                  <td colSpan={gridTotalCols - 5} style={{ padding: '8px 16px', fontWeight: 700, fontSize: 12, borderTop: '2px solid var(--color-border)' }}>
                     💶 Total général estimé
                   </td>
-                  <td style={{ padding: '8px 8px', fontWeight: 700, fontSize: 12, textAlign: 'right', borderTop: '2px solid var(--color-border)', background: CELL.gray.background, whiteSpace: 'nowrap', minWidth: 116 }}>
+                  <td style={{ padding: '8px 8px', fontWeight: 700, fontSize: 12, textAlign: 'right', borderTop: '2px solid var(--color-border)', background: CELL.gray.background, whiteSpace: 'nowrap', ...FINAL_AMOUNT_COLUMNS.pu }}>
                     {totalPU.toLocaleString('fr-FR')} €
                   </td>
                   <td style={{ borderTop: '2px solid var(--color-border)' }}></td>
                   <td style={{ borderTop: '2px solid var(--color-border)' }}></td>
-                  <td colSpan={2} style={{ padding: '8px 12px', fontWeight: 800, fontSize: 14, textAlign: 'right', borderTop: '2px solid var(--color-border)', background: CELL.blue.background, whiteSpace: 'nowrap', minWidth: 132 }}>
+                  <td colSpan={2} style={{ padding: '8px 12px', fontWeight: 800, fontSize: 14, textAlign: 'right', borderTop: '2px solid var(--color-border)', background: CELL.blue.background, whiteSpace: 'nowrap', minWidth: FINAL_AMOUNT_COLUMNS.total.minWidth + FINAL_AMOUNT_COLUMNS.actions.minWidth }}>
                     {totalHT.toLocaleString('fr-FR')} €
                   </td>
                 </tr>

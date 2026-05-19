@@ -6,7 +6,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Building2, Loader2, Search, MessageCircleReply, ChevronRight,
-  Users, Handshake, Globe, Phone, MapPin, Briefcase, X, FileText, ExternalLink
+  Users, Handshake, Globe, Phone, MapPin, Briefcase, X, FileText, ExternalLink, RefreshCw
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import api from '../api/index.js'
@@ -85,6 +85,7 @@ export default function Prospects() {
   const [detail, setDetail] = useState(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState('')
+  const [syncingId, setSyncingId] = useState(null)
 
   const selectedRowRef = useRef(null)
 
@@ -163,6 +164,24 @@ export default function Prospects() {
 
   const pickRow = (id) => {
     setSelectedId(String(id))
+  }
+
+  const syncSelectedCompany = async () => {
+    if (!selectedId || syncingId) return
+    setSyncingId(String(selectedId))
+    setDetailError('')
+    try {
+      const data = await api.get(`/prospects/companies/${selectedId}`)
+      setDetail(data)
+      const company = data?.company
+      if (company?.id) {
+        setList(previous => previous.map(item => String(item.id) === String(company.id) ? { ...item, properties: company.properties || item.properties } : item))
+      }
+    } catch (e) {
+      setDetailError(e?.error || e?.message || 'Synchronisation HubSpot impossible')
+    } finally {
+      setSyncingId(null)
+    }
   }
 
   return (
@@ -374,14 +393,27 @@ export default function Prospects() {
                             >
                               {p.name || `Entreprise #${detail.company?.id}`}
                             </h2>
-                            <button
-                              type="button"
-                              className="admin-btn-primary"
-                              onClick={() => navigate(`/prospects/${detail.company?.id}/quotes`)}
-                              style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', fontSize: '0.8125rem' }}
-                            >
-                              <Briefcase size={14} /> Gérer les devis
-                            </button>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <button
+                                type="button"
+                                className="admin-btn-ghost"
+                                onClick={syncSelectedCompany}
+                                disabled={syncingId === String(detail.company?.id)}
+                                title="Relire cette entreprise depuis HubSpot"
+                                style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', fontSize: '0.8125rem' }}
+                              >
+                                {syncingId === String(detail.company?.id) ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                                Synchroniser
+                              </button>
+                              <button
+                                type="button"
+                                className="admin-btn-primary"
+                                onClick={() => navigate(`/prospects/${detail.company?.id}/quotes`)}
+                                style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', fontSize: '0.8125rem' }}
+                              >
+                                <Briefcase size={14} /> Gérer les devis
+                              </button>
+                            </div>
                           </div>
                           <div
                             style={{

@@ -1175,7 +1175,6 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
   const [searchDone, setSearchDone] = useState(false)
   const [companyDetail, setCompanyDetail] = useState(null)
   const [detailLoading, setDetailLoading] = useState(false)
-  const [manualRefreshKey, setManualRefreshKey] = useState(0)
   const [creatingDeal, setCreatingDeal] = useState(false)
   const [editingDealId, setEditingDealId] = useState(null)
   const [editingDealName, setEditingDealName] = useState('')
@@ -1246,12 +1245,29 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
       }
     })
     return () => { active = false }
-  }, [selectedCompanyId, detailRefreshKey, manualRefreshKey])
+  }, [selectedCompanyId, detailRefreshKey])
 
-  const refreshCompanyDetail = () => {
+  const syncSelectedCompanyFromHubSpot = async () => {
     if (!selectedCompanyId || detailLoading) return
     companyDetailCache.delete(String(selectedCompanyId))
-    setManualRefreshKey((value) => value + 1)
+    setDetailLoading(true)
+    try {
+      const detail = await api.get(`/prospects/companies/${selectedCompanyId}`)
+      companyDetailCache.set(String(selectedCompanyId), detail)
+      setCompanyDetail(detail)
+      const company = detail?.company || {}
+      onSelect({
+        id: company.id || selectedCompanyId,
+        name: company.properties?.name || selectedCompany?.name || `#${selectedCompanyId}`,
+        properties: company.properties || selectedCompany?.properties || {},
+        deliveryAddress: companyDeliveryAddress(company),
+      })
+      showToast('Client synchronisé depuis HubSpot')
+    } catch (err) {
+      showToast(err?.error || err?.message || 'Synchronisation HubSpot impossible', 'error')
+    } finally {
+      setDetailLoading(false)
+    }
   }
 
   const selectCompany = (c) => {
@@ -1556,12 +1572,13 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
               <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
                 <button
                   type="button"
-                  onClick={refreshCompanyDetail}
+                  onClick={syncSelectedCompanyFromHubSpot}
                   disabled={detailLoading}
-                  title="Rafraîchir les deals HubSpot"
-                  style={{ ...iconBtn(), color: detailLoading ? 'var(--color-text-3)' : 'var(--color-primary)' }}
+                  title="Synchroniser le client depuis HubSpot (adresse, infos et deals)"
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '7px 9px', borderRadius: 8, border: '1px solid var(--color-primary)', background: 'color-mix(in srgb, var(--color-primary) 10%, var(--color-surface))', color: 'var(--color-primary)', fontSize: 11, fontWeight: 900, cursor: detailLoading ? 'default' : 'pointer', opacity: detailLoading ? 0.7 : 1 }}
                 >
                   <RefreshCw size={14} style={detailLoading ? { animation: 'spin 0.8s linear infinite' } : undefined} />
+                  Sync
                 </button>
                 <button
                   type="button"
