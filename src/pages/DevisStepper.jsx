@@ -169,6 +169,8 @@ function contentDispositionFilename(header) {
 }
 
 function dbLineToGridRow(line) {
+  const raw = line.raw_json ? parseJsonArray(line.raw_json) : undefined
+  const rawMeta = raw?.find?.(item => item && typeof item === 'object' && item._devisGridMeta)
   const row = {
     _lineId: line.id,
     _dbPosition: line.position,
@@ -188,7 +190,8 @@ function dbLineToGridRow(line) {
     equip_extra: parseJsonArray(line.equipements_json),
     alertes: parseJsonArray(line.alertes_json),
     docs: parseJsonArray(line.docs_json),
-    _raw: line.raw_json ? parseJsonArray(line.raw_json) : undefined,
+    _raw: raw,
+    _thermolaquageDisabled: rawMeta?._thermolaquageDisabled === true,
     qty: line.qty != null ? Number(line.qty) : 1,
     total_ligne_ht: line.total_ligne_ht != null ? Number(line.total_ligne_ht) : null,
   }
@@ -197,6 +200,8 @@ function dbLineToGridRow(line) {
 
 function gridRowToLinePayload(row, position) {
   const resolved = typeof resolveRow === 'function' ? resolveRow(row) : row
+  const rawJson = Array.isArray(row._raw) ? row._raw.filter(item => !(item && typeof item === 'object' && item._devisGridMeta)) : null
+  if (rawJson && row._thermolaquageDisabled) rawJson.push({ _devisGridMeta: true, _thermolaquageDisabled: true })
   const lineTotal = resolved?._unpriced
     ? null
     : (row.line_section === 'products' || !row.line_section
@@ -214,7 +219,7 @@ function gridRowToLinePayload(row, position) {
     largeur_mm: row.larg_mm ?? row.largeur_mm ?? null,
     prix_base_ht: row.prix_base_ht ?? null,
     ref_base: row.ref_base || null,
-    raw_json: Array.isArray(row._raw) ? row._raw : null,
+    raw_json: rawJson,
     options_json: row.options || [],
     serrure_ref: row.serrure?.ref || row._serrureLabel || null,
     serrure_prix: row.serrure?.prix ?? null,

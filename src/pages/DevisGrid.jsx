@@ -1823,8 +1823,11 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
               const next = current === 'RAL' ? 'NCS' : current === 'NCS' ? '' : 'RAL'
               const raw = Array.isArray(row._raw) ? [...row._raw] : new Array(17).fill(null)
               while (raw.length < 17) raw.push(null)
+              const cleanRaw = raw.filter(item => !(item && typeof item === 'object' && item._devisGridMeta))
               raw[16] = setThermolaquageInRawValue(raw[16], next || null)
-              onRecompute?.({ _raw_override: raw, _thermolaquageTypeOverride: next || null, _thermolaquageDisabled: !next })
+              if (!next) cleanRaw.push({ _devisGridMeta: true, _thermolaquageDisabled: true })
+              cleanRaw[16] = raw[16]
+              onRecompute?.({ _raw_override: cleanRaw, _thermolaquageTypeOverride: next || null, _thermolaquageDisabled: !next })
             }}
             title="Thermolaquage : RAL puis NCS puis aucun"
             style={{ width: 34, height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: `1px solid ${r.thermolaquage ? '#d97706' : 'var(--color-border)'}`, borderRadius: 6, background: r.thermolaquage ? '#fbbf24' : 'var(--color-surface)', color: r.thermolaquage ? '#111827' : 'var(--color-text-3)', fontSize: 9, fontWeight: 900, cursor: 'pointer', padding: 0 }}
@@ -2083,6 +2086,12 @@ function AmountRow({ row, index, displayIndex = index, change, tva, multGlobal, 
 }
 
 // ─── Sous-row références ─────────────────────────────────────────────────────
+const SUBROW_REF_VALUE_STYLE = { fontSize: 12, lineHeight: '16px', fontWeight: 500 }
+const SUBROW_PRICE_VALUE_STYLE = { fontSize: 9, lineHeight: '11px', fontWeight: 500 }
+const SUBROW_REF_VALUE_BLOCK_STYLE = { display: 'block', padding: '2px 6px', ...SUBROW_REF_VALUE_STYLE }
+const SUBROW_PRICE_VALUE_BLOCK_STYLE = { display: 'block', padding: '2px 6px', ...SUBROW_PRICE_VALUE_STYLE }
+const SUBROW_OPTION_CELL_STYLE = { background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }
+
 function SubRowRefs({ row, editMode, onRefCommit, hiddenCols = new Set(), visibleDimensionCount = 4, visibleEquipmentColumns = [], showOtherEquipmentColumn = true }) {
   const r = resolveRow(row)
   // Construction stricte : 1 cellule par colonne, pas de colSpan
@@ -2098,13 +2107,13 @@ function SubRowRefs({ row, editMode, onRefCommit, hiddenCols = new Set(), visibl
   // Dimensions dynamiques
   for (let i = 0; i < visibleDimensionCount; ++i) cells.push(<td key={`ref-dim-${i}`} style={{ background: SUBROW_BG }}></td>)
   // TL
-  cells.push(<td key="ref-tl" style={{ background: SUBROW_BG, textAlign: 'center', fontWeight: 700, borderBottom: '1px solid var(--color-border)' }}>{r._thermolaquageRef || '—'}</td>)
+  cells.push(<td key="ref-tl" style={SUBROW_OPTION_CELL_STYLE}><span style={SUBROW_REF_VALUE_BLOCK_STYLE}>{r._thermolaquageRef || '—'}</span></td>)
   // Serrure
-  cells.push(<td key="ref-serrure" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}>{editMode ? <EditableText value={r._serrureRef || ''} onCommit={v => onRefCommit?.(0, v)} placeholder="réf…" fontSize={11} /> : <span style={{ display: 'block', padding: '3px 8px' }}>{r._serrureRef || '—'}</span>}</td>)
+  cells.push(<td key="ref-serrure" style={SUBROW_OPTION_CELL_STYLE}>{editMode ? <EditableText value={r._serrureRef || ''} onCommit={v => onRefCommit?.(0, v)} placeholder="réf…" fontSize={12} /> : <span style={SUBROW_REF_VALUE_BLOCK_STYLE}>{r._serrureRef || '—'}</span>}</td>)
   // Garniture int.
-  cells.push(<td key="ref-garnint" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}>{editMode ? <EditableText value={r._garnIntRef || ''} onCommit={v => onRefCommit?.(1, v)} placeholder="réf…" fontSize={11} /> : <span style={{ display: 'block', padding: '3px 8px' }}>{r._garnIntRef || '—'}</span>}</td>)
+  cells.push(<td key="ref-garnint" style={SUBROW_OPTION_CELL_STYLE}>{editMode ? <EditableText value={r._garnIntRef || ''} onCommit={v => onRefCommit?.(1, v)} placeholder="réf…" fontSize={12} /> : <span style={SUBROW_REF_VALUE_BLOCK_STYLE}>{r._garnIntRef || '—'}</span>}</td>)
   // Garniture ext.
-  cells.push(<td key="ref-garnext" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}>{editMode ? <EditableText value={r._garnExtRef || ''} onCommit={v => onRefCommit?.(2, v)} placeholder="réf…" fontSize={11} /> : <span style={{ display: 'block', padding: '3px 8px' }}>{r._garnExtRef || '—'}</span>}</td>)
+  cells.push(<td key="ref-garnext" style={SUBROW_OPTION_CELL_STYLE}>{editMode ? <EditableText value={r._garnExtRef || ''} onCommit={v => onRefCommit?.(2, v)} placeholder="réf…" fontSize={12} /> : <span style={SUBROW_REF_VALUE_BLOCK_STYLE}>{r._garnExtRef || '—'}</span>}</td>)
   // Colonnes équipements dynamiques
   visibleEquipmentColumns.forEach((column, idx) => {
     const equipment = r._equipmentByColumn?.[column.key]
@@ -2114,7 +2123,7 @@ function SubRowRefs({ row, editMode, onRefCommit, hiddenCols = new Set(), visibl
     else if (column.key === 'cremone') ref = r._cremoneRef
     else if (column.key === 'plinthes') ref = r._plintheRef
     else ref = equipment?.ref || extractRef(equipment?.note) || extractRef(equipment?.label) || null
-    cells.push(<td key={`ref-equip-${column.key}`} style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}>{editMode ? <EditableText value={ref || ''} onCommit={v => onRefCommit?.(3 + idx, v)} placeholder="réf…" fontSize={11} /> : <span style={{ display: 'block', padding: '3px 8px' }}>{ref || '—'}</span>}</td>)
+    cells.push(<td key={`ref-equip-${column.key}`} style={SUBROW_OPTION_CELL_STYLE}>{editMode ? <EditableText value={ref || ''} onCommit={v => onRefCommit?.(3 + idx, v)} placeholder="réf…" fontSize={12} /> : <span style={SUBROW_REF_VALUE_BLOCK_STYLE}>{ref || '—'}</span>}</td>)
   })
   // Autres équipements
   if (showOtherEquipmentColumn) cells.push(<td key="ref-autres" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}></td>)
@@ -2139,13 +2148,13 @@ function SubRowPrices({ row, hiddenCols = new Set(), visibleDimensionCount = 4, 
   // Dimensions dynamiques
   for (let i = 0; i < visibleDimensionCount; ++i) cells.push(<td key={`price-dim-${i}`} style={{ background: SUBROW_BG }}></td>)
   // TL
-  cells.push(<td key="price-tl" style={{ background: SUBROW_BG, textAlign: 'center', fontWeight: 700, borderBottom: '1px solid var(--color-border)' }}>{r._unpriced ? '—' : (r._thermolaquagePrix != null ? r._thermolaquagePrix.toLocaleString('fr-FR') + ' €' : <span style={{ color: 'var(--color-text-3)' }}>—</span>)}</td>)
+  cells.push(<td key="price-tl" style={{ ...SUBROW_OPTION_CELL_STYLE, textAlign: 'right' }}><span style={SUBROW_PRICE_VALUE_BLOCK_STYLE}>{r._unpriced ? '—' : (r._thermolaquagePrix != null ? r._thermolaquagePrix.toLocaleString('fr-FR') + ' €' : '—')}</span></td>)
   // Serrure
-  cells.push(<td key="price-serrure" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}><span style={{ display: 'block', padding: '3px 8px' }}>{r._optSerrure?.prix != null ? r._optSerrure.prix.toLocaleString('fr-FR') + ' €' : '—'}</span></td>)
+  cells.push(<td key="price-serrure" style={{ ...SUBROW_OPTION_CELL_STYLE, textAlign: 'right' }}><span style={SUBROW_PRICE_VALUE_BLOCK_STYLE}>{r._optSerrure?.prix != null ? r._optSerrure.prix.toLocaleString('fr-FR') + ' €' : '—'}</span></td>)
   // Garniture int.
-  cells.push(<td key="price-garnint" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}><span style={{ display: 'block', padding: '3px 8px' }}>{r._garnIntPrix != null ? r._garnIntPrix.toLocaleString('fr-FR') + ' €' : '—'}</span></td>)
+  cells.push(<td key="price-garnint" style={{ ...SUBROW_OPTION_CELL_STYLE, textAlign: 'right' }}><span style={SUBROW_PRICE_VALUE_BLOCK_STYLE}>{r._garnIntPrix != null ? r._garnIntPrix.toLocaleString('fr-FR') + ' €' : '—'}</span></td>)
   // Garniture ext.
-  cells.push(<td key="price-garnext" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}><span style={{ display: 'block', padding: '3px 8px' }}>{r._garnExtPrix != null ? r._garnExtPrix.toLocaleString('fr-FR') + ' €' : '—'}</span></td>)
+  cells.push(<td key="price-garnext" style={{ ...SUBROW_OPTION_CELL_STYLE, textAlign: 'right' }}><span style={SUBROW_PRICE_VALUE_BLOCK_STYLE}>{r._garnExtPrix != null ? r._garnExtPrix.toLocaleString('fr-FR') + ' €' : '—'}</span></td>)
   // Colonnes équipements dynamiques
   visibleEquipmentColumns.forEach((column) => {
     const equipment = r._equipmentByColumn?.[column.key]
@@ -2155,12 +2164,12 @@ function SubRowPrices({ row, hiddenCols = new Set(), visibleDimensionCount = 4, 
     else if (column.key === 'cremone') prix = r._cremonePrix
     else if (column.key === 'plinthes') prix = r._plinthePrix
     else prix = equipment?.prix ?? null
-    cells.push(<td key={`price-equip-${column.key}`} style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}><span style={{ display: 'block', padding: '3px 8px' }}>{prix != null ? prix.toLocaleString('fr-FR') + ' €' : '—'}</span></td>)
+    cells.push(<td key={`price-equip-${column.key}`} style={{ ...SUBROW_OPTION_CELL_STYLE, textAlign: 'right' }}><span style={SUBROW_PRICE_VALUE_BLOCK_STYLE}>{prix != null ? prix.toLocaleString('fr-FR') + ' €' : '—'}</span></td>)
   })
   // Autres équipements
   if (showOtherEquipmentColumn) cells.push(<td key="price-autres" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}></td>)
   // PU HT (base)
-  cells.push(<td key="price-base" style={{ background: SUBROW_BG, ...CELL.gray, borderBottom: '1px solid var(--color-border)', textAlign: 'right', color: 'var(--color-text-3)' }}>base: {r._unpriced ? '—' : (r.prix_base_ht?.toLocaleString('fr-FR') ?? '—')} €</td>)
+  cells.push(<td key="price-base" style={{ background: SUBROW_BG, ...CELL.gray, borderBottom: '1px solid var(--color-border)', textAlign: 'right', color: 'var(--color-text-3)', ...SUBROW_PRICE_VALUE_STYLE }}>base: {r._unpriced ? '—' : (r.prix_base_ht?.toLocaleString('fr-FR') ?? '—')} €</td>)
   // Remise, Q, Total HT, actions
   for (let i = 0; i < 4; ++i) cells.push(<td key={`price-end-${i}`} style={{ background: SUBROW_BG, borderBottom: '1px solid var(--color-border)' }}></td>)
   return <tr style={{ background: SUBROW_BG }}>{cells}</tr>
@@ -2868,7 +2877,7 @@ function EditableText({ value, onCommit, placeholder = '—', width = '100%', fo
       style={{
         width, fontSize,
         background: 'transparent', border: 'none', outline: 'none',
-        color: 'inherit', font: 'inherit', padding: '2px 4px',
+        color: 'inherit', fontFamily: 'inherit', fontWeight: 'inherit', lineHeight: 'inherit', padding: '2px 4px',
       }}
     />
   )
