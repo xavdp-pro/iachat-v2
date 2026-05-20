@@ -138,7 +138,13 @@ export default function Prospects() {
     ;(async () => {
       try {
         const data = await api.get(`/prospects/companies/${selectedId}`)
-        if (!cancelled) setDetail(data)
+        if (!cancelled) {
+          setDetail(data)
+          const company = data?.company
+          if (company?.id) {
+            setList(previous => previous.map(item => String(item.id) === String(company.id) ? { ...item, properties: company.properties || item.properties } : item))
+          }
+        }
       } catch (e) {
         if (!cancelled) {
           setDetail(null)

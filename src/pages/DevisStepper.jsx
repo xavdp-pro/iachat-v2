@@ -95,6 +95,18 @@ function companyDeliveryAddress(company) {
   ].filter(Boolean).join(', ')
 }
 
+function companyFromHubSpotDetail(detail, fallback = null) {
+  const company = detail?.company || {}
+  if (!company?.id && !fallback?.id) return null
+  return {
+    id: company.id || fallback?.id,
+    name: company.properties?.name || fallback?.name || `#${company.id || fallback?.id}`,
+    properties: company.properties || fallback?.properties || {},
+    deliveryAddress: companyDeliveryAddress(company),
+    _hubspotSyncedAt: new Date().toISOString(),
+  }
+}
+
 function repLetter(index) {
   if (index < 26) return String.fromCharCode(65 + index)
   return String(index + 1)
@@ -1237,7 +1249,11 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
       try {
         const detail = await api.get(`/prospects/companies/${selectedCompanyId}`)
         companyDetailCache.set(String(selectedCompanyId), detail)
-        if (active) setCompanyDetail(detail)
+        if (active) {
+          setCompanyDetail(detail)
+          const refreshedCompany = companyFromHubSpotDetail(detail, selectedCompany)
+          if (refreshedCompany) onSelect(refreshedCompany)
+        }
       } catch {
         if (active && !cachedDetail) setCompanyDetail(null)
       } finally {
@@ -1255,13 +1271,8 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
       const detail = await api.get(`/prospects/companies/${selectedCompanyId}`)
       companyDetailCache.set(String(selectedCompanyId), detail)
       setCompanyDetail(detail)
-      const company = detail?.company || {}
-      onSelect({
-        id: company.id || selectedCompanyId,
-        name: company.properties?.name || selectedCompany?.name || `#${selectedCompanyId}`,
-        properties: company.properties || selectedCompany?.properties || {},
-        deliveryAddress: companyDeliveryAddress(company),
-      })
+      const refreshedCompany = companyFromHubSpotDetail(detail, selectedCompany)
+      if (refreshedCompany) onSelect(refreshedCompany)
       showToast('Client synchronisé depuis HubSpot')
     } catch (err) {
       showToast(err?.error || err?.message || 'Synchronisation HubSpot impossible', 'error')
@@ -1276,6 +1287,7 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
       name: c.properties?.name || c.name || `#${c.id}`,
       properties: c.properties || {},
       deliveryAddress: companyDeliveryAddress(c),
+      _hubspotSyncedAt: new Date().toISOString(),
     })
     setQuery('')
     setCompanies([])
@@ -2817,10 +2829,6 @@ function StepEditor({
             {lines.length} ligne{lines.length !== 1 ? 's' : ''} · sauvegarde backend par ligne{saving ? ' · enregistrement…' : ''}
           </div>
         </div>
-        <button onClick={checkpointVersion} disabled={!versionId || saving === 'checkpoint'} style={ghostBtn()} title="Enregistrer un checkpoint dans la version active">
-          {saving === 'checkpoint' ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Clock size={13} />}
-          Checkpoint version
-        </button>
         <button onClick={() => askAIEditor('Contrôle les lignes du devis et liste les incohérences bloquantes.')} style={ghostBtn()}>
           <Bot size={13} /> Audit IA
         </button>
