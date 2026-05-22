@@ -46,10 +46,6 @@ function rowLetterLabel(index) {
   return label
 }
 
-function formatEuro(value) {
-  return `${value.toLocaleString('fr-FR')}\u00a0€`
-}
-
 async function runClientLimited(items, limit, worker) {
   let cursor = 0
   const workers = Array.from({ length: Math.min(Math.max(Number(limit) || 1, 1), items.length || 1) }, async () => {
@@ -325,45 +321,6 @@ function thermolaquageInfo(row = {}) {
   }
 }
 
-function thermolaquageTariffFallback(row = {}) {
-  const type = thermolaquageInfo(row).type
-  if (!type) return { ref: null, prix: null }
-  const height = numberOrNull(row.haut_mm ?? row.hauteur_mm)
-  const width = numberOrNull(row.larg_mm ?? row.largeur_mm)
-  if (height == null || width == null) return { ref: null, prix: null }
-  const qty = Math.max(1, Math.round(numberOrNull(row.qty ?? row.quantite) || 1))
-  const twoLeaf = isTwoLeafRow(row)
-
-  if (twoLeaf) {
-    if (width <= 2400 && height <= 2300) {
-      if (qty <= 3) return { ref: '227', prix: 567 }
-      if (qty <= 12) return { ref: '229', prix: 333 }
-      return { ref: '229V', prix: 279 }
-    }
-    if (width <= 2750 && height <= 3100) {
-      if (qty <= 3) return { ref: '228', prix: 688 }
-      return { ref: '230', prix: 450 }
-    }
-    if (qty <= 3) return { ref: 'A06', prix: 809 }
-    return { ref: 'A08', prix: 621 }
-  }
-
-  if (width <= 1150 && height <= 2300) {
-    if (qty === 1) return { ref: '205', prix: 439 }
-    if (qty <= 6) return { ref: '207', prix: 284 }
-    if (qty <= 24) return { ref: '209', prix: 156 }
-    return { ref: '209V', prix: 125 }
-  }
-  if (width <= 1350 && height <= 2795) {
-    if (qty === 1) return { ref: '206', prix: 567 }
-    if (qty <= 6) return { ref: '208', prix: 410 }
-    return { ref: '210', prix: 297 }
-  }
-  if (qty === 1) return { ref: 'A06', prix: 695 }
-  if (qty <= 6) return { ref: 'A08', prix: 536 }
-  return { ref: 'A10', prix: 469 }
-}
-
 function setThermolaquageInRawValue(current, nextType) {
   const cleaned = String(current || '')
     .replace(/\b(?:thermolaquage|laquage)\s*(?:RAL|NCS)?\b/giu, '')
@@ -616,7 +573,6 @@ export function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
   const thermolaquage = r.thermolaquage != null
     ? r.thermolaquage
     : !!tlInfo.type
-  const tlFallback = tlInfo.type ? thermolaquageTariffFallback(r) : { ref: null, prix: null }
   const blastPerf = blastValue(r._raw?.[6]) || blastValue(r.blast) || blastValue(optionsText) || blastValue(r.designation) || blastValue(r.alertes?.join(' '))
   const optAcoustic = (r.options || []).find(o => isAcousticValue(equipmentText(o)))
   const acousticRef = optAcoustic ? (extractRef(optAcoustic.note) || extractRef(optAcoustic.label)) : null
@@ -660,8 +616,8 @@ export function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
     _otherExtrasRefs: otherExtras.map(e => e.ref || extractRef(e.note) || extractRef(e.label)).filter(Boolean),
     _otherExtrasPrix: otherExtras.reduce((sum, e) => sum + (Number(e.prix) || 0), 0),
     _thermolaquageType: tlInfo.type,
-    _thermolaquageRef: tlInfo.ref || tlFallback.ref,
-    _thermolaquagePrix: tlInfo.prix ?? tlFallback.prix,
+    _thermolaquageRef: tlInfo.ref,
+    _thermolaquagePrix: tlInfo.prix,
     _thermolaquageLabel: tlInfo.label,
     _thermolaquageNote: tlInfo.note,
     _garnIntLabel: garnIntLabel,
@@ -1660,7 +1616,7 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
       <Td style={{ minWidth: perfCellMinWidth, width: perfCellWidth, fontSize: 10, color: 'var(--color-text-2)', verticalAlign: 'top', ...assistantCellStyle('rc', 'pb', 'cf', 'blast', 'belier', 'prison', 'acoustic') }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'stretch' }}>
           {editMode ? (
-            <div style={{ display: 'flex', flexWrap: 'nowrap', gap: 4, alignItems: 'flex-end', minHeight: 35, width: 'max-content', overflow: 'visible' }}>
+            <div style={{ display: 'flex', flexWrap: 'nowrap', gap: 4, alignItems: 'flex-end', minHeight: 35, width: 'max-content', maxWidth: '100%', overflowX: 'auto' }}>
               {/* +/− first so they stay visible when perf controls wrap to several lines (narrow cell). */}
               {canCollapseEmptyPerfs && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 1, flex: '0 0 28px' }}>
@@ -1817,7 +1773,7 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{r.largeur_pl_mm ?? '—'}</span>}
       </Td>
       {/* TL */}
-      <Td style={{ width: 44, minWidth: 44, textAlign: 'center', padding: 0, ...assistantCellStyle('thermolaquage') }}>
+      <Td style={{ width: 38, minWidth: 38, textAlign: 'center', padding: 0, ...assistantCellStyle('thermolaquage') }}>
         {isAmountSection ? <span style={{ fontSize: 9, color: 'var(--color-text-3)' }}>—</span> : editMode ? (
           <button
             type="button"
@@ -1827,11 +1783,8 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
               const next = current === 'RAL' ? 'NCS' : current === 'NCS' ? '' : 'RAL'
               const raw = Array.isArray(row._raw) ? [...row._raw] : new Array(17).fill(null)
               while (raw.length < 17) raw.push(null)
-              const cleanRaw = raw.filter(item => !(item && typeof item === 'object' && item._devisGridMeta))
               raw[16] = setThermolaquageInRawValue(raw[16], next || null)
-              if (!next) cleanRaw.push({ _devisGridMeta: true, _thermolaquageDisabled: true })
-              cleanRaw[16] = raw[16]
-              onRecompute?.({ _raw_override: cleanRaw, _thermolaquageTypeOverride: next || null, _thermolaquageDisabled: !next })
+              onRecompute?.({ _raw_override: raw, _thermolaquageTypeOverride: next || null, _thermolaquageDisabled: !next })
             }}
             title="Thermolaquage : RAL puis NCS puis aucun"
             style={{ width: 34, height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: `1px solid ${r.thermolaquage ? '#d97706' : 'var(--color-border)'}`, borderRadius: 6, background: r.thermolaquage ? '#fbbf24' : 'var(--color-surface)', color: r.thermolaquage ? '#111827' : 'var(--color-text-3)', fontSize: 9, fontWeight: 900, cursor: 'pointer', padding: 0 }}
@@ -2090,12 +2043,6 @@ function AmountRow({ row, index, displayIndex = index, change, tva, multGlobal, 
 }
 
 // ─── Sous-row références ─────────────────────────────────────────────────────
-const SUBROW_PRICE_VALUE_STYLE = { fontSize: 9, lineHeight: '11px', fontWeight: 500, whiteSpace: 'nowrap' }
-const SUBROW_REF_VALUE_STYLE = SUBROW_PRICE_VALUE_STYLE
-const SUBROW_REF_VALUE_BLOCK_STYLE = { display: 'block', padding: '2px 6px', textAlign: 'right', ...SUBROW_REF_VALUE_STYLE }
-const SUBROW_PRICE_VALUE_BLOCK_STYLE = { display: 'block', padding: '2px 6px', ...SUBROW_PRICE_VALUE_STYLE }
-const SUBROW_OPTION_CELL_STYLE = { background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }
-
 function SubRowRefs({ row, editMode, onRefCommit, hiddenCols = new Set(), visibleDimensionCount = 4, visibleEquipmentColumns = [], showOtherEquipmentColumn = true }) {
   const r = resolveRow(row)
   // Construction stricte : 1 cellule par colonne, pas de colSpan
@@ -2111,13 +2058,13 @@ function SubRowRefs({ row, editMode, onRefCommit, hiddenCols = new Set(), visibl
   // Dimensions dynamiques
   for (let i = 0; i < visibleDimensionCount; ++i) cells.push(<td key={`ref-dim-${i}`} style={{ background: SUBROW_BG }}></td>)
   // TL
-  cells.push(<td key="ref-tl" style={{ ...SUBROW_OPTION_CELL_STYLE, textAlign: 'right' }}><span style={SUBROW_REF_VALUE_BLOCK_STYLE}>{r._thermolaquageRef || '—'}</span></td>)
+  cells.push(<td key="ref-tl" style={{ background: SUBROW_BG, textAlign: 'center', fontWeight: 700, borderBottom: '1px solid var(--color-border)' }}>{r._thermolaquageRef || '—'}</td>)
   // Serrure
-  cells.push(<td key="ref-serrure" style={{ ...SUBROW_OPTION_CELL_STYLE, textAlign: 'right' }}>{editMode ? <EditableText value={r._serrureRef || ''} onCommit={v => onRefCommit?.(0, v)} placeholder="réf…" fontSize={9} textAlign="right" /> : <span style={SUBROW_REF_VALUE_BLOCK_STYLE}>{r._serrureRef || '—'}</span>}</td>)
+  cells.push(<td key="ref-serrure" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}>{editMode ? <EditableText value={r._serrureRef || ''} onCommit={v => onRefCommit?.(0, v)} placeholder="réf…" fontSize={11} /> : <span style={{ display: 'block', padding: '3px 8px' }}>{r._serrureRef || '—'}</span>}</td>)
   // Garniture int.
-  cells.push(<td key="ref-garnint" style={{ ...SUBROW_OPTION_CELL_STYLE, textAlign: 'right' }}>{editMode ? <EditableText value={r._garnIntRef || ''} onCommit={v => onRefCommit?.(1, v)} placeholder="réf…" fontSize={9} textAlign="right" /> : <span style={SUBROW_REF_VALUE_BLOCK_STYLE}>{r._garnIntRef || '—'}</span>}</td>)
+  cells.push(<td key="ref-garnint" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}>{editMode ? <EditableText value={r._garnIntRef || ''} onCommit={v => onRefCommit?.(1, v)} placeholder="réf…" fontSize={11} /> : <span style={{ display: 'block', padding: '3px 8px' }}>{r._garnIntRef || '—'}</span>}</td>)
   // Garniture ext.
-  cells.push(<td key="ref-garnext" style={{ ...SUBROW_OPTION_CELL_STYLE, textAlign: 'right' }}>{editMode ? <EditableText value={r._garnExtRef || ''} onCommit={v => onRefCommit?.(2, v)} placeholder="réf…" fontSize={9} textAlign="right" /> : <span style={SUBROW_REF_VALUE_BLOCK_STYLE}>{r._garnExtRef || '—'}</span>}</td>)
+  cells.push(<td key="ref-garnext" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}>{editMode ? <EditableText value={r._garnExtRef || ''} onCommit={v => onRefCommit?.(2, v)} placeholder="réf…" fontSize={11} /> : <span style={{ display: 'block', padding: '3px 8px' }}>{r._garnExtRef || '—'}</span>}</td>)
   // Colonnes équipements dynamiques
   visibleEquipmentColumns.forEach((column, idx) => {
     const equipment = r._equipmentByColumn?.[column.key]
@@ -2127,7 +2074,7 @@ function SubRowRefs({ row, editMode, onRefCommit, hiddenCols = new Set(), visibl
     else if (column.key === 'cremone') ref = r._cremoneRef
     else if (column.key === 'plinthes') ref = r._plintheRef
     else ref = equipment?.ref || extractRef(equipment?.note) || extractRef(equipment?.label) || null
-    cells.push(<td key={`ref-equip-${column.key}`} style={{ ...SUBROW_OPTION_CELL_STYLE, textAlign: 'right' }}>{editMode ? <EditableText value={ref || ''} onCommit={v => onRefCommit?.(3 + idx, v)} placeholder="réf…" fontSize={9} textAlign="right" /> : <span style={SUBROW_REF_VALUE_BLOCK_STYLE}>{ref || '—'}</span>}</td>)
+    cells.push(<td key={`ref-equip-${column.key}`} style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}>{editMode ? <EditableText value={ref || ''} onCommit={v => onRefCommit?.(3 + idx, v)} placeholder="réf…" fontSize={11} /> : <span style={{ display: 'block', padding: '3px 8px' }}>{ref || '—'}</span>}</td>)
   })
   // Autres équipements
   if (showOtherEquipmentColumn) cells.push(<td key="ref-autres" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}></td>)
@@ -2152,13 +2099,13 @@ function SubRowPrices({ row, hiddenCols = new Set(), visibleDimensionCount = 4, 
   // Dimensions dynamiques
   for (let i = 0; i < visibleDimensionCount; ++i) cells.push(<td key={`price-dim-${i}`} style={{ background: SUBROW_BG }}></td>)
   // TL
-  cells.push(<td key="price-tl" style={{ ...SUBROW_OPTION_CELL_STYLE, textAlign: 'right' }}><span style={SUBROW_PRICE_VALUE_BLOCK_STYLE}>{r._unpriced ? '—' : (r._thermolaquagePrix != null ? formatEuro(r._thermolaquagePrix) : '—')}</span></td>)
+  cells.push(<td key="price-tl" style={{ background: SUBROW_BG, textAlign: 'center', fontWeight: 700, borderBottom: '1px solid var(--color-border)' }}>{r._unpriced ? '—' : (r._thermolaquagePrix != null ? r._thermolaquagePrix.toLocaleString('fr-FR') + ' €' : <span style={{ color: 'var(--color-text-3)' }}>—</span>)}</td>)
   // Serrure
-  cells.push(<td key="price-serrure" style={{ ...SUBROW_OPTION_CELL_STYLE, textAlign: 'right' }}><span style={SUBROW_PRICE_VALUE_BLOCK_STYLE}>{r._optSerrure?.prix != null ? formatEuro(r._optSerrure.prix) : '—'}</span></td>)
+  cells.push(<td key="price-serrure" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}><span style={{ display: 'block', padding: '3px 8px' }}>{r._optSerrure?.prix != null ? r._optSerrure.prix.toLocaleString('fr-FR') + ' €' : '—'}</span></td>)
   // Garniture int.
-  cells.push(<td key="price-garnint" style={{ ...SUBROW_OPTION_CELL_STYLE, textAlign: 'right' }}><span style={SUBROW_PRICE_VALUE_BLOCK_STYLE}>{r._garnIntPrix != null ? formatEuro(r._garnIntPrix) : '—'}</span></td>)
+  cells.push(<td key="price-garnint" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}><span style={{ display: 'block', padding: '3px 8px' }}>{r._garnIntPrix != null ? r._garnIntPrix.toLocaleString('fr-FR') + ' €' : '—'}</span></td>)
   // Garniture ext.
-  cells.push(<td key="price-garnext" style={{ ...SUBROW_OPTION_CELL_STYLE, textAlign: 'right' }}><span style={SUBROW_PRICE_VALUE_BLOCK_STYLE}>{r._garnExtPrix != null ? formatEuro(r._garnExtPrix) : '—'}</span></td>)
+  cells.push(<td key="price-garnext" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}><span style={{ display: 'block', padding: '3px 8px' }}>{r._garnExtPrix != null ? r._garnExtPrix.toLocaleString('fr-FR') + ' €' : '—'}</span></td>)
   // Colonnes équipements dynamiques
   visibleEquipmentColumns.forEach((column) => {
     const equipment = r._equipmentByColumn?.[column.key]
@@ -2168,12 +2115,12 @@ function SubRowPrices({ row, hiddenCols = new Set(), visibleDimensionCount = 4, 
     else if (column.key === 'cremone') prix = r._cremonePrix
     else if (column.key === 'plinthes') prix = r._plinthePrix
     else prix = equipment?.prix ?? null
-    cells.push(<td key={`price-equip-${column.key}`} style={{ ...SUBROW_OPTION_CELL_STYLE, textAlign: 'right' }}><span style={SUBROW_PRICE_VALUE_BLOCK_STYLE}>{prix != null ? formatEuro(prix) : '—'}</span></td>)
+    cells.push(<td key={`price-equip-${column.key}`} style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}><span style={{ display: 'block', padding: '3px 8px' }}>{prix != null ? prix.toLocaleString('fr-FR') + ' €' : '—'}</span></td>)
   })
   // Autres équipements
   if (showOtherEquipmentColumn) cells.push(<td key="price-autres" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}></td>)
   // PU HT (base)
-  cells.push(<td key="price-base" style={{ background: SUBROW_BG, ...CELL.gray, borderBottom: '1px solid var(--color-border)', textAlign: 'right', color: 'var(--color-text-3)', ...SUBROW_PRICE_VALUE_STYLE }}>base: {r._unpriced ? '—' : (r.prix_base_ht != null ? formatEuro(r.prix_base_ht) : '—')}</td>)
+  cells.push(<td key="price-base" style={{ background: SUBROW_BG, ...CELL.gray, borderBottom: '1px solid var(--color-border)', textAlign: 'right', color: 'var(--color-text-3)' }}>base: {r._unpriced ? '—' : (r.prix_base_ht?.toLocaleString('fr-FR') ?? '—')} €</td>)
   // Remise, Q, Total HT, actions
   for (let i = 0; i < 4; ++i) cells.push(<td key={`price-end-${i}`} style={{ background: SUBROW_BG, borderBottom: '1px solid var(--color-border)' }}></td>)
   return <tr style={{ background: SUBROW_BG }}>{cells}</tr>
@@ -2855,7 +2802,7 @@ function EditableSelect({ value, options, onCommit, placeholder = '—', loadOnM
 }
 
 // ─── Cellule éditable texte libre ────────────────────────────────────────────
-function EditableText({ value, onCommit, placeholder = '—', width = '100%', fontSize = 11, textAlign = 'left' }) {
+function EditableText({ value, onCommit, placeholder = '—', width = '100%', fontSize = 11 }) {
   const [v, setV] = useState(value ?? '')
   const focused = useRef(false)
   useEffect(() => {
@@ -2879,9 +2826,9 @@ function EditableText({ value, onCommit, placeholder = '—', width = '100%', fo
       onClick={e => e.stopPropagation()}
       placeholder={placeholder}
       style={{
-        width, fontSize, textAlign,
+        width, fontSize,
         background: 'transparent', border: 'none', outline: 'none',
-        color: 'inherit', fontFamily: 'inherit', fontWeight: 'inherit', lineHeight: 'inherit', padding: '2px 4px',
+        color: 'inherit', font: 'inherit', padding: '2px 4px',
       }}
     />
   )
@@ -3023,6 +2970,17 @@ if (typeof document !== 'undefined' && !document.getElementById('devis-popover-s
   s.id = 'devis-popover-style'
   s.textContent = '@keyframes devisPopoverFadeIn { from { opacity:0; transform: translate(-50%, -100%) translateY(4px); } to { opacity:1; } } @keyframes spin { to { transform: rotate(360deg); } } @keyframes devisToastIn { from { opacity:0; transform: translateY(8px); } to { opacity:1; transform: translateY(0); } }'
   document.head.appendChild(s)
+}
+
+// ─── Légende couleurs ─────────────────────────────────────────────────────────
+function Legend() {
+  return (
+    <div style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '4px 8px', fontSize: 10, color: 'var(--color-text-3)' }}>
+      <span style={{ padding: '2px 6px', borderRadius: 3, ...CELL.yellow }}>🟡 Saisie</span>
+      <span style={{ padding: '2px 6px', borderRadius: 3, ...CELL.gray }}>⬜ Calculé</span>
+      <span style={{ padding: '2px 6px', borderRadius: 3, ...CELL.blue }}>🔵 Formule</span>
+    </div>
+  )
 }
 
 // ─── Stepper "Ajouter une ligne" ──────────────────────────────────────────────
@@ -3391,7 +3349,7 @@ export function DevisGridWorkspace({
 }) {
   const navigate = useNavigate()
   const [rows, setRows] = useState(() => {
-    if (Array.isArray(initialRows)) return initialRows.length > 0 ? applyDefaultTransportAddress(initialRows, defaultTransportAddress) : (startWithBlank ? [createBlankGridRow()] : [])
+    if (Array.isArray(initialRows)) return initialRows.length > 0 ? applyDefaultTransportAddress(normalizeCalculationRows(splitCalculationOptions(initialRows)), defaultTransportAddress) : (startWithBlank ? [createBlankGridRow()] : [])
     try {
       const saved = localStorage.getItem('devisGridRows')
       if (saved) return normalizeCalculationRows(JSON.parse(saved) || [])
@@ -3499,7 +3457,7 @@ export function DevisGridWorkspace({
   useEffect(() => {
     if (!Array.isArray(initialRows)) return
     const nextRows = initialRows.length > 0
-      ? applyDefaultTransportAddress(initialRows, defaultTransportAddress)
+      ? applyDefaultTransportAddress(normalizeCalculationRows(splitCalculationOptions(initialRows)), defaultTransportAddress)
       : (initialRowsInitializedRef.current ? [] : (startWithBlank ? [createBlankGridRow()] : []))
     initialRowsInitializedRef.current = true
     replaceRows(nextRows)
@@ -4188,8 +4146,6 @@ export function DevisGridWorkspace({
   }, [onRowsChange, refreshValidationKnowledge, showToast, validateEntriesProgressively, validationKnowledge])
   const totalPU  = rows.reduce((s, r) => s + (resolveRow(r, change, tva, multGlobal)._pu), 0)
   const totalHT = rows.reduce((s, r) => s + (resolveRow(r, change, tva, multGlobal)._totalHt || 0), 0)
-  const totalTva = Math.round(totalHT * tva)
-  const totalTtc = totalHT + totalTva
 
   // Colonnes masquables : calculer lesquelles ont des données sur les lignes produits
   const productRows = rows.filter(r => sectionOf(r) === 'products')
@@ -4237,7 +4193,7 @@ export function DevisGridWorkspace({
         <div style={{ width: 36, flexShrink: 0, borderRight: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '8px 0', gap: 8 }}>
           <button
             type="button"
-            onClick={() => navigate('/home')}
+            onClick={() => navigate('/')}
             title="Retour à l'accueil"
             style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-2)', padding: 4, display: 'flex' }}
           >
@@ -4262,7 +4218,7 @@ export function DevisGridWorkspace({
       <div style={{ width: 240, flexShrink: 0, borderRight: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 8 }}>
           <button
-            onClick={() => navigate('/home')}
+            onClick={() => navigate('/')}
             style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-3)', padding: 2, display: 'flex' }}
             title="Retour à l'accueil"
           >
@@ -4270,7 +4226,7 @@ export function DevisGridWorkspace({
           </button>
           <button
             type="button"
-            onClick={() => navigate('/home')}
+            onClick={() => navigate('/')}
             title="Retour à l'accueil"
             style={{ background: 'none', border: 'none', padding: 0, color: 'var(--color-text)', cursor: 'pointer', fontSize: 12, fontWeight: 700, font: 'inherit', textAlign: 'left' }}
           >
@@ -4525,6 +4481,7 @@ export function DevisGridWorkspace({
               </button>
             )}
             <ModeSwitch value={editMode} onChange={setEditMode} />
+            <Legend />
           </div>
         </div>
 
@@ -4662,51 +4619,28 @@ export function DevisGridWorkspace({
               </tbody>
               <tfoot>
                 <tr>
-                  <td colSpan={gridTotalCols} style={{ padding: '6px 8px', borderTop: '1px solid var(--color-border)', borderBottom: '1px solid var(--color-border)', background: 'var(--color-surface)' }}>
+                  <td colSpan={gridTotalCols} style={{ padding: '8px 12px', borderTop: '1px solid var(--color-border)', background: 'var(--color-surface)' }}>
                     <button
                       type="button"
                       onClick={addBlankRow}
-                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 8px', borderRadius: 4, border: '1px solid var(--color-primary)', background: 'color-mix(in srgb, var(--color-primary) 8%, var(--color-surface))', color: 'var(--color-primary)', fontSize: 11, fontWeight: 800, cursor: 'pointer' }}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 6, border: '1px solid var(--color-primary)', background: 'color-mix(in srgb, var(--color-primary) 8%, var(--color-surface))', color: 'var(--color-primary)', fontSize: 11, fontWeight: 800, cursor: 'pointer' }}
                     >
                       <Plus size={13} /> Ligne blanche
                     </button>
                   </td>
                 </tr>
                 <tr style={{ background: 'var(--color-surface)' }}>
-                  <td colSpan={gridTotalCols - 2} style={{ padding: '6px 8px', fontWeight: 700, fontSize: 12, borderBottom: '1px solid var(--color-border)' }}>
-                    Total général HT
+                  <td colSpan={gridTotalCols - 5} style={{ padding: '8px 16px', fontWeight: 700, fontSize: 12, borderTop: '2px solid var(--color-border)' }}>
+                    💶 Total général estimé
                   </td>
-                  <td style={{ padding: '6px 8px', fontWeight: 800, fontSize: 12, textAlign: 'right', borderBottom: '1px solid var(--color-border)', background: CELL.blue.background, whiteSpace: 'nowrap', ...FINAL_AMOUNT_COLUMNS.total }}>
+                  <td style={{ padding: '8px 8px', fontWeight: 700, fontSize: 12, textAlign: 'right', borderTop: '2px solid var(--color-border)', background: CELL.gray.background, whiteSpace: 'nowrap', ...FINAL_AMOUNT_COLUMNS.pu }}>
+                    {totalPU.toLocaleString('fr-FR')} €
+                  </td>
+                  <td style={{ borderTop: '2px solid var(--color-border)' }}></td>
+                  <td style={{ borderTop: '2px solid var(--color-border)' }}></td>
+                  <td colSpan={2} style={{ padding: '8px 12px', fontWeight: 800, fontSize: 14, textAlign: 'right', borderTop: '2px solid var(--color-border)', background: CELL.blue.background, whiteSpace: 'nowrap', minWidth: FINAL_AMOUNT_COLUMNS.total.minWidth + FINAL_AMOUNT_COLUMNS.actions.minWidth }}>
                     {totalHT.toLocaleString('fr-FR')} €
                   </td>
-                  <td style={{ borderBottom: '1px solid var(--color-border)', ...FINAL_AMOUNT_COLUMNS.actions }}></td>
-                </tr>
-                <tr style={{ background: 'var(--color-surface)' }}>
-                  <td colSpan={gridTotalCols - 2} style={{ padding: '6px 8px', fontWeight: 700, fontSize: 12, borderBottom: '1px solid var(--color-border)' }}>
-                    Geste commerciale
-                  </td>
-                  <td style={{ padding: '6px 8px', fontWeight: 700, fontSize: 12, textAlign: 'right', borderBottom: '1px solid var(--color-border)', whiteSpace: 'nowrap', ...FINAL_AMOUNT_COLUMNS.total }}>
-                    - %
-                  </td>
-                  <td style={{ borderBottom: '1px solid var(--color-border)', ...FINAL_AMOUNT_COLUMNS.actions }}></td>
-                </tr>
-                <tr style={{ background: 'var(--color-surface)' }}>
-                  <td colSpan={gridTotalCols - 2} style={{ padding: '6px 8px', fontWeight: 700, fontSize: 12, borderBottom: '1px solid var(--color-border)' }}>
-                    TVA
-                  </td>
-                  <td style={{ padding: '6px 8px', fontWeight: 700, fontSize: 12, textAlign: 'right', borderBottom: '1px solid var(--color-border)', whiteSpace: 'nowrap', ...FINAL_AMOUNT_COLUMNS.total }}>
-                    {(tva * 100).toLocaleString('fr-FR', { maximumFractionDigits: 1 })}%
-                  </td>
-                  <td style={{ borderBottom: '1px solid var(--color-border)', ...FINAL_AMOUNT_COLUMNS.actions }}></td>
-                </tr>
-                <tr style={{ background: 'var(--color-surface)' }}>
-                  <td colSpan={gridTotalCols - 2} style={{ padding: '6px 8px', fontWeight: 800, fontSize: 12, borderBottom: '1px solid var(--color-border)' }}>
-                    Total TTC
-                  </td>
-                  <td style={{ padding: '6px 8px', fontWeight: 900, fontSize: 12, textAlign: 'right', borderBottom: '1px solid var(--color-border)', background: CELL.blue.background, whiteSpace: 'nowrap', ...FINAL_AMOUNT_COLUMNS.total }}>
-                    {totalTtc.toLocaleString('fr-FR')} €
-                  </td>
-                  <td style={{ borderBottom: '1px solid var(--color-border)', ...FINAL_AMOUNT_COLUMNS.actions }}></td>
                 </tr>
               </tfoot>
             </table>

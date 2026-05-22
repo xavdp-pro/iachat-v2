@@ -25,7 +25,7 @@ function PrivateRoute({ children, adminOnly = false }) {
   const { user, loading } = useAuthStore()
   if (loading) return null
   if (!user) return <Navigate to="/login" replace />
-  if (adminOnly && user.role !== 'admin') return <Navigate to="/home" replace />
+  if (adminOnly && user.role !== 'admin') return <Navigate to="/" replace />
   return children
 }
 
@@ -103,7 +103,7 @@ export default function App() {
                 <Admin />
               </PrivateRoute>
             } />
-            <Route path="/home" element={
+            <Route path="/" element={
               <PrivateRoute>
                 <Home />
               </PrivateRoute>
@@ -140,7 +140,7 @@ export default function App() {
             } />
             <Route path="/devis/legacy" element={
               <PrivateRoute>
-                <Navigate to="/home" replace />
+                <Navigate to="/" replace />
               </PrivateRoute>
             } />
             <Route path="/devis/grid" element={
@@ -168,8 +168,7 @@ export default function App() {
                 <ProspectQuotes />
               </PrivateRoute>
             } />
-            <Route path="/" element={<Navigate to="/home" replace />} />
-            <Route path="*" element={<Navigate to="/home" replace />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </Suspense>
       </BrowserRouter>

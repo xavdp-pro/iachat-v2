@@ -1912,7 +1912,7 @@ router.get('/:id/pdf', async (req, res) => {
 
     res.set({
       'Content-Type': 'application/pdf',
-      'Content-Disposition': attachmentDisposition(filename),
+      'Content-Disposition': req.query.inline ? `inline; filename="${String(filename).replace(/"/g, "'")}"; filename*=UTF-8''${encodeURIComponent(filename)}` : attachmentDisposition(filename),
       'Content-Length': buffer.length,
     })
     res.end(buffer)

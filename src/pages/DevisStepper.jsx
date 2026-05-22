@@ -4573,7 +4573,7 @@ export default function DevisStepper() {
         currentVersionId={currentVersionId}
         onOpenExperiences={() => navigate('/experiences', { state: { returnTo: currentStepperUrl(), returnLabel: 'Retour au devis NEXUS' } })}
         onOpenRules={() => navigate('/rules', { state: { returnTo: currentStepperUrl(), returnLabel: 'Retour au devis NEXUS' } })}
-        onBackHome={() => navigate('/home')}
+        onBackHome={() => navigate('/')}
       />
 
       {/* Step content + assistant */}

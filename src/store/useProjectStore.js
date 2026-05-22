@@ -6,6 +6,7 @@ const ACTIVE_PROJECT_KEY = 'iachat_active_project_id'
 export const useProjectStore = create((set, get) => ({
   projects: [],
   activeProject: null,
+  unfiledDiscussions: [],
   discussions: [],
   activeDiscussion: null,
   messages: [],
@@ -33,6 +34,7 @@ export const useProjectStore = create((set, get) => ({
       // Intentionally no auto-select of the first project (user chooses or creates)
 
       set({ projects: data, loading: false, activeProject })
+      await get().fetchUnfiledDiscussions()
       if (activeProject) {
         await get().fetchDiscussions(activeProject.id)
       } else {
@@ -64,6 +66,18 @@ export const useProjectStore = create((set, get) => ({
     } catch (err) {
       console.error('Error fetching discussions:', err)
       set({ loading: false })
+    }
+  },
+
+  fetchUnfiledDiscussions: async () => {
+    try {
+      const data = await api.get('/discussions?unfiled=1')
+      set({ unfiledDiscussions: data })
+      return data
+    } catch (err) {
+      console.error('Error fetching unfiled discussions:', err)
+      set({ unfiledDiscussions: [] })
+      return []
     }
   },
 
@@ -102,17 +116,18 @@ export const useProjectStore = create((set, get) => ({
     }))
   },
 
-  createDiscussion: async (title) => {
+  createDiscussion: async (title, projectId = undefined) => {
     const { activeProject } = get()
-    if (!activeProject) return
+    const targetProjectId = projectId === undefined ? activeProject?.id ?? null : projectId
     const safeTitle = typeof title === 'string' && title.trim() ? title.trim() : 'Untitled'
     try {
       const data = await api.post('/discussions', {
         title: safeTitle,
-        project_id: activeProject.id,
+        project_id: targetProjectId,
       })
       set((state) => ({
-        discussions: [data, ...state.discussions],
+        discussions: data.project_id === state.activeProject?.id ? [data, ...state.discussions] : state.discussions,
+        unfiledDiscussions: data.project_id == null ? [data, ...state.unfiledDiscussions] : state.unfiledDiscussions,
         activeDiscussion: data,
       }))
       return data
@@ -134,11 +149,28 @@ export const useProjectStore = create((set, get) => ({
     return data
   },
 
+  moveDiscussion: async (id, projectId) => {
+    const data = await api.put(`/discussions/${id}`, { project_id: projectId })
+    set((state) => ({
+      discussions:
+        data.project_id === state.activeProject?.id
+          ? [data, ...state.discussions.filter((d) => d.id !== id)]
+          : state.discussions.filter((d) => d.id !== id),
+      unfiledDiscussions:
+        data.project_id == null
+          ? [data, ...state.unfiledDiscussions.filter((d) => d.id !== id)]
+          : state.unfiledDiscussions.filter((d) => d.id !== id),
+      activeDiscussion: state.activeDiscussion?.id === id ? { ...state.activeDiscussion, ...data } : state.activeDiscussion,
+    }))
+    return data
+  },
+
   deleteDiscussion: async (id) => {
     await api.delete(`/discussions/${id}`)
     const wasActive = get().activeDiscussion?.id === id
     set((state) => ({
       discussions: state.discussions.filter((d) => d.id !== id),
+      unfiledDiscussions: state.unfiledDiscussions.filter((d) => d.id !== id),
       activeDiscussion: wasActive ? null : state.activeDiscussion,
       messages: wasActive ? [] : state.messages,
     }))
@@ -228,39 +260,7 @@ export const useProjectStore = create((set, get) => ({
       ollamaError: null,
     }))
 
-    // If attachments present, fall back to non-streaming endpoint
-    if (attachments.length > 0) {
-      try {
-        const data = await api.post(
-          '/messages',
-          { discussion_id: activeDiscussion.id, content, role: 'user', attachments },
-          { timeout: 600000 }
-        )
-        const userMsg = data.message || data
-        const assistantMsg = data.assistant
-        set((state) => {
-          const replaced = state.messages.map((m) =>
-            m.id === tempId ? { ...userMsg, attachments: userMsg.attachments || [] } : m
-          )
-          return {
-            messages: assistantMsg
-              ? [...replaced, { ...assistantMsg, attachments: assistantMsg.attachments || [] }]
-              : replaced,
-            loading: false,
-            ollamaError: data.ollama_error || null,
-          }
-        })
-        return data
-      } catch (err) {
-        set((state) => ({
-          messages: state.messages.filter((m) => m.id !== tempId),
-          loading: false,
-        }))
-        throw err
-      }
-    }
-
-    // Streaming path (no attachments)
+    // Streaming path
     try {
       const token = localStorage.getItem('token')
       const baseURL = import.meta.env.VITE_API_URL || '/api'
@@ -306,7 +306,7 @@ export const useProjectStore = create((set, get) => ({
             } else if (evt.type === 'done') {
               set((state) => ({
                 messages: evt.assistant
-                  ? [...state.messages, { ...evt.assistant, attachments: [] }]
+                  ? [...state.messages, { ...evt.assistant, attachments: evt.assistant.attachments || [] }]
                   : state.messages,
                 loading: false,
                 streaming: false,

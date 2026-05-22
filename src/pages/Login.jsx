@@ -24,7 +24,7 @@ export default function Login() {
     setError('')
     try {
       await login(email, password)
-      navigate('/home')
+      navigate('/')
     } catch (err) {
       setError(err?.error || t('login.invalidCredentials'))
     } finally {

@@ -1260,7 +1260,7 @@ export default function Devis() {
             <LayoutGrid size={16} />
             <span>Mode tableur</span>
           </button>
-          <button type="button" className="admin-btn-ghost" onClick={() => navigate('/home')} title="Retour à l’accueil">
+          <button type="button" className="admin-btn-ghost" onClick={() => navigate('/')} title="Retour à l’accueil">
             <MessageCircleReply size={16} />
             <span>Accueil</span>
           </button>

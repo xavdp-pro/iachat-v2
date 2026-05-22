@@ -52,7 +52,7 @@ export default function DevisSearch() {
   return (
     <div className="quote-search-shell">
       <header className="quote-search-header">
-        <button type="button" className="admin-btn-ghost" onClick={() => navigate('/home')}>
+        <button type="button" className="admin-btn-ghost" onClick={() => navigate('/')}>
           <ArrowLeft size={15} /> Accueil
         </button>
         <div>
@@ -82,7 +82,7 @@ export default function DevisSearch() {
                 <th>Numéro</th>
                 <th>Affaire</th>
                 <th>Client</th>
-                <th>Montant</th>
+                <th className="amount-cell">Montant</th>
                 <th>Versions</th>
                 <th>Modifié</th>
                 <th>Accès</th>
@@ -98,7 +98,7 @@ export default function DevisSearch() {
                   <td><strong>{devis.display_name || devis.quote_number || `#${devis.id}`}</strong></td>
                   <td>{devis.name || devis.deal_id || '—'}</td>
                   <td>{devis.client_name || '—'}</td>
-                  <td>{formatMoney(devis.total_ht)}</td>
+                  <td className="amount-cell">{formatMoney(devis.total_ht)}</td>
                   <td>{Number(devis.versions_count || 0)} · {Number(devis.row_count || 0)} ligne(s)</td>
                   <td>{formatDate(devis.updated_at)}</td>
                   <td>

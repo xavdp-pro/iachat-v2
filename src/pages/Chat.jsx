@@ -5,7 +5,7 @@ import {
   Send, Bot, Sparkles, Settings,
   MoreVertical, Archive, ArchiveRestore,
   Menu, X, Paperclip, Mic, MicOff, FileText, ZoomIn,
-  Users, UserPlus, House,
+  Users, UserPlus, House, MessagesSquare, Search, Calculator, FileSearch,
 } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/useAuthStore.js'
@@ -13,6 +13,8 @@ import { useThemeStore } from '../store/useThemeStore.js'
 import { useProjectStore } from '../store/useProjectStore.js'
 import { useTranslation } from 'react-i18next'
 import { motion, AnimatePresence } from 'framer-motion'
+import { MarkdownRenderer } from '../components/MarkdownRenderer.jsx'
+import { getAuthToken } from '../api/index.js'
 
 export default function Chat() {
   const { t } = useTranslation()
@@ -21,10 +23,10 @@ export default function Chat() {
   const { darkMode, toggleDarkMode } = useThemeStore()
   const {
     projects, activeProject, fetchProjects, setActiveProject,
-    discussions, activeDiscussion, setActiveDiscussion,
+    discussions, unfiledDiscussions, activeDiscussion, setActiveDiscussion,
     createProject, createDiscussion, updateDiscussion, deleteDiscussion,
-    updateProject, deleteProject,
-    messages, sendMessage, updateMessage, deleteMessage, loading,
+    moveDiscussion, updateProject, deleteProject,
+    messages, sendMessage, updateMessage, deleteMessage, loading, streaming, streamingContent,
     ollamaError, clearOllamaError,
     projectMembers, fetchProjectMembers, addProjectMember, removeProjectMember,
   } = useProjectStore()
@@ -47,7 +49,9 @@ export default function Chat() {
   const [editingMessageContent, setEditingMessageContent] = useState('')
   const [confirmDeleteMessage, setConfirmDeleteMessage] = useState(null)
   const [infoDialog, setInfoDialog] = useState(null)
+  const [openSourceRef, setOpenSourceRef] = useState(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [dragOverProjectId, setDragOverProjectId] = useState(null)
   const [layoutDesktop, setLayoutDesktop] = useState(
     () => typeof window !== 'undefined' && window.matchMedia('(min-width: 1024px)').matches
   )
@@ -71,9 +75,28 @@ export default function Chat() {
     closeMobileSidebar()
   }
 
+  const selectUnfiledDiscussions = () => {
+    setActiveProject(null)
+    setActiveDiscussion(null)
+    closeMobileSidebar()
+  }
+
   const selectDiscussion = (d) => {
     setActiveDiscussion(d)
     closeMobileSidebar()
+  }
+
+  const startDiscussionDrag = (ev, discussion) => {
+    ev.dataTransfer.effectAllowed = 'move'
+    ev.dataTransfer.setData('application/x-zerux-discussion', String(discussion.id))
+  }
+
+  const dropDiscussionOnProject = async (ev, projectId) => {
+    ev.preventDefault()
+    setDragOverProjectId(null)
+    const id = Number(ev.dataTransfer.getData('application/x-zerux-discussion'))
+    if (!Number.isFinite(id)) return
+    await moveDiscussion(id, projectId)
   }
 
   useEffect(() => { fetchProjects() }, [])
@@ -113,6 +136,15 @@ export default function Chat() {
     document.addEventListener('mousedown', onDoc)
     return () => document.removeEventListener('mousedown', onDoc)
   }, [projectMenuId, discussionMenuId])
+
+  useEffect(() => {
+    if (!openSourceRef) return
+    const onDoc = (e) => {
+      if (!e.target.closest?.('.chat-source-ref')) setOpenSourceRef(null)
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [openSourceRef])
 
   // Close any open modal on Escape key
   useEffect(() => {
@@ -290,7 +322,7 @@ export default function Chat() {
   const autoResizeTextarea = () => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
-      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`
+      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 320)}px`
     }
   }
 
@@ -389,7 +421,6 @@ export default function Chat() {
 
     // No discussion: create one then send
     if (!activeDiscussion) {
-      if (!activeProject) return
       await createDiscussion(t('chat.defaultDiscussionTitle'))
       await sendMessage(content, attachments)
       return
@@ -412,13 +443,35 @@ export default function Chat() {
 
   // Composer placeholder varies by UI state
   const composerPlaceholder = (() => {
-    if (!activeProject) return t('chat.landingProjectHint')
     if (!activeDiscussion) return t('chat.startFirstMessage')
     return t('chat.messagePlaceholder')
   })()
 
-  // Can send: project required; text or at least one attachment needed
-  const canSend = !!activeProject && !loading && (!!inputMessage.trim() || pendingAttachments.length > 0)
+  const visibleDiscussions = activeProject ? discussions : unfiledDiscussions
+  const canSend = !loading && (!!inputMessage.trim() || pendingAttachments.length > 0)
+
+  const landingActions = [
+    {
+      icon: FileText,
+      title: 'Préparer un devis',
+      text: 'Aide au cadrage client, besoins techniques et prochaines étapes.',
+    },
+    {
+      icon: Search,
+      title: 'Retrouver une info',
+      text: 'Questions sur les chiffrages, règles métier ou historiques utiles.',
+    },
+    {
+      icon: Calculator,
+      title: 'Analyser un chiffrage',
+      text: 'Contrôle des hypothèses, incohérences et points à clarifier.',
+    },
+    {
+      icon: FileSearch,
+      title: 'Question sur un PDF',
+      text: 'Recherche dans les documents analysés avec référence au fichier et à la page.',
+    },
+  ]
 
   const discussionHeaderActions =
     activeDiscussion && user?.id != null && Number(user.id) === Number(activeDiscussion.created_by) ? (
@@ -477,7 +530,6 @@ export default function Chat() {
           <button
             type="button"
             className="chat-primary-action"
-            disabled={!activeProject}
             onClick={async () => {
               await createDiscussion(t('chat.defaultDiscussionTitle'))
               closeMobileSidebar()
@@ -489,12 +541,41 @@ export default function Chat() {
         </div>
 
         <nav className="chat-sidebar-scroll custom-scrollbar">
+          <h3 className="chat-sidebar-heading">Conversations</h3>
+          <div className="chat-sidebar-list">
+            <button
+              type="button"
+              className={`chat-project-chip ${!activeProject ? 'chat-project-chip--active' : ''} ${dragOverProjectId === 'unfiled' ? 'chat-project-chip--drop' : ''}`}
+              onClick={selectUnfiledDiscussions}
+              onDragOver={(ev) => {
+                if (!ev.dataTransfer.types.includes('application/x-zerux-discussion')) return
+                ev.preventDefault()
+                setDragOverProjectId('unfiled')
+              }}
+              onDragLeave={() => setDragOverProjectId(null)}
+              onDrop={(ev) => dropDiscussionOnProject(ev, null)}
+            >
+              <MessagesSquare size={15} style={{ flexShrink: 0, opacity: 0.65 }} />
+              <span>Sans dossier</span>
+            </button>
+          </div>
+
           <h3 className="chat-sidebar-heading">{t('chat.projects')}</h3>
           <div className="chat-sidebar-list">
             {activeProjects.map((p) => {
               const isOwner = user?.id != null && Number(user.id) === Number(p.owner_id)
               return (
-                <div key={p.id} className="chat-project-row">
+                <div
+                  key={p.id}
+                  className={`chat-project-row ${dragOverProjectId === p.id ? 'chat-project-row--drop' : ''}`}
+                  onDragOver={(ev) => {
+                    if (!ev.dataTransfer.types.includes('application/x-zerux-discussion')) return
+                    ev.preventDefault()
+                    setDragOverProjectId(p.id)
+                  }}
+                  onDragLeave={() => setDragOverProjectId(null)}
+                  onDrop={(ev) => dropDiscussionOnProject(ev, p.id)}
+                >
                   <button
                     type="button"
                     className={`chat-project-chip ${activeProject?.id === p.id ? 'chat-project-chip--active' : ''}`}
@@ -620,19 +701,18 @@ export default function Chat() {
             )}
           </div>
 
-          {activeProject && (
-            <>
-              <h3 className="chat-sidebar-heading">{t('chat.discussions')}</h3>
+          <>
+              <h3 className="chat-sidebar-heading">{activeProject ? t('chat.discussions') : 'Conversations libres'}</h3>
               <div className="chat-sidebar-list">
-                {discussions.length === 0 ? (
+                {visibleDiscussions.length === 0 ? (
                   <p className="px-2 py-1.5 text-xs leading-snug" style={{ color: 'var(--color-text-3)' }}>
-                    {t('chat.pickDiscussion')}
+                    {activeProject ? t('chat.pickDiscussion') : 'Commencez une conversation sans choisir de dossier.'}
                   </p>
                 ) : (
-                  discussions.map((d) => {
+                  visibleDiscussions.map((d) => {
                     const isCreator = user?.id != null && Number(user.id) === Number(d.created_by)
                     return (
-                      <div key={d.id} className="chat-thread-row">
+                      <div key={d.id} className="chat-thread-row" draggable onDragStart={(ev) => startDiscussionDrag(ev, d)}>
                         <button
                           type="button"
                           className={`chat-thread-item ${activeDiscussion?.id === d.id ? 'chat-thread-item--active' : ''}`}
@@ -682,11 +762,10 @@ export default function Chat() {
                 )}
               </div>
             </>
-          )}
         </nav>
 
         <div className="chat-sidebar-footer">
-          <Link to="/home" className="chat-footer-link" onClick={closeMobileSidebar}>
+          <Link to="/" className="chat-footer-link" onClick={closeMobileSidebar}>
             <House size={16} strokeWidth={2} />
             Accueil
           </Link>
@@ -785,7 +864,7 @@ export default function Chat() {
                 <p className="chat-landing-sub">
                   {activeProject
                     ? t('chat.landingWithProject')
-                    : t('chat.landingNoProject')}
+                    : 'Commencez directement, ou glissez ensuite la conversation dans un dossier.'}
                 </p>
               </div>
 
@@ -804,13 +883,36 @@ export default function Chat() {
                   autoResizeTextarea={autoResizeTextarea}
                   canSend={canSend}
                   loading={loading}
-                  disabled={!activeProject}
+                  disabled={false}
                   placeholder={composerPlaceholder}
                   isRecording={isRecording}
                   toggleMic={toggleMic}
                   t={t}
                   setLightboxSrc={setLightboxSrc}
                 />
+              </div>
+
+              <div className="chat-landing-actions" aria-label="Actions rapides">
+                {landingActions.map((action) => {
+                  const Icon = action.icon
+                  return (
+                    <button
+                      key={action.title}
+                      type="button"
+                      className="chat-landing-action"
+                      onClick={() => {
+                        setInputMessage(action.title)
+                        setTimeout(autoResizeTextarea, 0)
+                      }}
+                    >
+                      <span className="chat-landing-action-icon"><Icon size={17} strokeWidth={2} /></span>
+                      <span>
+                        <strong>{action.title}</strong>
+                        <small>{action.text}</small>
+                      </span>
+                    </button>
+                  )
+                })}
               </div>
             </div>
           )}
@@ -856,7 +958,8 @@ export default function Chat() {
                       <p className="chat-empty-discussion-sub">{t('chat.emptyDiscussionSub')}</p>
                     </div>
                   ) : (
-                    messages.map((m, idx) => {
+                    <>
+                      {messages.map((m, idx) => {
                       const isOwner = m.role === 'user' && user?.id != null && Number(user.id) === Number(m.user_id)
                       const isEditing = editingMessageId === m.id
                       return (
@@ -904,10 +1007,17 @@ export default function Chat() {
                               </div>
                             ) : (
                               <div className={m.role === 'user' ? 'chat-bubble-user' : 'chat-bubble-ai'}>
-                                {m.content}
+                                {m.role === 'assistant' ? <MarkdownRenderer content={m.content} /> : m.content}
+                                {m.role === 'assistant' && (
+                                  <SourceRefs
+                                    message={m}
+                                    openSourceRef={openSourceRef}
+                                    setOpenSourceRef={setOpenSourceRef}
+                                  />
+                                )}
                                 {m.attachments?.length > 0 && (
                                   <div className="chat-msg-attachments">
-                                    {m.attachments.map((att, ai) =>
+                                    {m.attachments.filter((att) => att.attach_type !== 'source').map((att, ai) =>
                                       att.attach_type === 'image' ? (
                                         <button
                                           key={ai}
@@ -969,7 +1079,28 @@ export default function Chat() {
                           )}
                         </motion.div>
                       )
-                    })
+                      })}
+                      {streaming && streamingContent && (
+                        <motion.div
+                          initial={{ opacity: 0, y: 8 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          className="chat-msg-row chat-msg-row--ai"
+                        >
+                          <div
+                            className="chat-msg-avatar"
+                            style={{ background: 'var(--color-avatar-ai-bg)', border: '1px solid var(--color-border)', color: 'var(--color-avatar-ai-text)' }}
+                          >
+                            <Bot size={16} />
+                          </div>
+                          <div className="chat-msg-body">
+                            <div className="chat-bubble-ai chat-bubble-ai--streaming">
+                              <MarkdownRenderer content={streamingContent} streaming />
+                            </div>
+                            <div className="chat-msg-meta text-left">{t('chat.assistant')}</div>
+                          </div>
+                        </motion.div>
+                      )}
+                    </>
                   )}
                   <div ref={messagesEndRef} />
                 </div>
@@ -1375,6 +1506,134 @@ export default function Chat() {
         .custom-scrollbar::-webkit-scrollbar { width: 4px; }
         .custom-scrollbar::-webkit-scrollbar-thumb { background: var(--color-border-strong); border-radius: 4px; }
       `}</style>
+    </div>
+  )
+}
+
+function parseSourceAttachment(att) {
+  try {
+    const raw = att.data || att.path
+    if (!raw) return null
+    return JSON.parse(raw)
+  } catch {
+    return null
+  }
+}
+
+async function openAuthenticatedPdf(source) {
+  const popup = window.open('', '_blank', 'noopener,noreferrer')
+  const token = getAuthToken()
+  try {
+    const response = await fetch(source.url, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+    if (!response.ok) {
+      const text = await response.text().catch(() => '')
+      throw new Error(text || `PDF indisponible (${response.status})`)
+    }
+    const blob = await response.blob()
+    const objectUrl = URL.createObjectURL(new Blob([blob], { type: 'application/pdf' }))
+    if (popup) {
+      popup.location.href = objectUrl
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 5 * 60 * 1000)
+    } else {
+      window.open(objectUrl, '_blank', 'noopener,noreferrer')
+    }
+  } catch (err) {
+    if (popup) popup.close()
+    console.error('Open devis PDF:', err)
+    window.open(source.url, '_blank', 'noopener,noreferrer')
+  }
+}
+
+function SourceRefs({ message, openSourceRef, setOpenSourceRef }) {
+  const sources = (message.attachments || [])
+    .filter((att) => att.attach_type === 'source')
+    .map((att) => ({ att, source: parseSourceAttachment(att) }))
+    .filter((item) => item.source)
+
+  if (!sources.length) return null
+
+  return (
+    <div className="chat-source-refs" aria-label="Sources utilisées">
+      {sources.map(({ att, source }) => {
+        const refKey = `${message.id}:${att.id}`
+        const isOpen = openSourceRef === refKey
+        const label = source.kind === 'rule'
+          ? source.code || `Règle ${source.id}`
+          : source.kind === 'document'
+            ? source.title || `Document ${source.id}`
+            : source.kind === 'devis_pdf'
+              ? source.filename || source.title || `Devis ${source.id}.pdf`
+            : `Expérience ${source.id}`
+        const typeLabel = source.kind === 'rule'
+          ? 'Règle'
+          : source.kind === 'document'
+            ? 'Document'
+            : source.kind === 'devis_pdf'
+              ? 'PDF'
+              : 'Expérience'
+        return (
+          <span
+            key={refKey}
+            className={`chat-source-ref chat-source-ref--${source.kind}`}
+            onMouseEnter={() => setOpenSourceRef(refKey)}
+            onMouseLeave={() => setOpenSourceRef(null)}
+          >
+            {source.kind === 'devis_pdf' && source.url ? (
+              <a
+                className="chat-source-pill"
+                href={source.url}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  openAuthenticatedPdf(source)
+                }}
+              >
+                <FileText size={13} strokeWidth={2.2} />
+                <span>{typeLabel}</span>
+                <strong>{label}</strong>
+              </a>
+            ) : (
+              <button
+                type="button"
+                className="chat-source-pill"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setOpenSourceRef(isOpen ? null : refKey)
+                }}
+              >
+                <span>{typeLabel}</span>
+                <strong>{label}</strong>
+              </button>
+            )}
+            {isOpen && (
+              <span className="chat-source-popover" role="tooltip">
+                <strong>{source.title}</strong>
+                {source.category && <em>{source.category}</em>}
+                <span>{source.excerpt}</span>
+                {(source.kind === 'document' || source.kind === 'devis_pdf') && source.url && (
+                  <a
+                    className="chat-source-popover-link"
+                    href={source.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    onClick={source.kind === 'devis_pdf' ? (e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      openAuthenticatedPdf(source)
+                    } : undefined}
+                  >
+                    {source.kind === 'devis_pdf' ? 'Ouvrir le PDF' : 'Ouvrir le document'}
+                  </a>
+                )}
+              </span>
+            )}
+          </span>
+        )
+      })}
     </div>
   )
 }

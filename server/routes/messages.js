@@ -10,7 +10,7 @@ import {
   getGlobalOllamaModel,
   resolvedIsOllamaEnabled,
 } from '../services/appSettings.js'
-import { storeMemory, searchMemory, searchExperiences } from '../services/memory.js'
+import { storeMemory, searchMemory, searchExperiences, searchDevisRules, searchDocuments } from '../services/memory.js'
 
 const router = Router()
 router.use(authenticate)
@@ -19,6 +19,35 @@ const MAX_CONTEXT_CHARS = Number(process.env.OLLAMA_MAX_CONTEXT_CHARS || 80000)
 const MAX_MESSAGE_CHARS = Number(process.env.OLLAMA_MAX_MESSAGE_CHARS || 12000)
 const RECENT_MESSAGE_KEEP = Number(process.env.OLLAMA_RECENT_MESSAGE_KEEP || 24)
 const MAX_COMPLETION_TOKENS = Number(process.env.OLLAMA_MAX_COMPLETION_TOKENS || 1024)
+
+function safePdfFilePart(value) {
+  return String(value || '')
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function buildDevisPdfFilename(devis, versionNumber = null) {
+  const baseNumber = devis?.quote_number || devis?.name || (devis?.id ? `D${devis.id}` : null)
+  const numberedName = [baseNumber, versionNumber].filter(Boolean).join('.')
+  const parts = [numberedName, devis?.client_name || 'Client'].map(safePdfFilePart).filter(Boolean)
+  return `${parts.length ? parts.join(' - ') : 'devis'}.pdf`
+}
+
+async function resolveDevisVersionNumber(devisId, requestedVersionId) {
+  const versionId = Number(requestedVersionId || 0)
+  if (!Number.isInteger(versionId) || versionId < 1) return null
+  const [versions] = await db.query(
+    'SELECT id, parent_version_id FROM devis_versions WHERE devis_id = ? ORDER BY id ASC',
+    [devisId]
+  )
+  const target = versions.find((version) => Number(version.id) === versionId)
+  if (!target) return null
+  const siblings = versions.filter((version) => Number(version.parent_version_id || 0) === Number(target.parent_version_id || 0))
+  const index = siblings.findIndex((version) => Number(version.id) === versionId)
+  return index >= 0 ? `V${index + 1}` : null
+}
 
 function textLength(content) {
   if (typeof content === 'string') return content.length
@@ -102,7 +131,25 @@ async function fetchDiscussionTranscriptForOllama(discussionId) {
     expHits.map((h, i) => `${i + 1}. [${h.category || 'Général'}] ${h.title} — ${h.excerpt || ''}`).join('\n')
     : ''
 
-  const out = [{ role: 'system', content: systemPrompt() + memBlock + expBlock }]
+  const ruleHits = await searchDevisRules({ text: lastUserMsg, topK: 5 }).catch(() => [])
+  const rulesBlock = ruleHits.length
+    ? `\n\n[Règles devis pertinentes — cite-les explicitement quand elles guident la réponse :]\n` +
+    ruleHits.map((h, i) => `${i + 1}. [${h.rule_code || `REGLE-${h.rule_id}`}] ${h.title} — ${h.excerpt || ''}`).join('\n')
+    : ''
+
+  const documentHits = await searchDocuments({ text: lastUserMsg, topK: 4 }).catch(() => [])
+  const documentsBlock = documentHits.length
+    ? `\n\n[Documents/PDF analysés pertinents — cite le document et la page quand tu t'appuies dessus :]\n` +
+    documentHits.map((h, i) => `${i + 1}. [Document ${h.document_id}, page ${h.page_number}] ${h.original_name || 'Document'} — ${h.excerpt || ''}`).join('\n')
+    : ''
+
+  const devisPdfHits = await findDevisPdfSources(lastUserMsg).catch(() => [])
+  const devisPdfBlock = devisPdfHits.length
+    ? `\n\n[PDF de devis générés disponibles dans l'interface — ne dis pas que tu ne peux pas fournir le fichier, indique à l'utilisateur de cliquer sur la pill PDF sous ta réponse :]\n` +
+    devisPdfHits.map((h, i) => `${i + 1}. ${h.title} — ${h.excerpt}`).join('\n')
+    : ''
+
+  const out = [{ role: 'system', content: systemPrompt() + memBlock + expBlock + rulesBlock + documentsBlock + devisPdfBlock }]
   for (const m of messages) {
     if (m.role !== 'user' && m.role !== 'assistant') continue
     const ollamaRole = m.role === 'user' ? 'user' : 'assistant'
@@ -131,6 +178,107 @@ async function fetchDiscussionTranscriptForOllama(discussionId) {
     }
   }
   return fitMessagesForOllama(out)
+}
+
+async function buildSourceAttachments(query, messageId) {
+  const [experiences, rules, documents] = await Promise.all([
+    searchExperiences({ text: query, topK: 3 }).catch(() => []),
+    searchDevisRules({ text: query, topK: 5 }).catch(() => []),
+    searchDocuments({ text: query, topK: 4 }).catch(() => []),
+  ])
+  const sources = [
+    ...rules.map((rule) => ({
+      kind: 'rule',
+      id: rule.rule_id,
+      code: rule.rule_code,
+      title: rule.title,
+      excerpt: rule.excerpt,
+      category: rule.category,
+      severity: rule.severity,
+      score: rule.score,
+    })),
+    ...experiences.map((experience) => ({
+      kind: 'experience',
+      id: experience.experience_id,
+      title: experience.title,
+      excerpt: experience.excerpt,
+      category: experience.category,
+      score: experience.score,
+    })),
+    ...documents.map((document) => ({
+      kind: 'document',
+      id: document.document_id,
+      page_id: document.page_id,
+      page_number: document.page_number,
+      title: document.original_name || `Document ${document.document_id}`,
+      excerpt: document.excerpt,
+      category: document.page_number ? `Page ${document.page_number}` : 'Document',
+      score: document.score,
+      url: `/api/documents/${document.document_id}`,
+    })),
+  ]
+
+  const devisPdfSources = await findDevisPdfSources(query).catch(() => [])
+  sources.push(...devisPdfSources)
+
+  const saved = []
+  for (const source of sources) {
+    const label = source.kind === 'rule'
+      ? (source.code || `Règle ${source.id}`)
+      : source.kind === 'document'
+        ? (source.title || `Document ${source.id}`)
+        : `Expérience ${source.id}`
+    const [result] = await db.query(
+      'INSERT INTO message_attachments (message_id, type, filename, mime_type, path, size_bytes) VALUES (?, ?, ?, ?, ?, ?)',
+      [messageId, 'source', label, 'application/json', JSON.stringify(source), null]
+    )
+    saved.push({
+      id: result.insertId,
+      message_id: messageId,
+      attach_type: 'source',
+      name: label,
+      mime_type: 'application/json',
+      data: JSON.stringify(source),
+    })
+  }
+  return saved
+}
+
+async function findDevisPdfSources(query) {
+  const text = String(query || '').trim()
+  if (!text) return []
+  const wantsPdf = /\b(pdf|devis|offre|proposition|chiffrage|n[°o]?\s*\d|d\d+)/i.test(text)
+  if (!wantsPdf) return []
+
+  const tokens = Array.from(new Set(text.match(/[A-Z]?\d{2,}[-\w.]*/gi) || []))
+    .map((token) => `%${token.replace(/[%_]/g, '')}%`)
+    .slice(0, 6)
+
+  let sql = `SELECT id, quote_number, name, client_name, current_version_id, updated_at
+             FROM devis`
+  const params = []
+  if (tokens.length) {
+    sql += ` WHERE ${tokens.map(() => '(quote_number LIKE ? OR name LIKE ? OR client_name LIKE ?)').join(' OR ')}`
+    for (const token of tokens) params.push(token, token, token)
+  }
+  sql += ' ORDER BY updated_at DESC, id DESC LIMIT 3'
+
+  const [rows] = await db.query(sql, params)
+  const sources = []
+  for (const devis of rows) {
+    const versionNumber = await resolveDevisVersionNumber(devis.id, devis.current_version_id).catch(() => null)
+    const filename = buildDevisPdfFilename(devis, versionNumber)
+    sources.push({
+      kind: 'devis_pdf',
+      id: devis.id,
+      title: filename,
+      excerpt: `${devis.quote_number || devis.name || `Devis ${devis.id}`} — ${devis.client_name || 'Client non renseigné'}`,
+      category: 'PDF devis généré',
+      url: `/api/devis/${devis.id}/pdf?inline=1`,
+      filename,
+    })
+  }
+  return sources
 }
 
 // GET /api/messages?discussion_id=X
@@ -228,13 +376,14 @@ router.post('/', async (req, res) => {
           'INSERT INTO messages (discussion_id, user_id, role, content, agent_slug) VALUES (?, NULL, ?, ?, ?)',
           [discussion_id, 'assistant', reply, model]
         )
+        const sourceAttachments = await buildSourceAttachments(content, aiResult.insertId)
         assistantPayload = {
           id: aiResult.insertId,
           discussion_id,
           content: reply,
           role: 'assistant',
           agent_slug: model,
-          attachments: [],
+          attachments: sourceAttachments,
           created_at: new Date().toISOString(),
         }
         // Store assistant reply in vector memory (non-blocking)
@@ -336,10 +485,11 @@ router.post('/stream', async (req, res) => {
       'INSERT INTO messages (discussion_id, user_id, role, content, agent_slug) VALUES (?, NULL, ?, ?, ?)',
       [discussion_id, 'assistant', fullText, model]
     )
+    const sourceAttachments = await buildSourceAttachments(content, aiResult.insertId)
     const assistantPayload = {
       id: aiResult.insertId, discussion_id, content: fullText,
       role: 'assistant', agent_slug: model,
-      attachments: [], created_at: new Date().toISOString(),
+      attachments: sourceAttachments, created_at: new Date().toISOString(),
     }
 
     // Store assistant reply in vector memory (non-blocking)

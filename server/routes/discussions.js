@@ -5,20 +5,42 @@ import { authenticate } from '../middleware/auth.js'
 const router = Router()
 router.use(authenticate)
 
+let projectIdNullableReady = false
+
+async function ensureProjectIdNullable() {
+  if (projectIdNullableReady) return
+  projectIdNullableReady = true
+  try {
+    await db.query('ALTER TABLE discussions MODIFY project_id INT NULL')
+  } catch (err) {
+    projectIdNullableReady = false
+    console.error('Unable to make discussions.project_id nullable:', err.message)
+  }
+}
+
 // GET /api/discussions?project_id=X
 router.get('/', async (req, res) => {
-  const { project_id } = req.query
-  if (!project_id) return res.status(400).json({ error: 'project_id required' })
+  const { project_id, unfiled } = req.query
   try {
+    const params = []
+    let whereClause = 'd.project_id IS NULL AND d.created_by = ?'
+    params.push(req.user.id)
+
+    if (!unfiled) {
+      if (!project_id) return res.status(400).json({ error: 'project_id required' })
+      whereClause = 'd.project_id = ?'
+      params[0] = project_id
+    }
+
     const [rows] = await db.query(
       `SELECT d.*, u.name as creator_name,
         (SELECT COUNT(*) FROM messages m WHERE m.discussion_id = d.id) as message_count,
         (SELECT m.created_at FROM messages m WHERE m.discussion_id = d.id ORDER BY m.created_at DESC LIMIT 1) as last_message_at
        FROM discussions d
        JOIN users u ON u.id = d.created_by
-       WHERE d.project_id = ?
+       WHERE ${whereClause}
        ORDER BY last_message_at DESC, d.created_at DESC`,
-      [project_id]
+      params
     )
     res.json(rows)
   } catch (err) {
@@ -29,13 +51,15 @@ router.get('/', async (req, res) => {
 // POST /api/discussions
 router.post('/', async (req, res) => {
   const { project_id, title } = req.body
-  if (!project_id) return res.status(400).json({ error: 'project_id required' })
   try {
+    await ensureProjectIdNullable()
+    const projectId = project_id == null ? null : Number(project_id)
+    if (project_id != null && !Number.isFinite(projectId)) return res.status(400).json({ error: 'Invalid project_id' })
     const [result] = await db.query(
       'INSERT INTO discussions (project_id, title, created_by) VALUES (?, ?, ?)',
-      [project_id, title || 'New discussion', req.user.id]
+      [projectId, title || 'New discussion', req.user.id]
     )
-    res.status(201).json({ id: result.insertId, project_id, title, created_by: req.user.id })
+    res.status(201).json({ id: result.insertId, project_id: projectId, title, created_by: req.user.id })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -45,15 +69,25 @@ router.post('/', async (req, res) => {
 router.put('/:id', async (req, res) => {
   const id = Number(req.params.id)
   if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' })
-  const { title } = req.body
-  if (typeof title !== 'string' || !title.trim()) {
-    return res.status(400).json({ error: 'Title required' })
-  }
+  const { title, project_id } = req.body
+  if (title !== undefined && (typeof title !== 'string' || !title.trim())) return res.status(400).json({ error: 'Title required' })
   try {
-    const [result] = await db.query(
-      'UPDATE discussions SET title = ? WHERE id = ? AND created_by = ?',
-      [title.trim(), id, req.user.id]
-    )
+    await ensureProjectIdNullable()
+    const updates = []
+    const vals = []
+    if (title !== undefined) {
+      updates.push('title = ?')
+      vals.push(title.trim())
+    }
+    if (project_id !== undefined) {
+      const projectId = project_id == null ? null : Number(project_id)
+      if (project_id != null && !Number.isFinite(projectId)) return res.status(400).json({ error: 'Invalid project_id' })
+      updates.push('project_id = ?')
+      vals.push(projectId)
+    }
+    if (!updates.length) return res.status(400).json({ error: 'No updates' })
+    vals.push(id, req.user.id)
+    const [result] = await db.query(`UPDATE discussions SET ${updates.join(', ')} WHERE id = ? AND created_by = ?`, vals)
     if (!result.affectedRows) return res.status(404).json({ error: 'Not found' })
     const [rows] = await db.query(
       `SELECT d.*, u.name as creator_name,

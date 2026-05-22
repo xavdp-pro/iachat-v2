@@ -1,50 +1,36 @@
-import { Bot, BookOpen, Building2, FileSearch, FileSpreadsheet, LayoutGrid, LogOut, Moon, Settings, Sparkles, Sun } from 'lucide-react'
+import { Bot, Building2, FileSearch, FileSpreadsheet, LayoutGrid, LogOut, Moon, Search, Settings, Sun } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/useAuthStore.js'
 import { useThemeStore } from '../store/useThemeStore.js'
 
-const HOME_ACTIONS = [
-  {
-    title: 'Nouveau devis',
-    description: 'Amène vers Devis NEXUS',
-    to: '/devis',
-    icon: FileSpreadsheet,
-    accent: '#94d82d',
-  },
+const SECONDARY_ACTIONS = [
   {
     title: 'Recherche devis',
-    description: 'Liste chronologique avec numéro, affaire, client, montant et accès PDF rapide',
+    description: 'N° devis, affaire, client',
     to: '/devis/search',
     icon: FileSearch,
-    accent: '#354346',
+    placeholder: 'N° devis, affaire, client...',
   },
   {
     title: 'Recherche client',
-    description: 'Amène vers Prospects',
+    description: 'Prospects et comptes HubSpot',
     to: '/prospects',
     icon: Building2,
-    accent: '#6d8fc4',
+    placeholder: 'Nom, societe...',
   },
   {
     title: 'Chatbot IA',
-    description: 'Chatbot IA avec accès aux devis et aux connaissances de chiffrage',
+    description: 'Devis et connaissances chiffrage',
     to: '/chat',
     icon: Bot,
-    accent: '#354346',
-  },
-  {
-    title: 'Expériences chiffrage',
-    description: 'Base des expériences et validations terrain',
-    to: '/experiences',
-    icon: BookOpen,
-    accent: '#f2b705',
+    placeholder: 'Votre question...',
   },
   {
     title: 'Chiffrage rapide',
-    description: 'Amène vers Grid devis',
+    description: 'Saisie directe dans la grille devis',
     to: '/devis/grid',
     icon: LayoutGrid,
-    accent: '#8ed9e8',
+    placeholder: 'BP 2V RC5 2200 x 3200...',
   },
 ]
 
@@ -61,8 +47,8 @@ function HomeSidebar() {
   return (
     <aside className="home-sidebar">
       <div className="home-sidebar-brand">
-        <div className="home-sidebar-brand-mark"><Sparkles size={16} /></div>
-        <span>DEVIS ZERUX</span>
+        <img src={`${import.meta.env.BASE_URL}zerux-logo.png`} alt="Zerux" className="home-sidebar-logo" width={138} height={42} />
+        <span className="home-sidebar-mobile-title">ZERUX</span>
       </div>
       <div className="home-sidebar-spacer" />
       {user?.role === 'admin' && (
@@ -90,24 +76,56 @@ function HomeSidebar() {
 }
 
 export default function Home() {
+  const { user } = useAuthStore()
+
   return (
     <div className="home-shell">
       <HomeSidebar />
       <main className="home-main">
-        <div className="home-grid" aria-label="Accueil devis Zerux">
-          {HOME_ACTIONS.map((action) => {
+        <header className="home-topbar">
+          <div>
+            <div className="home-title">Tableau de bord</div>
+            <div className="home-subtitle">Bonjour {user?.name || 'Armand'} - que souhaitez-vous faire ?</div>
+          </div>
+        </header>
+
+        <section className="home-content" aria-label="Accueil devis Zerux">
+          <div className="home-section-label">Actions rapides</div>
+          <div className="home-grid">
+            <Link to="/devis" className="home-hero-card">
+              <div className="home-hero-left">
+                <div className="home-hero-icon"><FileSpreadsheet size={28} strokeWidth={1.8} /></div>
+                <div>
+                  <h1>Nouveau devis</h1>
+                  <p>Créer un devis NEXUS - client et projet HubSpot</p>
+                </div>
+              </div>
+              <span className="home-hero-cta">Créer</span>
+            </Link>
+
+            {SECONDARY_ACTIONS.map((action) => {
             const Icon = action.icon
             return (
-              <Link key={action.title} to={action.to} className="home-action-card" style={{ '--home-accent': action.accent }}>
-                <div className="home-action-content">
-                  <h1>{action.title}</h1>
-                  <p>{action.description}</p>
+              <div key={action.title} className="home-action-card">
+                <div className="home-action-heading">
+                  <span className="home-action-icon"><Icon size={20} strokeWidth={1.8} /></span>
+                  <h2>{action.title}</h2>
                 </div>
-                <Icon className="home-action-icon" size={30} strokeWidth={1.8} />
-              </Link>
+                <div className="home-action-body">
+                  <p>{action.description}</p>
+                  {action.placeholder && (
+                    <label className="home-search-row">
+                      <input type="text" placeholder={action.placeholder} aria-label={action.title} />
+                      <Link to={action.to} aria-label={`Ouvrir ${action.title}`}><Search size={15} /></Link>
+                    </label>
+                  )}
+                </div>
+                <Link to={action.to} className="home-card-link">Ouvrir</Link>
+              </div>
             )
-          })}
-        </div>
+            })}
+          </div>
+        </section>
       </main>
     </div>
   )
