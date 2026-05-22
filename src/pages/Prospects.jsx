@@ -15,11 +15,12 @@ const LS_KEY = 'prospects_ui_v1'
 
 function loadProspectsUi() {
   try {
+    const urlSearch = new URLSearchParams(window.location.search).get('q')
     const raw = localStorage.getItem(LS_KEY)
-    if (!raw) return { search: '', selectedId: null }
+    if (!raw) return { search: urlSearch || '', selectedId: null }
     const j = JSON.parse(raw)
     return {
-      search: typeof j.search === 'string' ? j.search : '',
+      search: urlSearch || (typeof j.search === 'string' ? j.search : ''),
       selectedId: j.selectedId != null ? String(j.selectedId) : null,
     }
   } catch {

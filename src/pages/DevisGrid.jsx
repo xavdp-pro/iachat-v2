@@ -18,6 +18,10 @@ const CELL = {
   normal:  { background: 'transparent',            border: '1px solid transparent' },
 }
 const SUBROW_BG = 'rgba(0,0,0,0.07)'
+const EQUIPMENT_ROW_FONT_SIZE = 11
+const SUBROW_LABEL_STYLE = { fontWeight: 700, fontSize: EQUIPMENT_ROW_FONT_SIZE, padding: '3px 8px 3px 40px', color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }
+const SUBROW_VALUE_STYLE = { display: 'block', padding: '3px 8px', fontSize: EQUIPMENT_ROW_FONT_SIZE, lineHeight: '14px' }
+const SUBROW_PRICE_VALUE_STYLE = { ...SUBROW_VALUE_STYLE, textAlign: 'right', whiteSpace: 'nowrap' }
 const GRID_TOTAL_COLS = 22
 const DIMENSION_COLUMNS = ['haut_ht', 'larg_ht', 'haut_pl', 'larg_pl']
 const FINAL_AMOUNT_COLUMNS = {
@@ -482,6 +486,28 @@ function isTwoLeafRow(row = {}) {
   return /\b2\s*V\b|\b2VSFX\b|2\s*VANTAUX|DEUX\s+VANTAUX/u.test(text)
 }
 
+function acousticTariffInfo(row = {}, acoustic = null) {
+  const value = acousticValue(acoustic ?? row._overrideAcoustic ?? row.acoustique ?? row._raw?.[16])
+  if (value !== '45 dB') return null
+  const twoLeaf = isTwoLeafRow(row)
+  const width = numberOrNull(row.larg_mm ?? row.largeur_mm)
+  const height = numberOrNull(row.haut_mm ?? row.hauteur_mm)
+  const gammeText = [row.gamme, row.type, row.designation].filter(Boolean).join(' ').toUpperCase()
+  const stdHeightMax = /EI\s*60/.test(gammeText) ? 3555 : 3575
+  const largeTwoLeaf = twoLeaf && ((width != null && width > 3470) || (height != null && height > stdHeightMax))
+  const prix = twoLeaf ? (largeTwoLeaf ? 1260 : 630) : 350
+  const ref = width != null && (twoLeaf ? width / 2 : width) > 1450 ? '4476' : '4472'
+  return {
+    value,
+    prix,
+    ref,
+    label: `Plus-value acoustique ${value}`,
+    note: twoLeaf
+      ? (largeTwoLeaf ? `2V grandes dimensions > L3470 ou H${stdHeightMax}` : `2V jusqu'à L3470 H${stdHeightMax}`)
+      : '1V',
+  }
+}
+
 export function computePassageDimensions(row = {}) {
   const hautHt = numberOrNull(row.haut_mm ?? row.hauteur_mm)
   const largHt = numberOrNull(row.larg_mm ?? row.largeur_mm)
@@ -535,7 +561,11 @@ export function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
   }
   const base   = r.prix_base_ht  ?? 0
   const unpriced = isBlockingUnpricedRow(r)
-  const pv     = (r.options || []).reduce((s, o) => s + (o.prix || 0), 0)
+  const optionsText = (r.options || []).map(o => equipmentText(o)).join(' ')
+  const optAcoustic = (r.options || []).find(o => isAcousticValue(equipmentText(o)))
+  const acousticTariff = acousticTariffInfo(r, r._overrideAcoustic !== undefined ? r._overrideAcoustic : (acousticValue(r._raw?.[16]) || acousticValue(r.acoustique) || acousticValue(optionsText)))
+  const acousticPv = optAcoustic?.prix != null ? 0 : (acousticTariff?.prix || 0)
+  const pv     = (r.options || []).reduce((s, o) => s + (o.prix || 0), 0) + acousticPv
   const pvExtra = (r.equip_extra || []).reduce((s, e) => s + (typeof e === 'object' ? (e.prix || 0) : 0), 0)
   const pu     = unpriced ? 0 : base + pv + pvExtra
   const qty    = Number.isFinite(r.qty) ? r.qty : 1
@@ -547,7 +577,6 @@ export function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
   // équipements structurés depuis les options + champs
   const serrure   = r.serrure?.ref  || null
   // options spécifiques
-  const optionsText = (r.options || []).map(o => equipmentText(o)).join(' ')
   const optVitrage = (r.options || []).find(o => /remplissage|vitrage/i.test(equipmentText(o)) && stripEquipmentDisplayNoise(equipmentText(o)))
   const optFP      = (r.options || []).find(o => /ferme.porte/i.test(o.label))
   const optSerrure = (r.options || []).find(o => /serrure|msl|lss|kel|dény/i.test(o.label))
@@ -574,7 +603,6 @@ export function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
     ? r.thermolaquage
     : !!tlInfo.type
   const blastPerf = blastValue(r._raw?.[6]) || blastValue(r.blast) || blastValue(optionsText) || blastValue(r.designation) || blastValue(r.alertes?.join(' '))
-  const optAcoustic = (r.options || []).find(o => isAcousticValue(equipmentText(o)))
   const acousticRef = optAcoustic ? (extractRef(optAcoustic.note) || extractRef(optAcoustic.label)) : null
   const passageDims = computePassageDimensions(r)
   return {
@@ -596,8 +624,9 @@ export function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
     _acousticValue: r._overrideAcoustic !== undefined
       ? r._overrideAcoustic
       : (acousticValue(r._raw?.[16]) || acousticValue(r.acoustique) || acousticValue(optionsText)),
-    _acousticRef: acousticRef,
-    _acousticPrix: optAcoustic?.prix ?? null,
+    _acousticRef: acousticRef || acousticTariff?.ref || null,
+    _acousticPrix: optAcoustic?.prix ?? acousticTariff?.prix ?? null,
+    _acousticNote: acousticTariff?.note || optAcoustic?.note || null,
     _optAcoustic: optAcoustic,
     _garnIntRef: garnInt,
     _garnExtRef: garnExt,
@@ -2050,21 +2079,21 @@ function SubRowRefs({ row, editMode, onRefCommit, hiddenCols = new Set(), visibl
   // #
   cells.push(<td key="ref-rowmarker" style={{ background: SUBROW_BG }}></td>)
   // Désignation
-  cells.push(<td key="ref-label" style={{ background: SUBROW_BG, fontWeight: 700, fontSize: 10, padding: '3px 8px 3px 40px', color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }}>Références</td>)
+  cells.push(<td key="ref-label" style={{ background: SUBROW_BG, ...SUBROW_LABEL_STYLE }}>Références</td>)
   // Localisation
   cells.push(<td key="ref-loc" style={{ background: SUBROW_BG }}></td>)
   // Perfs
-  cells.push(<td key="ref-perfs" style={{ background: SUBROW_BG }}></td>)
+  cells.push(<td key="ref-perfs" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}><span style={SUBROW_VALUE_STYLE}>{r._acousticValue === '45 dB' ? (r._acousticRef || '4472/4476') : '—'}</span></td>)
   // Dimensions dynamiques
   for (let i = 0; i < visibleDimensionCount; ++i) cells.push(<td key={`ref-dim-${i}`} style={{ background: SUBROW_BG }}></td>)
   // TL
-  cells.push(<td key="ref-tl" style={{ background: SUBROW_BG, textAlign: 'center', fontWeight: 700, borderBottom: '1px solid var(--color-border)' }}>{r._thermolaquageRef || '—'}</td>)
+  cells.push(<td key="ref-tl" style={{ background: SUBROW_BG, textAlign: 'center', fontWeight: 700, fontSize: EQUIPMENT_ROW_FONT_SIZE, borderBottom: '1px solid var(--color-border)' }}>{r._thermolaquageRef || '—'}</td>)
   // Serrure
-  cells.push(<td key="ref-serrure" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}>{editMode ? <EditableText value={r._serrureRef || ''} onCommit={v => onRefCommit?.(0, v)} placeholder="réf…" fontSize={11} /> : <span style={{ display: 'block', padding: '3px 8px' }}>{r._serrureRef || '—'}</span>}</td>)
+  cells.push(<td key="ref-serrure" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}>{editMode ? <EditableText value={r._serrureRef || ''} onCommit={v => onRefCommit?.(0, v)} placeholder="réf…" fontSize={EQUIPMENT_ROW_FONT_SIZE} /> : <span style={SUBROW_VALUE_STYLE}>{r._serrureRef || '—'}</span>}</td>)
   // Garniture int.
-  cells.push(<td key="ref-garnint" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}>{editMode ? <EditableText value={r._garnIntRef || ''} onCommit={v => onRefCommit?.(1, v)} placeholder="réf…" fontSize={11} /> : <span style={{ display: 'block', padding: '3px 8px' }}>{r._garnIntRef || '—'}</span>}</td>)
+  cells.push(<td key="ref-garnint" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}>{editMode ? <EditableText value={r._garnIntRef || ''} onCommit={v => onRefCommit?.(1, v)} placeholder="réf…" fontSize={EQUIPMENT_ROW_FONT_SIZE} /> : <span style={SUBROW_VALUE_STYLE}>{r._garnIntRef || '—'}</span>}</td>)
   // Garniture ext.
-  cells.push(<td key="ref-garnext" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}>{editMode ? <EditableText value={r._garnExtRef || ''} onCommit={v => onRefCommit?.(2, v)} placeholder="réf…" fontSize={11} /> : <span style={{ display: 'block', padding: '3px 8px' }}>{r._garnExtRef || '—'}</span>}</td>)
+  cells.push(<td key="ref-garnext" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}>{editMode ? <EditableText value={r._garnExtRef || ''} onCommit={v => onRefCommit?.(2, v)} placeholder="réf…" fontSize={EQUIPMENT_ROW_FONT_SIZE} /> : <span style={SUBROW_VALUE_STYLE}>{r._garnExtRef || '—'}</span>}</td>)
   // Colonnes équipements dynamiques
   visibleEquipmentColumns.forEach((column, idx) => {
     const equipment = r._equipmentByColumn?.[column.key]
@@ -2074,7 +2103,7 @@ function SubRowRefs({ row, editMode, onRefCommit, hiddenCols = new Set(), visibl
     else if (column.key === 'cremone') ref = r._cremoneRef
     else if (column.key === 'plinthes') ref = r._plintheRef
     else ref = equipment?.ref || extractRef(equipment?.note) || extractRef(equipment?.label) || null
-    cells.push(<td key={`ref-equip-${column.key}`} style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}>{editMode ? <EditableText value={ref || ''} onCommit={v => onRefCommit?.(3 + idx, v)} placeholder="réf…" fontSize={11} /> : <span style={{ display: 'block', padding: '3px 8px' }}>{ref || '—'}</span>}</td>)
+    cells.push(<td key={`ref-equip-${column.key}`} style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}>{editMode ? <EditableText value={ref || ''} onCommit={v => onRefCommit?.(3 + idx, v)} placeholder="réf…" fontSize={EQUIPMENT_ROW_FONT_SIZE} /> : <span style={SUBROW_VALUE_STYLE}>{ref || '—'}</span>}</td>)
   })
   // Autres équipements
   if (showOtherEquipmentColumn) cells.push(<td key="ref-autres" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}></td>)
@@ -2091,21 +2120,21 @@ function SubRowPrices({ row, hiddenCols = new Set(), visibleDimensionCount = 4, 
   // #
   cells.push(<td key="price-rowmarker" style={{ background: SUBROW_BG }}></td>)
   // Désignation
-  cells.push(<td key="price-label" style={{ background: SUBROW_BG, fontWeight: 700, fontSize: 10, padding: '3px 8px 3px 40px', color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }}>Prix unitaires</td>)
+  cells.push(<td key="price-label" style={{ background: SUBROW_BG, ...SUBROW_LABEL_STYLE }}>Prix unitaires</td>)
   // Localisation
   cells.push(<td key="price-loc" style={{ background: SUBROW_BG }}></td>)
   // Perfs
-  cells.push(<td key="price-perfs" style={{ background: SUBROW_BG }}></td>)
+  cells.push(<td key="price-perfs" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}><span style={SUBROW_PRICE_VALUE_STYLE}>{r._acousticValue === '45 dB' && r._acousticPrix != null ? `${r._acousticPrix.toLocaleString('fr-FR')} €` : '—'}</span></td>)
   // Dimensions dynamiques
   for (let i = 0; i < visibleDimensionCount; ++i) cells.push(<td key={`price-dim-${i}`} style={{ background: SUBROW_BG }}></td>)
   // TL
-  cells.push(<td key="price-tl" style={{ background: SUBROW_BG, textAlign: 'center', fontWeight: 700, borderBottom: '1px solid var(--color-border)' }}>{r._unpriced ? '—' : (r._thermolaquagePrix != null ? r._thermolaquagePrix.toLocaleString('fr-FR') + ' €' : <span style={{ color: 'var(--color-text-3)' }}>—</span>)}</td>)
+  cells.push(<td key="price-tl" style={{ background: SUBROW_BG, textAlign: 'center', fontWeight: 700, fontSize: EQUIPMENT_ROW_FONT_SIZE, borderBottom: '1px solid var(--color-border)', whiteSpace: 'nowrap' }}>{r._unpriced ? '—' : (r._thermolaquagePrix != null ? r._thermolaquagePrix.toLocaleString('fr-FR') + ' €' : <span style={{ color: 'var(--color-text-3)' }}>—</span>)}</td>)
   // Serrure
-  cells.push(<td key="price-serrure" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}><span style={{ display: 'block', padding: '3px 8px' }}>{r._optSerrure?.prix != null ? r._optSerrure.prix.toLocaleString('fr-FR') + ' €' : '—'}</span></td>)
+  cells.push(<td key="price-serrure" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}><span style={SUBROW_PRICE_VALUE_STYLE}>{r._optSerrure?.prix != null ? r._optSerrure.prix.toLocaleString('fr-FR') + ' €' : '—'}</span></td>)
   // Garniture int.
-  cells.push(<td key="price-garnint" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}><span style={{ display: 'block', padding: '3px 8px' }}>{r._garnIntPrix != null ? r._garnIntPrix.toLocaleString('fr-FR') + ' €' : '—'}</span></td>)
+  cells.push(<td key="price-garnint" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}><span style={SUBROW_PRICE_VALUE_STYLE}>{r._garnIntPrix != null ? r._garnIntPrix.toLocaleString('fr-FR') + ' €' : '—'}</span></td>)
   // Garniture ext.
-  cells.push(<td key="price-garnext" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}><span style={{ display: 'block', padding: '3px 8px' }}>{r._garnExtPrix != null ? r._garnExtPrix.toLocaleString('fr-FR') + ' €' : '—'}</span></td>)
+  cells.push(<td key="price-garnext" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}><span style={SUBROW_PRICE_VALUE_STYLE}>{r._garnExtPrix != null ? r._garnExtPrix.toLocaleString('fr-FR') + ' €' : '—'}</span></td>)
   // Colonnes équipements dynamiques
   visibleEquipmentColumns.forEach((column) => {
     const equipment = r._equipmentByColumn?.[column.key]
@@ -2115,12 +2144,12 @@ function SubRowPrices({ row, hiddenCols = new Set(), visibleDimensionCount = 4, 
     else if (column.key === 'cremone') prix = r._cremonePrix
     else if (column.key === 'plinthes') prix = r._plinthePrix
     else prix = equipment?.prix ?? null
-    cells.push(<td key={`price-equip-${column.key}`} style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}><span style={{ display: 'block', padding: '3px 8px' }}>{prix != null ? prix.toLocaleString('fr-FR') + ' €' : '—'}</span></td>)
+    cells.push(<td key={`price-equip-${column.key}`} style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}><span style={SUBROW_PRICE_VALUE_STYLE}>{prix != null ? prix.toLocaleString('fr-FR') + ' €' : '—'}</span></td>)
   })
   // Autres équipements
   if (showOtherEquipmentColumn) cells.push(<td key="price-autres" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}></td>)
   // PU HT (base)
-  cells.push(<td key="price-base" style={{ background: SUBROW_BG, ...CELL.gray, borderBottom: '1px solid var(--color-border)', textAlign: 'right', color: 'var(--color-text-3)' }}>base: {r._unpriced ? '—' : (r.prix_base_ht?.toLocaleString('fr-FR') ?? '—')} €</td>)
+  cells.push(<td key="price-base" style={{ background: SUBROW_BG, ...CELL.gray, borderBottom: '1px solid var(--color-border)', textAlign: 'right', color: 'var(--color-text-3)', fontSize: EQUIPMENT_ROW_FONT_SIZE, whiteSpace: 'nowrap' }}>base: {r._unpriced ? '—' : (r.prix_base_ht?.toLocaleString('fr-FR') ?? '—')} €</td>)
   // Remise, Q, Total HT, actions
   for (let i = 0; i < 4; ++i) cells.push(<td key={`price-end-${i}`} style={{ background: SUBROW_BG, borderBottom: '1px solid var(--color-border)' }}></td>)
   return <tr style={{ background: SUBROW_BG }}>{cells}</tr>
@@ -3710,6 +3739,15 @@ export function DevisGridWorkspace({
     }
   }, [applyQuickGridIntentEdits, assistantInput, assistantLoading, assistantMessages, devisId, looksLikeGridChangeRequest, versionId])
 
+  const initialGridPromptSentRef = useRef(false)
+  useEffect(() => {
+    if (embedded || initialGridPromptSentRef.current || assistantLoading) return
+    const prompt = new URLSearchParams(window.location.search).get('prompt')?.trim()
+    if (!prompt) return
+    initialGridPromptSentRef.current = true
+    askQuickGridAssistant(prompt)
+  }, [askQuickGridAssistant, assistantLoading, embedded])
+
   const addSectionRow = useCallback((section) => {
     const nextRows = [...rowsRef.current, createAmountRow(section, '', { defaultTransportAddress })]
     replaceRows(nextRows)
@@ -4397,18 +4435,6 @@ export function DevisGridWorkspace({
                 <ShieldCheck size={12} /> Bilan IA
               </button>
             )}
-            {productRowEntries.length > 0 && (
-              <button
-                type="button"
-                onClick={() => rerunRuleChecksForIndexes(ruleUpdateCount ? ruleUpdateEntries.map(entry => entry.index) : productRowEntries.map(entry => entry.index))}
-                disabled={refreshingRuleChecks || validatingImport}
-                title={ruleUpdateCount ? 'Relancer les lignes dont l’analyse IA est périmée ou absente' : 'Relancer l’analyse IA sur toutes les lignes produit'}
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, padding: '3px 8px', background: ruleUpdateCount ? 'rgba(220,38,38,0.12)' : 'var(--color-surface)', border: `1px solid ${ruleUpdateCount ? '#dc2626' : 'var(--color-border)'}`, borderRadius: 4, cursor: refreshingRuleChecks || validatingImport ? 'default' : 'pointer', color: ruleUpdateCount ? '#dc2626' : 'var(--color-text-2)', fontWeight: 800, opacity: refreshingRuleChecks || validatingImport ? 0.7 : 1 }}
-              >
-                {refreshingRuleChecks ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <RefreshCw size={12} />}
-                {ruleUpdateCount ? `Mise à jour IA (${ruleUpdateCount})` : 'Relancer IA'}
-              </button>
-            )}
             <button
               type="button"
               onClick={addBlankRow}
@@ -4481,7 +4507,6 @@ export function DevisGridWorkspace({
               </button>
             )}
             <ModeSwitch value={editMode} onChange={setEditMode} />
-            <Legend />
           </div>
         </div>
 

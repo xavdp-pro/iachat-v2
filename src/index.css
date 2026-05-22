@@ -399,7 +399,8 @@ body {
   box-shadow: 0 0 0 3px rgba(53, 67, 70, 0.08);
 }
 
-.home-search-row a {
+.home-search-row a,
+.home-search-row button {
   width: 32px;
   height: 32px;
   display: grid;
@@ -408,6 +409,8 @@ body {
   background: #354346;
   color: #fff;
   text-decoration: none;
+  border: 0;
+  cursor: pointer;
 }
 
 .home-card-link {
@@ -427,6 +430,7 @@ body {
 .home-hero-card:focus-visible,
 .home-card-link:focus-visible,
 .home-search-row a:focus-visible,
+.home-search-row button:focus-visible,
 .home-sidebar-link:focus-visible,
 .home-sidebar-tools button:focus-visible {
   outline: 2px solid #8a9a9e;

@@ -63,6 +63,7 @@ export default function Chat() {
   const textareaRef = useRef(null)
   const fileInputRef = useRef(null)
   const speechRef = useRef(null)
+  const initialPromptSentRef = useRef(false)
 
   const closeMobileSidebar = () => {
     if (typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches) {
@@ -410,23 +411,27 @@ export default function Chat() {
 
   // ── Message submit ─────────────────────────────────────────────────────────
 
-  const submitMessage = async () => {
-    const content = inputMessage.trim()
+  const submitMessageContent = useCallback(async (rawContent, attachments = pendingAttachments) => {
+    const content = String(rawContent || '').trim()
     if (!content || loading) return
 
-    const attachments = [...pendingAttachments]
-    setPendingAttachments([])
+    const nextAttachments = [...attachments]
+    if (attachments === pendingAttachments) setPendingAttachments([])
     setInputMessage('')
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
 
     // No discussion: create one then send
     if (!activeDiscussion) {
       await createDiscussion(t('chat.defaultDiscussionTitle'))
-      await sendMessage(content, attachments)
+      await sendMessage(content, nextAttachments)
       return
     }
 
-    await sendMessage(content, attachments)
+    await sendMessage(content, nextAttachments)
+  }, [activeDiscussion, createDiscussion, loading, pendingAttachments, sendMessage, t])
+
+  const submitMessage = async () => {
+    await submitMessageContent(inputMessage)
   }
 
   const handleSendMessage = async (e) => {
@@ -440,6 +445,14 @@ export default function Chat() {
       submitMessage()
     }
   }
+
+  useEffect(() => {
+    if (initialPromptSentRef.current || loading) return
+    const prompt = new URLSearchParams(window.location.search).get('prompt')?.trim()
+    if (!prompt) return
+    initialPromptSentRef.current = true
+    submitMessageContent(prompt, [])
+  }, [loading, submitMessageContent])
 
   // Composer placeholder varies by UI state
   const composerPlaceholder = (() => {

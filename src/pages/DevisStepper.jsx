@@ -1166,15 +1166,19 @@ function CompactDevisHeader({
       </nav>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end', minWidth: 0 }}>
-        <button type="button" onClick={onOpenExperiences} style={actionStyle} title="Expériences" aria-label="Expériences">
-          <BookOpen size={15} />
-        </button>
-        <button type="button" onClick={onOpenRules} style={actionStyle} title="Règles" aria-label="Règles">
-          <Shield size={15} />
-        </button>
-        <button type="button" onClick={onBackHome} style={actionStyle} title="Accueil" aria-label="Accueil">
-          <ArrowLeft size={15} />
-        </button>
+        {step !== 3 && (
+          <>
+            <button type="button" onClick={onOpenExperiences} style={actionStyle} title="Expériences" aria-label="Expériences">
+              <BookOpen size={15} />
+            </button>
+            <button type="button" onClick={onOpenRules} style={actionStyle} title="Règles" aria-label="Règles">
+              <Shield size={15} />
+            </button>
+            <button type="button" onClick={onBackHome} style={actionStyle} title="Accueil" aria-label="Accueil">
+              <ArrowLeft size={15} />
+            </button>
+          </>
+        )}
       </div>
     </header>
   )
@@ -2826,17 +2830,7 @@ function StepEditor({
 
   return (
     <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      <div style={{ padding: '8px 14px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0, background: 'var(--color-surface)' }}>
-        <FileText size={15} color="var(--color-primary)" />
-        <div style={{ flex: 1 }}>
-          <div style={{ fontWeight: 700, fontSize: 13 }}>Éditeur devis sheet-like</div>
-          <div style={{ fontSize: 10, color: 'var(--color-text-3)' }}>
-            {lines.length} ligne{lines.length !== 1 ? 's' : ''} · sauvegarde backend par ligne{saving ? ' · enregistrement…' : ''}
-          </div>
-        </div>
-        <button onClick={() => askAIEditor('Contrôle les lignes du devis et liste les incohérences bloquantes.')} style={ghostBtn()}>
-          <Bot size={13} /> Audit IA
-        </button>
+      <div style={{ padding: '8px 14px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 10, flexShrink: 0, background: 'var(--color-surface)' }}>
         <button onClick={onContinuePdf} disabled={!canContinuePdf || saving === 'bulk-import'} className="admin-btn-primary" style={{ fontSize: 11, padding: '6px 12px' }}>
           Continuer vers pré-édition PDF <ArrowRight size={13} />
         </button>

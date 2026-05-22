@@ -30,7 +30,7 @@ export default function DevisSearch() {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [query, setQuery] = useState('')
+  const [query, setQuery] = useState(() => new URLSearchParams(window.location.search).get('q') || '')
 
   const loadRows = useCallback(async () => {
     setLoading(true)

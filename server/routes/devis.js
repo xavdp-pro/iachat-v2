@@ -42,6 +42,135 @@ const VALID_LINE_SECTIONS = new Set(['products', 'calculations', 'transport'])
 const normalizeLineSection = (value) => VALID_LINE_SECTIONS.has(value) ? value : 'products'
 const RD_VALIDATION_CATEGORY = 'Validations individuelles R&D'
 const AI_ATTACHMENT_MIMES = new Set(['application/pdf', 'image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif', 'image/tiff'])
+const EQUIPMENT_CATALOG_FILES = ['EQUIP-COMMUN.md', 'EQUIP-EI.md', 'EQUIP-FB.md', 'SERRURES-GARNITURES.md']
+const COMMON_EQUIPMENT_PERFORMANCES = ['BASE', 'CR2', 'CR3', 'CR4', 'CR5', 'CR6', 'EI60', 'EI120']
+const ALL_SECURITY_PERFORMANCES = ['BASE', 'CR2', 'CR3', 'CR4', 'CR5', 'CR6', 'EI30', 'EI60', 'EI120', 'FB4', 'FB6', 'FB7', 'BLAST', 'PRISON', 'ANTI-BELIER', 'EF2']
+
+function normalizePerformanceToken(value) {
+  const upper = String(value || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/RC([2-6])/g, 'CR$1')
+    .replace(/BR([4-7])/g, 'FB$1')
+  const tokens = []
+  for (const match of upper.matchAll(/\bCR\s*([2-6])\b/g)) tokens.push(`CR${match[1]}`)
+  for (const match of upper.matchAll(/\bFB\s*([4-7])\b/g)) tokens.push(`FB${match[1]}`)
+  for (const match of upper.matchAll(/\bEI\s*(30|60|120)\b/g)) tokens.push(`EI${match[1]}`)
+  if (/\bBLAST\b|EXPLOSION/.test(upper)) tokens.push('BLAST')
+  if (/\bPRISON\b|PENITENTIAIRE/.test(upper)) tokens.push('PRISON')
+  if (/ANTI.?BELIER|B[ÉE]LIER/.test(upper)) tokens.push('ANTI-BELIER')
+  if (/\bEF\s*2\b/.test(upper)) tokens.push('EF2')
+  return [...new Set(tokens)]
+}
+
+function equipmentPerformancesFromText(text, fallback = []) {
+  const explicit = normalizePerformanceToken(text)
+  if (explicit.length) return explicit
+  return fallback
+}
+
+function equipmentFileFallbackPerformances(file) {
+  if (file === 'EQUIP-EI.md') return ['EI30', 'EI60', 'EI120']
+  if (file === 'EQUIP-FB.md') return ['FB4', 'FB6', 'FB7']
+  return COMMON_EQUIPMENT_PERFORMANCES
+}
+
+function parsePriceValue(value) {
+  const text = String(value || '').trim()
+  if (!text || /supprim/i.test(text)) return null
+  const match = text.replace(/\s/g, '').replace(',', '.').match(/\d+(?:\.\d+)?/)
+  return match ? Number(match[0]) : null
+}
+
+function parseEquipmentMarkdownCatalog(file, content) {
+  const fallbackPerformances = equipmentFileFallbackPerformances(file)
+  const entries = []
+  let section = ''
+  for (const rawLine of String(content || '').split('\n')) {
+    const heading = rawLine.match(/^#{2,4}\s+(.+)$/)
+    if (heading) {
+      section = heading[1].replace(/[*_`]/g, '').trim()
+      continue
+    }
+    const line = rawLine.trim()
+    if (!line.startsWith('|') || /^\|\s*-/.test(line) || /D[ée]signation/i.test(line)) continue
+    const cells = line.split('|').slice(1, -1).map(cell => cell.trim())
+    if (cells.length < 3) continue
+    const [designation, ref, priceText] = cells
+    if (!designation || !ref || /^—$/.test(ref)) continue
+    const performances = equipmentPerformancesFromText(`${section} ${designation}`, fallbackPerformances)
+    entries.push({
+      designation: designation.replace(/<[^>]+>/g, '').replace(/[*_`]/g, '').trim(),
+      ref: ref.replace(/<[^>]+>/g, '').replace(/[*_`]/g, '').trim(),
+      price_ht: parsePriceValue(priceText),
+      price_label: priceText.replace(/<[^>]+>/g, '').replace(/[*_`]/g, '').trim(),
+      family: section || basename(file, '.md'),
+      source: file,
+      performances,
+      active: !/supprim/i.test(priceText),
+    })
+  }
+  return entries
+}
+
+let equipmentCatalogCache = { value: null, expiresAt: 0 }
+
+async function loadEquipmentCatalog() {
+  const now = Date.now()
+  if (equipmentCatalogCache.value && equipmentCatalogCache.expiresAt > now) return equipmentCatalogCache.value
+  const catalog = []
+  for (const file of EQUIPMENT_CATALOG_FILES) {
+    const filePath = join(XLSX_DIR, file)
+    if (!existsSync(filePath)) continue
+    try {
+      const content = await readFile(filePath, 'utf-8')
+      catalog.push(...parseEquipmentMarkdownCatalog(file, content))
+    } catch { /* ignore unreadable catalog file */ }
+  }
+  equipmentCatalogCache = { value: catalog, expiresAt: now + 60_000 }
+  return catalog
+}
+
+function detectRowPerformances(row = {}) {
+  const parts = [
+    row.gamme, row.rc, row.pb, row.cf, row.blast, row.belier, row.prison,
+    row.acoustic, row.type, row.type_porte, row.designation,
+    row.options_text,
+    Array.isArray(row.options) ? row.options.map(option => option?.label || option).join(' ') : '',
+  ]
+  const tokens = normalizePerformanceToken(parts.filter(Boolean).join(' '))
+  return tokens.length ? tokens : []
+}
+
+function equipmentCompatibleWithRow(entry, rowPerformances = []) {
+  if (!entry?.active) return false
+  const entryPerformances = Array.isArray(entry.performances) ? entry.performances : []
+  if (!rowPerformances.length) return true
+  if (entryPerformances.includes('BASE')) return true
+  return rowPerformances.some(performance => entryPerformances.includes(performance))
+}
+
+function formatEquipmentCatalogLine(entry) {
+  const price = entry.price_ht != null ? `${entry.price_ht.toLocaleString('fr-FR')} € HT` : (entry.price_label || 'prix à vérifier')
+  return `- ${entry.ref} | ${entry.designation} | ${price} | ${entry.performances.join(', ')} | ${entry.family}`
+}
+
+async function buildEquipmentCompatibilityBlock(rows = [], { max = 80 } = {}) {
+  const catalog = await loadEquipmentCatalog()
+  if (!catalog.length || !Array.isArray(rows) || !rows.length) return ''
+  const rowBlocks = rows.slice(0, 20).map((row, index) => {
+    const performances = detectRowPerformances(row)
+    const compatible = catalog
+      .filter(entry => equipmentCompatibleWithRow(entry, performances))
+      .slice(0, Math.max(8, Math.floor(max / Math.min(rows.length, 10))))
+    const rowLabel = String(row.ligne || row.key || row.rowKey || repLetterFromIndex(index)).trim().toUpperCase()
+    return [
+      `Ligne ${rowLabel} — performances détectées : ${performances.length ? performances.join(', ') : 'inconnues'}`,
+      compatible.map(formatEquipmentCatalogLine).join('\n') || '- Aucun équipement compatible actif trouvé dans le catalogue chargé.',
+    ].join('\n')
+  })
+  return `\n\n[CATALOGUE ÉQUIPEMENTS TARIFÉS — FILTRÉ PAR PERFORMANCE]\nRègle obligatoire : tous les équipements du tarif peuvent être recherchés, mais tu ne dois proposer, accepter ou ajouter un équipement que s'il est compatible avec la performance de la ligne. Si un équipement existe hors performance, refuse-le clairement et propose seulement des alternatives compatibles. Si la performance de ligne est inconnue, demande-la avant de choisir l'équipement.\n${rowBlocks.join('\n\n')}`
+}
 
 function safePdfFilePart(value) {
   return String(value || '')
@@ -1250,6 +1379,7 @@ router.post('/grid-intent', async (req, res) => {
     }
   }
 
+  const equipmentCompatibilityBlock = await buildEquipmentCompatibilityBlock(catalog, { max: 90 })
   const tableJson = JSON.stringify(catalog, null, 0)
   const systemMsg = `Tu es un extracteur d'intentions pour un tableau de devis NEXUS (portes).
 L'utilisateur demande une ou plusieurs modifications en français (langage libre).
@@ -1279,6 +1409,13 @@ Clés autorisées dans "set" (une ou plusieurs par edit) :
 - serrure, garniture_int, garniture_ext, vitrage, ferme_porte, cremone, autres, thermolaquage
 - options_add et options_remove (tableaux de libellés courts)
 
+Règle équipements / performances (obligatoire) :
+- Tu peux rechercher tous les équipements du tarif, mais tu ne dois proposer ou ajouter que des équipements compatibles avec la performance de la ligne cible.
+- Si l'utilisateur demande un équipement qui existe mais n'est pas compatible avec la performance de la ligne, renvoie "edits": [] et explique le refus dans "reply".
+- Si la performance de la ligne cible est inconnue, renvoie "edits": [] et demande la performance avant de choisir l'équipement.
+- Pour CR2/RC2, utiliser les compatibilités CR3.
+- Les références et prix doivent venir du catalogue filtré ci-dessous quand tu ajoutes serrure, garniture, vitrage, ferme_porte, cremone ou autres.
+
 Ciblage métier :
 - Résous toi-même les cibles à partir du tableau. Exemples : "toutes les portes CR3" = lignes dont gamme/performance contient CR3 ; "portes anti-feu" = lignes EI/coupe-feu ; "ligne B" = repère B.
 - Quand tu cibles par critère, renvoie des cibles explicites (lettres ou numéros), pas une expression vague.
@@ -1289,6 +1426,7 @@ Ne dépasse pas 12 entrées dans "edits". Regroupe les lignes qui reçoivent le 
 
 Tableau actuel (ordre = index 0..n-1, id peut être absent si la grille est locale) :
 ${tableJson}
+${equipmentCompatibilityBlock}
 
 Question utilisateur :
 `
@@ -1409,6 +1547,7 @@ router.post('/ask', async (req, res) => {
   }
 
   const context = mdParts.join('\n\n---\n\n')
+  const equipmentCompatibilityBlock = casualMessage ? '' : await buildEquipmentCompatibilityBlock(contextRows, { max: 120 })
 
   // ── Règles métier : chargement SYSTÉMATIQUE (toujours injectées, indépendamment de la question) ──
   // Les règles métier approuvées s'appliquent à CHAQUE analyse — ne pas les filtrer par similarité.
@@ -1537,6 +1676,14 @@ Pour chiffrer une porte correctement, tu dois TOUJOURS croiser plusieurs markdow
 - TABLEAUX-ADDITIONNELS.md : règles courtes issues des onglets additionnels du XLSX (séisme, AEV, Blast 0,5 t/m², bornes mini/maxi, pièces détachées)
 - SERRURES-GARNITURES.md : TOUJOURS consulter pour connaître la serrure et les garnitures livrées par défaut avec chaque gamme. Ne jamais laisser serrure_ref vide sans avoir vérifié ce fichier.
 
+RÈGLE ÉQUIPEMENTS / CATÉGORIE DE PERFORMANCE (CRITIQUE) :
+L'utilisateur doit pouvoir rechercher tout équipement au tarif NEXUS, avec référence, nom et prix, mais tu ne dois proposer, accepter ou ajouter un équipement que s'il appartient à la même catégorie de performance que la ligne concernée.
+- Déduis la performance de chaque ligne : CR/RC, EI, FB, Blast, Prison, Anti-bélier, EF2.
+- Si l'équipement demandé existe au tarif mais appartient à une autre performance, refuse-le clairement et propose uniquement des alternatives compatibles.
+- Si la performance de la ligne n'est pas connue, demande la performance avant de choisir l'équipement.
+- Pour CR2/RC2, utiliser le référentiel et les équipements compatibles CR3.
+- Ne jamais inventer de référence ni de prix : utilise le catalogue filtré par performance injecté ci-dessous, ou indique que le tarif doit être vérifié.
+
 RÈGLE CR2/RC2 :
 Si une ligne est demandée ou affichée en CR2/RC2, elle doit utiliser le référentiel CR3 pour le chiffrage et les équipements, car la performance inférieure est chiffrée sur la performance supérieure la plus proche. Ne demande pas quelle ligne modifier quand le tableau fourni contient clairement les lignes concernées : réponds directement avec l'action ou le contrôle appliqué.
 
@@ -1557,7 +1704,7 @@ CONVENTION DE LECTURE DES TABLEAUX DE PRIX (CRITIQUE) :
 
 Si deux markdowns se contredisent, privilégie le markdown de la gamme principale. Signale la contradiction.
 Les fichiers transverses (GUIDE-DEVIS, BASE, EQUIP-COMMUN) sont TOUJOURS chargés pour toi — consulte-les systématiquement.
-${context ? `\n\nBase documentaire NEXUS 2026 mise à disposition (${loadedDocs.length} fichiers : ${loadedDocs.join(', ')}) :\n\n${context}` : ''}${mandatoryRulesBlock}${rulesBlock}${expBlock}${historyBlock}
+${context ? `\n\nBase documentaire NEXUS 2026 mise à disposition (${loadedDocs.length} fichiers : ${loadedDocs.join(', ')}) :\n\n${context}` : ''}${equipmentCompatibilityBlock}${mandatoryRulesBlock}${rulesBlock}${expBlock}${historyBlock}
 Réponds en français de façon structurée et professionnelle, en Markdown lisible. Si une information manque ou est incohérente, indique-le clairement.`
 
   const systemMsg = casualMessage

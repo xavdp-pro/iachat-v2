@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Bot, Building2, FileSearch, FileSpreadsheet, LayoutGrid, LogOut, Moon, Search, Settings, Sun } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/useAuthStore.js'
@@ -10,6 +11,7 @@ const SECONDARY_ACTIONS = [
     to: '/devis/search',
     icon: FileSearch,
     placeholder: 'N° devis, affaire, client...',
+    param: 'q',
   },
   {
     title: 'Recherche client',
@@ -17,6 +19,7 @@ const SECONDARY_ACTIONS = [
     to: '/prospects',
     icon: Building2,
     placeholder: 'Nom, societe...',
+    param: 'q',
   },
   {
     title: 'Chatbot IA',
@@ -24,6 +27,7 @@ const SECONDARY_ACTIONS = [
     to: '/chat',
     icon: Bot,
     placeholder: 'Votre question...',
+    param: 'prompt',
   },
   {
     title: 'Chiffrage rapide',
@@ -31,6 +35,7 @@ const SECONDARY_ACTIONS = [
     to: '/devis/grid',
     icon: LayoutGrid,
     placeholder: 'BP 2V RC5 2200 x 3200...',
+    param: 'prompt',
   },
 ]
 
@@ -77,6 +82,18 @@ function HomeSidebar() {
 
 export default function Home() {
   const { user } = useAuthStore()
+  const navigate = useNavigate()
+  const [quickInputs, setQuickInputs] = useState({})
+
+  const actionUrl = (action, rawValue = '') => {
+    const value = String(rawValue || '').trim()
+    if (!value || !action.param) return action.to
+    return `${action.to}?${action.param}=${encodeURIComponent(value)}`
+  }
+
+  const submitAction = (action) => {
+    navigate(actionUrl(action, quickInputs[action.title]))
+  }
 
   return (
     <div className="home-shell">
@@ -105,6 +122,7 @@ export default function Home() {
 
             {SECONDARY_ACTIONS.map((action) => {
             const Icon = action.icon
+            const value = quickInputs[action.title] || ''
             return (
               <div key={action.title} className="home-action-card">
                 <div className="home-action-heading">
@@ -115,12 +133,24 @@ export default function Home() {
                   <p>{action.description}</p>
                   {action.placeholder && (
                     <label className="home-search-row">
-                      <input type="text" placeholder={action.placeholder} aria-label={action.title} />
-                      <Link to={action.to} aria-label={`Ouvrir ${action.title}`}><Search size={15} /></Link>
+                      <input
+                        type="text"
+                        placeholder={action.placeholder}
+                        aria-label={action.title}
+                        value={value}
+                        onChange={(event) => setQuickInputs(previous => ({ ...previous, [action.title]: event.target.value }))}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault()
+                            submitAction(action)
+                          }
+                        }}
+                      />
+                      <button type="button" onClick={() => submitAction(action)} aria-label={`Valider ${action.title}`}><Search size={15} /></button>
                     </label>
                   )}
                 </div>
-                <Link to={action.to} className="home-card-link">Ouvrir</Link>
+                <Link to={actionUrl(action, value)} className="home-card-link">Ouvrir</Link>
               </div>
             )
             })}
