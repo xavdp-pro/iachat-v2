@@ -304,6 +304,93 @@ function optionAsEquipment(option) {
   }
 }
 
+function formatEquipmentSuggestion(option) {
+  if (!option) return ''
+  const label = String(option.label || option.designation || option.ref || '').trim()
+  const ref = String(option.ref || '').trim()
+  if (!label) return ref
+  return ref && !label.includes(ref) ? `${label} réf. ${ref}` : label
+}
+
+function useEquipmentOptions(row) {
+  const [options, setOptions] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+  const rowPayload = useMemo(() => ({
+    type: row?.type || '',
+    designation: row?.designation || '',
+    gamme: row?.gamme || '',
+    vantail: row?.vantail || '',
+    ref_base: row?.ref_base || '',
+    _raw: Array.isArray(row?._raw) ? row._raw : [],
+    options: Array.isArray(row?.options) ? row.options : [],
+    equip_extra: Array.isArray(row?.equip_extra) ? row.equip_extra : [],
+  }), [row?.type, row?.designation, row?.gamme, row?.vantail, row?.ref_base, row?._raw, row?.options, row?.equip_extra])
+
+  useEffect(() => {
+    setOptions([])
+    setError(null)
+  }, [rowPayload])
+
+  const fetchOptions = useCallback(async () => {
+    if (loading || options.length > 0) return
+    setLoading(true)
+    try {
+      const data = await api.post('/devis/equipment-options', { row: rowPayload }, { timeout: 20000 })
+      const normalized = Array.isArray(data?.options) ? data.options.map(optionAsEquipment).filter(Boolean) : []
+      setOptions(normalized)
+    } catch (err) {
+      setError(err?.error || err?.message || 'Erreur de chargement')
+    } finally {
+      setLoading(false)
+    }
+  }, [rowPayload, loading, options.length])
+
+  return { options, loading, error, fetchOptions }
+}
+
+function EditableEquipmentText({ value, onCommit, placeholder = '—', datalistId, fetchOptions, options = [], loading = false, fontSize = 11, width = '100%' }) {
+  const [v, setV] = useState(value ?? '')
+  const focused = useRef(false)
+  useEffect(() => {
+    let alive = true
+    Promise.resolve().then(() => {
+      if (alive && !focused.current) setV(value ?? '')
+    })
+    return () => { alive = false }
+  }, [value])
+
+  const commit = () => {
+    focused.current = false
+    const trimmed = String(v || '').trim()
+    if (trimmed !== String(value ?? '').trim()) onCommit(trimmed || null)
+  }
+
+  return (
+    <div style={{ position: 'relative', width }}>
+      <input
+        type="text"
+        list={datalistId}
+        value={v}
+        onChange={e => setV(e.target.value)}
+        onFocus={() => { focused.current = true; fetchOptions?.() }}
+        onBlur={commit}
+        onKeyDown={e => { if (e.key === 'Enter') { e.currentTarget.blur() } }}
+        onClick={e => e.stopPropagation()}
+        placeholder={placeholder}
+        style={{ width: '100%', background: 'transparent', border: 'none', outline: 'none', color: 'inherit', font: 'inherit', fontSize, padding: '2px 4px' }}
+      />
+      <datalist id={datalistId}>
+        {options.map((option, idx) => {
+          const label = formatEquipmentSuggestion(option)
+          return <option key={`${datalistId}-${idx}`} value={label} />
+        })}
+      </datalist>
+      {loading && <span style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', fontSize: 10, color: 'var(--color-text-3)' }}>...</span>}
+    </div>
+  )
+}
+
 function thermolaquageTypeFromText(value) {
   const text = equipmentText(value).toUpperCase()
   if (/\bNCS\b/.test(text)) return 'NCS'
@@ -475,7 +562,7 @@ function isChassisRow(row = {}) {
     .filter(Boolean)
     .join(' ')
     .toUpperCase()
-  return /\bCH\b|CHASSIS|CHÂSSIS|CHASSIS FIXE|CHÂSSIS FIXE|CHASSIS VITR[ÉE]|CHÂSSIS VITR[ÉE]/u.test(text)
+  return /\bCHASSIS\b/i.test(text)
 }
 
 function isTwoLeafRow(row = {}) {
@@ -828,6 +915,13 @@ function performanceValueRawSlotOnly(row, key) {
   const rawVal = coerceExcelPerfRawValue(row._raw?.[idx], key)
   if (isUnsetPerfRaw(rawVal)) return null
   return rawVal ?? null
+}
+
+function subRowPerformanceLabel(row, resolved = resolveRow(row)) {
+  return ['rc', 'pb', 'cf', 'blast', 'belier', 'prison', 'acoustic']
+    .map(key => performanceValue(row, resolved, key))
+    .filter(Boolean)
+    .join(' · ')
 }
 
 const amountHeaderCellStyle = {
@@ -1541,6 +1635,7 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
   const ruleSummary = row._ruleCheck?.summary || null
   const ruleIssues = blockingVerdicts(row)
   const ruleStale = isRuleCheckStale(row._ruleCheck, validationKnowledge)
+  const { options: equipmentOptions, loading: equipmentOptionsLoading, fetchOptions: fetchEquipmentOptions } = useEquipmentOptions(row)
   // Perf strip expand/collapse lives on the row so it survives remounts (new blank lines).
   const showEmptyPerfs = row._perfStripShowAll === true
   const perfKeys = ['rc', 'pb', 'cf', 'blast', 'belier', 'prison', 'acoustic']
@@ -1829,19 +1924,19 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
       {/* Serrure */}
       <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 80, ...assistantCellStyle('serrure') }}>
         {editMode
-          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableText value={mainEquipLabel(row._raw?.[12] ?? r._serrureLabel ?? '')} onCommit={v => onRecompute?.({ [`_raw_12`]: v })} placeholder="serrure…" />)
+          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentText value={mainEquipLabel(row._raw?.[12] ?? r._serrureLabel ?? '')} onCommit={v => onRecompute?.({ _raw_12: v })} placeholder="serrure…" datalistId={`equipment-suggestions-${displayIndex}-serrure`} fetchOptions={fetchEquipmentOptions} options={equipmentOptions} loading={equipmentOptionsLoading} />)
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{mainEquipLabel(row._raw?.[12] || r._serrureLabel) || '—'}</span>}
       </Td>
       {/* Garn int */}
       <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 70, ...assistantCellStyle('garniture_int') }}>
         {editMode
-          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableText value={mainEquipLabel(row._raw?.[13] ?? r._garnIntLabel ?? '')} onCommit={v => onRecompute?.({ [`_raw_13`]: v })} placeholder="garn. int…" />)
+          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentText value={mainEquipLabel(row._raw?.[13] ?? r._garnIntLabel ?? '')} onCommit={v => onRecompute?.({ _raw_13: v })} placeholder="garn. int…" datalistId={`equipment-suggestions-${displayIndex}-garn_int`} fetchOptions={fetchEquipmentOptions} options={equipmentOptions} loading={equipmentOptionsLoading} />)
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{mainEquipLabel(row._raw?.[13] || r._garnIntLabel) || '—'}</span>}
       </Td>
       {/* Garn ext */}
       <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 70, ...assistantCellStyle('garniture_ext') }}>
         {editMode
-          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableText value={mainEquipLabel(row._raw?.[14] ?? r._garnExtLabel ?? '')} onCommit={v => onRecompute?.({ [`_raw_14`]: v })} placeholder="garn. ext…" />)
+          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentText value={mainEquipLabel(row._raw?.[14] ?? r._garnExtLabel ?? '')} onCommit={v => onRecompute?.({ _raw_14: v })} placeholder="garn. ext…" datalistId={`equipment-suggestions-${displayIndex}-garn_ext`} fetchOptions={fetchEquipmentOptions} options={equipmentOptions} loading={equipmentOptionsLoading} />)
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{mainEquipLabel(row._raw?.[14] || r._garnExtLabel) || '—'}</span>}
       </Td>
       {visibleEquipmentColumns.map(column => {
@@ -1855,7 +1950,7 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
         return (
           <Td key={column.key} palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: column.minWidth, ...assistantCellStyle(...column.fields) }}>
             {editMode
-              ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableText value={editValue} onCommit={v => onRecompute?.(column.key === 'fp' ? { _raw_15: v } : { _raw_16: v })} placeholder={column.label.toLowerCase()} />)
+              ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentText value={editValue} onCommit={v => onRecompute?.(column.key === 'fp' ? { _raw_15: v } : { _raw_16: v })} placeholder={column.label.toLowerCase()} datalistId={`equipment-suggestions-${displayIndex}-${column.key}`} fetchOptions={fetchEquipmentOptions} options={equipmentOptions} loading={equipmentOptionsLoading} />)
               : (hasValue ? (
                 <Popover content={note || label || ''}>
                   <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', fontWeight: 600, color: 'var(--color-text-2)' }}>
@@ -1869,7 +1964,7 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
       {showOtherEquipmentColumn && (
         <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 140, ...assistantCellStyle('autres') }}>
           {editMode
-            ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableText value="" onCommit={v => { const patch = equipmentAdditionPatch(row._raw, v); if (patch) onRecompute?.(patch) }} placeholder="ajouter équip…" />)
+            ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentText value="" onCommit={v => { const patch = equipmentAdditionPatch(row._raw, v); if (patch) onRecompute?.(patch) }} placeholder="ajouter équip…" datalistId={`equipment-suggestions-${displayIndex}-autres`} fetchOptions={fetchEquipmentOptions} options={equipmentOptions} loading={equipmentOptionsLoading} />)
             : (row._overrideAutres !== undefined
                 ? (row._overrideAutres ? <span style={{ fontSize: 11, padding: '2px 4px', display: 'inline-block', fontWeight: 600, color: 'var(--color-text-2)' }}>{row._overrideAutres}</span> : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', color: 'var(--color-text-2)' }}>—</span>)
                 : (r._otherExtras?.length ? (
@@ -2074,6 +2169,7 @@ function AmountRow({ row, index, displayIndex = index, change, tva, multGlobal, 
 // ─── Sous-row références ─────────────────────────────────────────────────────
 function SubRowRefs({ row, editMode, onRefCommit, hiddenCols = new Set(), visibleDimensionCount = 4, visibleEquipmentColumns = [], showOtherEquipmentColumn = true }) {
   const r = resolveRow(row)
+  const perfLabel = subRowPerformanceLabel(row, r)
   // Construction stricte : 1 cellule par colonne, pas de colSpan
   const cells = []
   // #
@@ -2083,7 +2179,7 @@ function SubRowRefs({ row, editMode, onRefCommit, hiddenCols = new Set(), visibl
   // Localisation
   cells.push(<td key="ref-loc" style={{ background: SUBROW_BG }}></td>)
   // Perfs
-  cells.push(<td key="ref-perfs" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}><span style={SUBROW_VALUE_STYLE}>{r._acousticValue === '45 dB' ? (r._acousticRef || '4472/4476') : '—'}</span></td>)
+  cells.push(<td key="ref-perfs" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}><span style={SUBROW_VALUE_STYLE}>{perfLabel || '—'}</span></td>)
   // Dimensions dynamiques
   for (let i = 0; i < visibleDimensionCount; ++i) cells.push(<td key={`ref-dim-${i}`} style={{ background: SUBROW_BG }}></td>)
   // TL
@@ -2124,7 +2220,7 @@ function SubRowPrices({ row, hiddenCols = new Set(), visibleDimensionCount = 4, 
   // Localisation
   cells.push(<td key="price-loc" style={{ background: SUBROW_BG }}></td>)
   // Perfs
-  cells.push(<td key="price-perfs" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}><span style={SUBROW_PRICE_VALUE_STYLE}>{r._acousticValue === '45 dB' && r._acousticPrix != null ? `${r._acousticPrix.toLocaleString('fr-FR')} €` : '—'}</span></td>)
+  cells.push(<td key="price-perfs" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}><span style={SUBROW_PRICE_VALUE_STYLE}>—</span></td>)
   // Dimensions dynamiques
   for (let i = 0; i < visibleDimensionCount; ++i) cells.push(<td key={`price-dim-${i}`} style={{ background: SUBROW_BG }}></td>)
   // TL
@@ -2497,11 +2593,12 @@ async function recomputeIntentRow(row, patch, qty) {
 }
 
 function rowHasFirePerformance(row) {
+  const rawFire = coerceExcelPerfRawValue(row?._raw?.[5], 'cf')
   return FIRE_PERFORMANCE_RE.test([
     row?.cf,
     row?.coupe_feu,
     row?.feu,
-    row?._raw?.[5],
+    rawFire,
     row?.designation,
     ...(row?.options || []).map(option => equipmentText(option)),
   ].filter(Boolean).join(' '))
@@ -2855,9 +2952,9 @@ function EditableText({ value, onCommit, placeholder = '—', width = '100%', fo
       onClick={e => e.stopPropagation()}
       placeholder={placeholder}
       style={{
-        width, fontSize,
+        width,
         background: 'transparent', border: 'none', outline: 'none',
-        color: 'inherit', font: 'inherit', padding: '2px 4px',
+        color: 'inherit', font: 'inherit', fontSize, padding: '2px 4px',
       }}
     />
   )
@@ -3739,14 +3836,46 @@ export function DevisGridWorkspace({
     }
   }, [applyQuickGridIntentEdits, assistantInput, assistantLoading, assistantMessages, devisId, looksLikeGridChangeRequest, versionId])
 
+  const addQuickPromptLine = useCallback(async (question) => {
+    const text = String(question || '').trim()
+    if (!text || assistantLoading) return false
+    const nextIndex = rowsRef.current.length
+    setAssistantMessages(previous => [...previous, { id: `${Date.now()}-user`, role: 'user', content: text }])
+    setAssistantInput('')
+    setAssistantLoading(true)
+    try {
+      const parsed = await api.post('/devis/parse-line', { text }, { timeout: 40000 })
+      const computed = await api.post('/devis/recompute-row', { row: parsed.row }, { timeout: 30000 })
+      const newRow = computed?.result
+        ? { ...computed.result, source: 'ia', _ia: true, _manualBlank: true }
+        : { _raw: parsed.row, type: parsed.parsed?.type || text, source: 'ia', _ia: true, _manualBlank: true }
+      addRow(newRow)
+      setExpandedRows(previous => new Set([...previous, nextIndex]))
+      setAssistantMessages(previous => [...previous, {
+        id: `${Date.now()}-assistant`,
+        role: 'assistant',
+        content: `Ligne ${rowLetterLabel(nextIndex)} ajoutée depuis la saisie rapide.`,
+      }])
+      return true
+    } catch (err) {
+      const message = err?.error || err?.details || err?.message || 'chiffrage rapide impossible'
+      setAssistantMessages(previous => [...previous, { id: `${Date.now()}-assistant-error`, role: 'assistant', content: `Erreur chiffrage rapide : ${message}` }])
+      showToast('Erreur chiffrage rapide', 'error')
+      return false
+    } finally {
+      setAssistantLoading(false)
+    }
+  }, [addRow, assistantLoading, showToast])
+
   const initialGridPromptSentRef = useRef(false)
   useEffect(() => {
     if (embedded || initialGridPromptSentRef.current || assistantLoading) return
     const prompt = new URLSearchParams(window.location.search).get('prompt')?.trim()
     if (!prompt) return
     initialGridPromptSentRef.current = true
-    askQuickGridAssistant(prompt)
-  }, [askQuickGridAssistant, assistantLoading, embedded])
+    if (rowsRef.current.length === 0) addQuickPromptLine(prompt)
+    else askQuickGridAssistant(prompt)
+  }, [addQuickPromptLine, askQuickGridAssistant, assistantLoading, embedded])
 
   const addSectionRow = useCallback((section) => {
     const nextRows = [...rowsRef.current, createAmountRow(section, '', { defaultTransportAddress })]
@@ -3897,9 +4026,10 @@ export function DevisGridWorkspace({
           ...thermolaquageOverride,
           _recomputing: false,
         }
-        replaceRows(rowsRef.current.map((r, idx) => idx === i ? {
+        const nextRows = normalizeCalculationRows(splitCalculationOptions(rowsRef.current.map((r, idx) => idx === i ? {
           ...recomputedRow,
-        } : r))
+        } : r)))
+        replaceRows(nextRows)
         onRowsCommit?.(recomputedRow, i, { _recomputed: true })
         showToast('Recalculé et enregistré', 'success')
       })

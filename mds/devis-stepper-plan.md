@@ -93,7 +93,7 @@ Revenir sur la meme version OU creer une nouvelle version / branche
 - [ ] Step Versions : aide a choisir, comparer, nommer ou brancher une version.
 - [ ] Step Analyse : aide a lire l'Excel, expliquer les detections et corriger les ambiguïtés.
 - [ ] Step Grid : aide technique/tarifaire ligne par ligne, avec contexte complet de la grille.
-- [ ] Step Pre-PDF : aide redactionnelle pour les libelles commerciaux, style anciens devis Doortal/Zerux via Qdrant.
+- [x] Step Pre-PDF : aide redactionnelle pour les libelles commerciaux uniquement depuis les lignes devis/Excel, sans anciens PDF ni exemples Qdrant.
 - [ ] Step Check/PDF : audit qualite, synthese des risques, preparation de la version finale.
 - [ ] Step HubSpot : aide a rediger la note CRM et confirmer ce qui a ete envoye.
 
@@ -279,10 +279,10 @@ Revenir sur la meme version OU creer une nouvelle version / branche
 
 - [ ] Editeur de libelles PDF par ligne (textarea multi-lignes).
 - [ ] Ligne 1 = titre commercial ; lignes suivantes = corps de designation PDF.
-- [ ] Suggestion IA via Qdrant a partir des anciens devis Doortal/Zerux.
-- [ ] Les exemples Qdrant proviennent des 161 PDFs `ressources/Bulk` et doivent rester nettoyes : pas de pied de page, pas de note type `SUITE PAGE SUIVANTE`, pas de prix/delai/montant.
+- [x] Suggestion IA uniquement depuis les données structurées de la ligne devis/Excel ; ne plus utiliser Qdrant ni les anciens PDF Doortal/Zerux comme exemples.
+- [x] Les 161 PDFs `ressources/Bulk` ne doivent pas alimenter la génération de libellés PDF : ils provoquent des détails inventés ou faux. La ligne cible est la seule source de vérité.
 - [ ] Style attendu : titre en majuscules avec `"NEXUS"`, performances feu (`Performances coupe-feu EI² XX minutes recto/verso`, avec `sur avis de chantier` seulement si explicite), CR selon EN 1627-1630, FB majoritairement en `Performances pare-balle FBX selon norme EN 1522` sauf attestation explicite, dimensions, poids/finition uniquement si explicites, bloc `Equipement fourni-posé :` avec items `-`, puis `Localisation` si connue.
-- [ ] Gemma ne doit pas inventer Uw, poids, hors-tout, reservation ou equipement depuis les exemples historiques ; ces valeurs doivent etre presentes dans la ligne cible.
+- [x] Gemma ne doit pas inventer Uw, poids, hors-tout, reservation ou equipement depuis des exemples historiques ; ces valeurs doivent etre presentes dans la ligne cible.
 - [ ] Suggestion globale de tous les libelles PDF.
 - [ ] Sauvegarde en base dans la version active, pas uniquement en localStorage.
 - [ ] Commentaire/checkpoint possible avant passage au check final.

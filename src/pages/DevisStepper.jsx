@@ -43,12 +43,25 @@ const CALCULATION_OPTION_RE = /note de calcul|avis de chantier|avis chantier|cal
 const FIRE_PERFORMANCE_RE = /\bEI\s*(30|60|90|120)\b/i
 const HEIGHT_AVIS_CHANTIER_RE = /hauteur\s+\d+\s*mm\s+d[ée]passe\s+le\s+max\s+catalogue.*avis\s+de\s+chantier/i
 
+function coerceFirePerformanceRawValue(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const minutes = Math.trunc(value)
+    if ([30, 60, 90, 120].includes(minutes)) return `EI${minutes}`
+  }
+  if (typeof value === 'string') {
+    const text = value.trim()
+    if (/^(30|60|90|120)$/.test(text)) return `EI${text}`
+  }
+  return value
+}
+
 function rowHasFirePerformance(row) {
+  const rawFire = coerceFirePerformanceRawValue(row?._raw?.[5])
   return FIRE_PERFORMANCE_RE.test([
     row?.cf,
     row?.coupe_feu,
     row?.feu,
-    row?._raw?.[5],
+    rawFire,
     row?.designation,
     ...(row?.options || []).map(option => JSON.stringify(option)),
   ].filter(Boolean).join(' '))
@@ -3728,6 +3741,7 @@ export default function DevisStepper() {
       setStep(nextStep)
       setMaxReached(value => Math.max(value, nextStep))
       if (companyId) {
+        if (!dealId) setSelectedDeal(null)
         const sameStoredCompany = selectedCompanyRef.current?.id && String(selectedCompanyRef.current.id) === String(companyId)
         if (!sameStoredCompany) {
           try {
@@ -3743,6 +3757,8 @@ export default function DevisStepper() {
               const deal = (detail?.deals || []).find(d => String(d.id || d.hs_object_id) === String(dealId))
               if (deal) {
                 setSelectedDeal({ id: deal.id || deal.hs_object_id, name: deal.properties?.dealname || `Deal #${dealId}`, amount: deal.properties?.amount })
+              } else {
+                setSelectedDeal(null)
               }
             }
           } catch {

@@ -17,7 +17,7 @@ import { chatCompletion, fitChatMessages, maxCompletionTokens } from '../service
 import { getGlobalOllamaModel } from '../services/appSettings.js'
 import { parseDocument } from '../services/document-parser.js'
 import { analyzeDocument } from '../services/document-analyzer.js'
-import { searchDesignationExamples, searchDevisRules, searchExperiences } from '../services/memory.js'
+import { searchDevisRules, searchExperiences } from '../services/memory.js'
 import db from '../db/index.js'
 import multer from 'multer'
 import { execFile } from 'child_process'
@@ -127,7 +127,7 @@ async function loadEquipmentCatalog() {
       catalog.push(...parseEquipmentMarkdownCatalog(file, content))
     } catch { /* ignore unreadable catalog file */ }
   }
-  equipmentCatalogCache = { value: catalog, expiresAt: now + 60_000 }
+  equipmentCatalogCache = { value: catalog, expiresAt: now + 60000 }
   return catalog
 }
 
@@ -842,6 +842,30 @@ router.get('/types-options', async (_req, res) => {
 
 // ── POST /api/devis/recompute-row ───────────────────────────────────────────
 // body: { row: [16 cols], qty?: number } — recalcule une ligne en passant par detect_nexus.py --recompute
+router.post('/equipment-options', async (req, res) => {
+  const row = req.body?.row || {}
+  try {
+    const rowPerformances = detectRowPerformances(row)
+    const catalog = await loadEquipmentCatalog()
+    const options = catalog
+      .filter(entry => equipmentCompatibleWithRow(entry, rowPerformances))
+      .map(entry => ({
+        ref: entry.ref,
+        label: entry.designation,
+        designation: entry.designation,
+        prix: entry.price_ht,
+        price_label: entry.price_label,
+        family: entry.family,
+        source: entry.source,
+        performances: entry.performances,
+      }))
+      .sort((left, right) => String(left.ref || '').localeCompare(String(right.ref || ''), 'fr') || String(left.label || '').localeCompare(String(right.label || ''), 'fr'))
+    res.json({ options, performances: rowPerformances })
+  } catch (err) {
+    res.status(500).json({ error: 'Erreur equipment-options', details: err.message })
+  }
+})
+
 router.post('/recompute-row', async (req, res) => {
   const rowArr = req.body?.row
   const qty = Math.max(1, parseInt(req.body?.qty) || 1)
@@ -980,7 +1004,7 @@ Règles:
 })
 
 // ── POST /api/devis/suggest-designation ────────────────────────────────────
-// Gemma propose une désignation PDF en s'appuyant sur les devis historiques vectorisés
+// Génère une désignation PDF uniquement depuis les données structurées de la ligne.
 router.post('/suggest-designation', async (req, res) => {
   const line = req.body?.line || req.body || {}
   const contextLines = Array.isArray(req.body?.context_lines) ? req.body.context_lines : []
@@ -990,20 +1014,15 @@ router.post('/suggest-designation', async (req, res) => {
   if (!query) return res.status(400).json({ error: 'line requis' })
 
   try {
-    const examples = await searchDesignationExamples({ text: query, topK: 4, minScore: 0.30 })
-    if (!examples.length) {
-      return res.status(404).json({ error: 'Aucun exemple historique proche trouvé', query })
-    }
-
     const model = await getGlobalOllamaModel()
-    const examplesText = examples.map((example, index) => `EXEMPLE ${index + 1} - score ${Number(example.score || 0).toFixed(3)} - ${example.source_pdf} rep. ${example.repere || '?'}\n${example.designation}`).join('\n\n---\n\n')
     const systemPrompt = `Tu es rédacteur de devis NEXUS.
-  Tu dois générer le libellé commercial complet d'une ligne de devis PDF en reprenant le style des anciens devis DOORTAL/ZERUX fournis en exemples, mais avec une structure homogène et répétable pour toutes les lignes du devis.
+  Tu dois générer le libellé commercial complet d'une ligne de devis PDF uniquement depuis les données structurées de la ligne cible et, si utile, depuis les lignes voisines du même devis.
+  Tu n'as pas accès aux anciens PDF d'exemple et tu ne dois jamais t'inspirer d'anciens devis historiques.
 
   Règle d'homogénéité stricte :
   - Chaque ligne de détail doit toujours appartenir au même gabarit ci-dessous et rester dans le même genre de formulation.
   - Ne varie pas les intitulés d'une ligne à l'autre : utilise les formulations canoniques ci-dessous, pas des synonymes libres.
-  - Les exemples historiques servent au ton commercial uniquement. Ils ne doivent jamais modifier l'ordre, les rubriques ni ajouter des informations absentes.
+  - La ligne cible est la seule source de vérité. Les lignes voisines servent uniquement à garder la cohérence de contexte du devis, jamais à ajouter des détails absents de la ligne cible.
   - Les équipements doivent toujours être sous le bloc "Equipement fourni-posé :" avec des puces "- ...". Ne mélange pas les équipements dans les lignes de dimensions, de performances ou de finition.
 
 Structure obligatoire (dans cet ordre, en sautant les informations absentes) :
@@ -1038,9 +1057,9 @@ Formulations canoniques attendues :
 Contraintes absolues :
 - Réponds UNIQUEMENT avec le libellé final brut, une information par ligne, sans markdown ni commentaire.
 - Ne mets jamais de prix, quantité, délai, montant HT ou total.
-- Utilise uniquement les informations présentes dans la ligne cible. Les exemples servent au style et aux formulations, pas à inventer des équipements.
+- Utilise uniquement les informations présentes dans la ligne cible. N'utilise aucun ancien PDF, aucun exemple historique, aucune mémoire vectorielle, aucun style copié depuis un devis passé.
 - La section "DONNEES STRUCTUREES DE LA LIGNE CIBLE" est la source de vérité prioritaire. Si elle contient "Options / remplissages détectés" ou "Equipements détectés", ces éléments doivent apparaître dans le libellé, généralement sous "Equipement fourni-posé :".
-- Anti-hallucination : avant d'écrire une ligne, vérifie que la donnée correspondante existe explicitement dans LIGNE CIBLE ou dans les champs calculés fournis. Si la donnée vient seulement d'un exemple historique, omets la ligne.
+- Anti-hallucination : avant d'écrire une ligne, vérifie que la donnée correspondante existe explicitement dans LIGNE CIBLE ou dans les champs calculés fournis. Si elle n'est pas dans la ligne cible, omets la ligne.
 - N'invente jamais Uw, poids, épaisseur de tôle, largeur de vantail, hors-bâti, avis de chantier, attestation, matériau, vitrage, serrure, garniture, ferme-porte, crémone, finition spéciale ou localisation.
 - Si une information est douteuse, absente, contradictoire ou seulement implicite, omets-la au lieu de compléter.
 - La réservation gros oeuvre doit toujours être calculée depuis les dimensions hors-tout : largeur HT + 10 mm et hauteur HT + 10 mm. N'utilise aucune autre formule.
@@ -1056,7 +1075,7 @@ Contraintes absolues :
       .map((ctx, idx) => `CONTEXTE ${idx + 1}: ${designationSearchText(ctx)}`)
       .filter(Boolean)
       .join('\n')
-    const userPrompt = `EXEMPLES HISTORIQUES A IMITER:\n\n${examplesText}\n\nDONNEES STRUCTUREES DE LA LIGNE CIBLE (SOURCE DE VERITE):\n${targetFacts}\n\nLIGNE CIBLE (texte de recherche complémentaire):\n${query}${contextText ? `\n\nCONTEXTE DU DEVIS (lignes voisines):\n${contextText}` : ''}\n\nLIBELLE A PRODUIRE:`
+    const userPrompt = `DONNEES STRUCTUREES DE LA LIGNE CIBLE (SOURCE DE VERITE UNIQUE):\n${targetFacts}\n\nLIGNE CIBLE (texte de recherche complémentaire):\n${query}${contextText ? `\n\nCONTEXTE DU DEVIS (lignes voisines, à utiliser seulement pour cohérence générale, sans copier leurs détails):\n${contextText}` : ''}\n\nLIBELLE A PRODUIRE:`
     const designation = await chatCompletion({
       model,
       messages: [
@@ -1122,14 +1141,8 @@ Contraintes absolues :
       query,
       target_facts: targetFacts,
       context_count: contextLines.length,
-      examples: examples.map((example) => ({
-        score: example.score,
-        source_pdf: example.source_pdf,
-        page: example.page,
-        repere: example.repere,
-        title: example.title,
-        designation: example.designation,
-      })),
+      source_policy: 'row_only_no_historical_pdf_examples',
+      examples: [],
     })
   } catch (err) {
     console.error('suggest-designation error:', err)

@@ -415,7 +415,7 @@ export default function Prospects() {
                               <button
                                 type="button"
                                 className="admin-btn-primary"
-                                onClick={() => navigate(`/prospects/${detail.company?.id}/quotes`)}
+                                onClick={() => navigate(`/devis?step=1&company=${encodeURIComponent(detail.company?.id || '')}`)}
                                 style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', fontSize: '0.8125rem' }}
                               >
                                 <Briefcase size={14} /> Gérer les devis

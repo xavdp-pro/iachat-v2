@@ -95,6 +95,11 @@ export default function Home() {
     navigate(actionUrl(action, quickInputs[action.title]))
   }
 
+  const handleActionSubmit = (event, action) => {
+    event.preventDefault()
+    submitAction(action)
+  }
+
   return (
     <div className="home-shell">
       <HomeSidebar />
@@ -124,7 +129,7 @@ export default function Home() {
             const Icon = action.icon
             const value = quickInputs[action.title] || ''
             return (
-              <div key={action.title} className="home-action-card">
+              <form key={action.title} className="home-action-card" onSubmit={(event) => handleActionSubmit(event, action)}>
                 <div className="home-action-heading">
                   <span className="home-action-icon"><Icon size={20} strokeWidth={1.8} /></span>
                   <h2>{action.title}</h2>
@@ -132,26 +137,20 @@ export default function Home() {
                 <div className="home-action-body">
                   <p>{action.description}</p>
                   {action.placeholder && (
-                    <label className="home-search-row">
+                    <div className="home-search-row">
                       <input
                         type="text"
                         placeholder={action.placeholder}
                         aria-label={action.title}
                         value={value}
                         onChange={(event) => setQuickInputs(previous => ({ ...previous, [action.title]: event.target.value }))}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') {
-                            event.preventDefault()
-                            submitAction(action)
-                          }
-                        }}
                       />
-                      <button type="button" onClick={() => submitAction(action)} aria-label={`Valider ${action.title}`}><Search size={15} /></button>
-                    </label>
+                      <button type="submit" aria-label={`Valider ${action.title}`}><Search size={15} /></button>
+                    </div>
                   )}
                 </div>
-                <Link to={actionUrl(action, value)} className="home-card-link">Ouvrir</Link>
-              </div>
+                <button type="submit" className="home-card-link">Ouvrir</button>
+              </form>
             )
             })}
           </div>

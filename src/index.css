@@ -415,12 +415,17 @@ body {
 
 .home-card-link {
   margin-top: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
   color: var(--home-primary);
   font-size: 10.5px;
   font-weight: 800;
   letter-spacing: 0.3px;
   opacity: 0.52;
   text-decoration: none;
+  text-align: left;
+  cursor: pointer;
 }
 
 .home-card-link:hover {
