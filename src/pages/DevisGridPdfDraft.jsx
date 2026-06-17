@@ -16,6 +16,44 @@ function euro(v) {
   return `${n.toLocaleString('fr-FR')} €`
 }
 
+function rowLetterLabel(index) {
+  let n = index + 1
+  let label = ''
+  while (n > 0) {
+    n -= 1
+    label = String.fromCharCode(65 + (n % 26)) + label
+    n = Math.floor(n / 26)
+  }
+  return label
+}
+
+function equipmentLabel(equipment) {
+  if (!equipment) return ''
+  if (typeof equipment === 'string') return equipment
+  const label = String(equipment.label || equipment.designation || equipment.ref || '').trim()
+  const ref = String(equipment.ref || '').trim()
+  const price = Number(equipment.prix ?? equipment.price)
+  const priceLabel = Number.isFinite(price) ? ` : +${price.toLocaleString('fr-FR')} €` : ''
+  const note = String(equipment.note || '').trim()
+  const main = label ? (ref && !label.includes(ref) ? `${label} réf.${ref}` : label) : ref
+  return [main, note && !note.includes(main) ? note : ''].filter(Boolean).join(' — ') + priceLabel
+}
+
+function isDuplicateAcousticPlinthLine(value) {
+  const text = String(value || '')
+  return /acoustique|\b(30|35|40|45)\s*dB\b/i.test(text) && /plinthe/i.test(text)
+}
+
+function cleanPdfPreviewDesignation(value = '') {
+  return String(value || '')
+    .split('\n')
+    .filter(line => !isDuplicateAcousticPlinthLine(line))
+    .join('\n')
+    .replace(/Equipement fourni-posé\s*:\s*\n\s*(?=(?:Localisation|Dimensions|Finition|$))/giu, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
 function loadRows() {
   try {
     const raw = localStorage.getItem('devisGridRows')
@@ -44,9 +82,10 @@ export default function DevisGridPdfDraft() {
     return {
       ...row,
       _resolved: r,
-      _label: (row.designation || r.designation || row.type || r.type || '').trim() || 'Ligne sans libellé',
+      _label: cleanPdfPreviewDesignation(row.designation || r.designation || row.type || r.type || '') || 'Ligne sans libellé',
       _total: Number(r._totalHt || row.total_ligne_ht || row.prix_total_min_ht || row.prix_base_ht || 0),
       _section: row.line_section || 'products',
+      _equipments: (Array.isArray(row.equip_extra) ? row.equip_extra : []).map(equipmentLabel).filter(label => label && !isDuplicateAcousticPlinthLine(label)),
     }
   }), [rows])
 
@@ -177,7 +216,7 @@ export default function DevisGridPdfDraft() {
             return (
               <div key={idx} style={{ border: '1px solid var(--color-border)', borderRadius: 8, overflow: 'hidden', background: 'var(--color-surface)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, borderBottom: '1px solid var(--color-border)', padding: '8px 10px' }}>
-                  <span style={{ fontSize: 10, fontWeight: 800, color: 'var(--color-text-3)' }}>{String.fromCharCode(65 + (idx % 26))}</span>
+                  <span style={{ fontSize: 10, fontWeight: 800, color: 'var(--color-text-3)' }}>{rowLetterLabel(idx)}</span>
                   <span style={{ fontSize: 11, fontWeight: 700 }}>{SECTION_LABEL[section] || section}</span>
                   <span style={{ fontSize: 10, color: 'var(--color-text-3)' }}>H {row.haut_mm || '?'} × L {row.larg_mm || '?'} mm</span>
                   {section === 'products' && (
@@ -226,10 +265,15 @@ export default function DevisGridPdfDraft() {
               <tbody>
                 {previewRows.map((row, idx) => (
                   <tr key={idx} style={{ borderBottom: '1px solid #ececec', verticalAlign: 'top' }}>
-                    <td style={{ padding: '8px 8px', color: '#5f6f72', fontWeight: 700 }}>{String.fromCharCode(65 + (idx % 26))}</td>
+                    <td style={{ padding: '8px 8px', color: '#5f6f72', fontWeight: 700 }}>{rowLetterLabel(idx)}</td>
                     <td style={{ padding: '8px 8px' }}>
                       <div style={{ fontWeight: 600, whiteSpace: 'pre-wrap' }}>{row._label}</div>
                       {row.gamme ? <div style={{ color: '#6f6f6f', fontSize: 11 }}>{row.gamme} {row.vantail ? `— ${row.vantail}` : ''}</div> : null}
+                      {row._equipments?.length ? (
+                        <ul style={{ margin: '5px 0 0', paddingLeft: 16, color: '#555', fontSize: 11, lineHeight: 1.45 }}>
+                          {row._equipments.map((equipment, equipmentIndex) => <li key={`${idx}-equipment-${equipmentIndex}`}>{equipment}</li>)}
+                        </ul>
+                      ) : null}
                     </td>
                     <td style={{ padding: '8px 8px', color: '#555' }}>H {row.haut_mm || '?'} × L {row.larg_mm || '?'} mm</td>
                     <td style={{ padding: '8px 8px', textAlign: 'right', fontWeight: 700 }}>{euro(row._total)}</td>

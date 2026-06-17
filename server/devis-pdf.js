@@ -74,8 +74,14 @@ export function formatEuro(n) {
 }
 
 function repLetter(i) {
-  if (i < 26) return String.fromCharCode(65 + i);
-  return String(i + 1);
+  let n = i + 1;
+  let label = "";
+  while (n > 0) {
+    n -= 1;
+    label = String.fromCharCode(65 + (n % 26)) + label;
+    n = Math.floor(n / 26);
+  }
+  return label;
 }
 
 function formatDate(isoOrDate) {
@@ -113,6 +119,51 @@ function pdfPassageDimensions(line = {}) {
     reservationH: Number.isFinite(haut) ? haut + 10 : null,
     reservationL: Number.isFinite(larg) ? larg + 10 : null,
   };
+}
+
+function formatDesignationBodyLine(line) {
+  const raw = String(line || "").trim();
+  const escaped = escapeHtml(raw);
+  if (!raw) return "";
+  if (/^Dimensions\s+hors[-\s]tout\s*:/i.test(raw)) return `<div class="line-body-row line-strong">${escaped}</div>`;
+  if (/^Localisation\s*:/i.test(raw)) return `<div class="line-body-row line-localisation-inline">${escaped}</div>`;
+  if (/^(?:[0-9]{1,3}\s*DB\s+MAXI|VARIANTE\b|OPTION\b|SP[ÉE]CIFICIT[ÉE]\b|PR[ÉE]CISION\b)/i.test(raw)) return `<div class="line-body-row line-note-strong">${escaped}</div>`;
+  return `<div class="line-body-row">${escaped}</div>`;
+}
+
+function cleanLegacyDesignationFragment(value) {
+  return String(value || "")
+    .replace(/\([^)]*€[^)]*\)/giu, "")
+    .replace(/\(\s*défaut[^)]*\)/giu, "")
+    .replace(/\s+—\s*voir\s+[^\s)]*\.md\)?/giu, "")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s+([,.;])/g, "$1")
+    .replace(/\s*[—-]\s*$/u, "")
+    .trim();
+}
+
+function splitLegacyDesignationFragment(value) {
+  const cleaned = cleanLegacyDesignationFragment(value);
+  if (!cleaned) return [];
+  const firePrefix = cleaned.match(/^(EI\s*\d{2,3})\b\s*,\s*(.+)$/i);
+  const chunks = firePrefix ? [firePrefix[1], firePrefix[2]] : [cleaned];
+  return chunks.flatMap(chunk => {
+    const shouldSplitCommas = /\b(?:Serrure|Crémone|Garniture|Ferme-porte|VAM|Vitrage|Remplissage)\b/i.test(chunk) && chunk.includes(',');
+    return (shouldSplitCommas ? chunk.split(',') : [chunk])
+      .map(cleanLegacyDesignationFragment)
+      .filter(Boolean);
+  });
+}
+
+function normalizeDesignationLinesForPdf(designation) {
+  return String(designation || "")
+    .split('\n')
+    .flatMap(line => {
+      const trimmed = line.trim();
+      if (!trimmed) return [];
+      if (!trimmed.includes('|')) return splitLegacyDesignationFragment(trimmed);
+      return trimmed.split('|').flatMap(splitLegacyDesignationFragment);
+    });
 }
 
 // ─── HTML builder ──────────────────────────────────────────────────────────
@@ -173,15 +224,13 @@ export function buildDevisNexusHtml(data) {
     const vantail = line.vantail ? ` — ${escapeHtml(line.vantail)}` : "";
 
     // Split multi-line designation: first line = bold title, rest = body block
-    const desigLines = line.designation
-      ? line.designation.split('\n').map(l => l.trim()).filter(Boolean)
-      : [];
+    const desigLines = normalizeDesignationLinesForPdf(line.designation);
     const titleLine = desigLines.length
       ? escapeHtml(desigLines[0])
       : `${gamme}${dims}${vantail}`;
     const bodyHtml = desigLines.slice(1)
-      .map(l => escapeHtml(l))
-      .join('<br>');
+      .map(formatDesignationBodyLine)
+      .join('');
     const localisation = String(line.localisation || "").trim();
     const hasBodyLocalisation = desigLines.some(l => /^Localisation\s*:/i.test(l));
     const localisationHtml = localisation && !hasBodyLocalisation
@@ -338,8 +387,12 @@ export function buildDevisNexusHtml(data) {
     .cell-num { width: 80px; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; font-weight: 300; }
 
     .line-title { font-weight: 700; font-size: 9.5pt; margin-bottom: 3px; text-transform: uppercase; color: var(--zr-title); }
-    .line-body { font-size: 8pt; color: var(--zr-body); line-height: 1.55; font-weight: 300; margin-top: 1px; }
-    .line-localisation { font-size: 8pt; color: var(--zr-title); line-height: 1.45; font-weight: 600; margin-top: 4px; }
+    .line-body { font-size: 8pt; color: var(--zr-body); line-height: 1.22; font-weight: 300; margin-top: 1px; }
+    .line-body-row { margin: 0; padding: 0; }
+    .line-strong { font-weight: 700; color: var(--zr-title); }
+    .line-note-strong { font-weight: 700; color: var(--zr-title); margin-top: 10px; }
+    .line-localisation,
+    .line-localisation-inline { font-size: 8pt; color: var(--zr-title); line-height: 1.22; font-weight: 700; font-style: italic; margin-top: 2px; }
     .line-desc { font-family: 'Montserrat', sans-serif; font-size: 8.5pt; color: var(--zr-body); line-height: 1.55; font-weight: 300; }
 
     /* ── TOTAL ── */

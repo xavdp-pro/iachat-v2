@@ -275,7 +275,7 @@ export default function TransportTariffs() {
         </section>
       </main>
       {confirmDialog && (
-        <div onClick={() => setConfirmDialog(null)} style={{ position: 'fixed', inset: 0, zIndex: 9500, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+        <div data-modal-backdrop="true" onClick={() => setConfirmDialog(null)} style={{ position: 'fixed', inset: 0, zIndex: 9500, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
           <div onClick={event => event.stopPropagation()} style={{ width: 360, maxWidth: '92vw', borderRadius: 10, border: '1px solid var(--color-border)', background: 'var(--color-surface)', boxShadow: '0 14px 40px rgba(0,0,0,0.28)', padding: 16 }}>
             <div style={{ fontSize: 14, fontWeight: 900, color: 'var(--color-text)', marginBottom: 8 }}>{confirmDialog.title}</div>
             <div style={{ fontSize: 12, lineHeight: 1.5, color: 'var(--color-text-2)', marginBottom: 14 }}>{confirmDialog.message}</div>

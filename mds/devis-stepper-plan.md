@@ -93,7 +93,8 @@ Revenir sur la meme version OU creer une nouvelle version / branche
 - [ ] Step Versions : aide a choisir, comparer, nommer ou brancher une version.
 - [ ] Step Analyse : aide a lire l'Excel, expliquer les detections et corriger les ambiguïtés.
 - [ ] Step Grid : aide technique/tarifaire ligne par ligne, avec contexte complet de la grille.
-- [x] Step Pre-PDF : aide redactionnelle pour les libelles commerciaux uniquement depuis les lignes devis/Excel, sans anciens PDF ni exemples Qdrant.
+- [x] Step Pre-PDF : aide redactionnelle pour les libelles commerciaux uniquement depuis les lignes devis/Excel et le classeur client `Construction détail ligne devis 20260526.xlsx`, sans anciens PDF ni exemples Qdrant.
+- [x] Step Pre-PDF : les textes d'items PDF passent d'abord par un brouillon compose deterministiquement depuis la ligne grid (titre, performances, dimensions, finition, equipements, localisation), puis l'IA ne fait qu'un polissage conservateur.
 - [ ] Step Check/PDF : audit qualite, synthese des risques, preparation de la version finale.
 - [ ] Step HubSpot : aide a rediger la note CRM et confirmer ce qui a ete envoye.
 
@@ -227,6 +228,7 @@ Revenir sur la meme version OU creer une nouvelle version / branche
   - Anti-explosion : le select Blast doit refléter la perf même si la valeur source n'est pas au format exact (normalisation vers 2t/m², 4t/m², 5t/m²)
   - Colonnes finales produit dans cet ordre : PU HT, Remise, Q., Total HT
   - Les options ou alertes produit de calcul (`Avis de chantier`, `Note de calcul explosion`) sont mutualisées en une ligne par type (pas de doublons, pas de ligne à 0 €)
+  - Avis EI60 BP : se baser sur les cellules bleues/blanches du XLSX tarif, pas sur les seuls maxima du tableau. Bleu 1V = H1890/H2180 sur L800/L960/L1150 et H2300/H2600 sur L800/L960 ; bleu 2V = H1890/H2180/H2300/H2600/H2900/H3100 sur L1000/L1600/L2000/L2400/L2690/L2800/L3200, L3470 blanc. Hors bleu, `detect_nexus.py` doit émettre une option structurée `Avis de chantier`.
   - Dimensions hors tarif : alerte dédiée et prix de base vide, sauf expérience approuvée `Validations individuelles R&D` prioritaire sur le tarif
   - Total ligne HT
 - [ ] Bouton **+** pour ajouter une nouvelle ligne vide

@@ -95,6 +95,7 @@ function TableExpand({ children }) {
         <>
           {/* Backdrop */}
           <div
+            data-modal-backdrop="true"
             onClick={() => setOpen(false)}
             style={{
               position: 'fixed', inset: 0,

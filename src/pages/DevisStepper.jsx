@@ -43,6 +43,47 @@ const CALCULATION_OPTION_RE = /note de calcul|avis de chantier|avis chantier|cal
 const FIRE_PERFORMANCE_RE = /\bEI\s*(30|60|90|120)\b/i
 const HEIGHT_AVIS_CHANTIER_RE = /hauteur\s+\d+\s*mm\s+d[ée]passe\s+le\s+max\s+catalogue.*avis\s+de\s+chantier/i
 
+function rowLetterLabel(index) {
+  let n = index + 1
+  let label = ''
+  while (n > 0) {
+    n -= 1
+    label = String.fromCharCode(65 + (n % 26)) + label
+    n = Math.floor(n / 26)
+  }
+  return label
+}
+
+function formatRepereList(reperes = []) {
+  const list = [...new Set(reperes)].filter(Boolean)
+  if (list.length <= 1) return list[0] || ''
+  return `${list.slice(0, -1).join(', ')} et ${list[list.length - 1]}`
+}
+
+function calculationPerformanceFromBucket(bucket, fallback = '') {
+  const text = [fallback, ...(bucket?.notes ? [...bucket.notes] : [])].filter(Boolean).join(' ')
+  const fire = text.match(/\bEI\s*(30|60|90|120)\b/i)
+  if (fire) return `EI ${fire[1]}`
+  const blast = text.match(/\b([245])\s*t\s*\/\s*m(?:²|2)\b/i)
+  if (blast) return `${blast[1]} t/m²`
+  return ''
+}
+
+function calculationLabelFromBucket(bucket) {
+  const reperes = bucket?.reperes ? [...bucket.reperes] : []
+  const repLabel = formatRepereList(reperes)
+  if (bucket?.key === 'avis_chantier') {
+    const performance = calculationPerformanceFromBucket(bucket)
+    if (performance && repLabel) return `Validation par le laboratoire Efectis pour performance ${performance} sur repère${reperes.length > 1 ? 's' : ''} ${repLabel}`
+    if (performance) return `Validation par le laboratoire Efectis pour performance ${performance}`
+  }
+  if (bucket?.key === 'note_calcul_explosion') {
+    const performance = calculationPerformanceFromBucket(bucket)
+    if (performance && repLabel) return `Note de calcul pour classement anti-explosion ${performance} sur repère${reperes.length > 1 ? 's' : ''} ${repLabel}`
+  }
+  return bucket?.label || 'Calcul'
+}
+
 function coerceFirePerformanceRawValue(value) {
   if (typeof value === 'number' && Number.isFinite(value)) {
     const minutes = Math.trunc(value)
@@ -121,8 +162,7 @@ function companyFromHubSpotDetail(detail, fallback = null) {
 }
 
 function repLetter(index) {
-  if (index < 26) return String.fromCharCode(65 + index)
-  return String(index + 1)
+  return rowLetterLabel(index)
 }
 
 function parseJsonArray(value) {
@@ -179,6 +219,34 @@ function contentDispositionFilename(header) {
     try { return decodeURIComponent(utfMatch[1]) } catch { return utfMatch[1] }
   }
   return value.match(/filename="?([^";]+)"?/i)?.[1] || null
+}
+
+function acousticDbValue(value) {
+  const match = String(value || '').match(/\b(30|35|40|45)\s*dB\b/i)
+  return match ? `${match[1]} dB` : null
+}
+
+function lineAcousticValue(line = {}) {
+  const parts = [line.acoustic, line.designation, line.notes, line.options_json, line.equipements_json]
+  try {
+    const options = Array.isArray(line.options_json) ? line.options_json : JSON.parse(line.options_json || '[]')
+    if (Array.isArray(options)) parts.push(...options.map(option => [option.label, option.ref, option.note].filter(Boolean).join(' ')))
+  } catch {}
+  return acousticDbValue(parts.filter(Boolean).join(' '))
+}
+
+function withRequiredPdfDesignationFacts(line = {}) {
+  if ((line.line_section || 'products') !== 'products') return line
+  const acoustic = lineAcousticValue(line)
+  if (!acoustic) return line
+  const designation = String(line.designation || '').trim()
+  const acousticLabel = `Affaiblissement acoustique ${acoustic} sur attestation`
+  if (new RegExp(`Affaiblissement\\s+acoustique\\s+${acoustic.replace(' ', '\\s+')}\\s+sur\\s+attestation`, 'i').test(designation)) return line
+  const lines = designation ? designation.split('\n') : []
+  const nextDesignation = lines.length > 1
+    ? [lines[0], acousticLabel, ...lines.slice(1)].join('\n')
+    : [designation, acousticLabel].filter(Boolean).join('\n')
+  return { ...line, designation: nextDesignation }
 }
 
 function dbLineToGridRow(line) {
@@ -474,7 +542,7 @@ function parseGemmaImages(value) {
 
 function splitCalculationOptions(rows) {
   const buckets = new Map()
-  const registerCalcOption = (option) => {
+  const registerCalcOption = (option, rowIndex) => {
     const label = String(option?.label || '').trim()
     const amount = Number(option?.prix) || 0
     const rawKey = label.toLowerCase()
@@ -484,16 +552,17 @@ function splitCalculationOptions(rows) {
     const title = key === 'avis_chantier'
       ? 'Avis de chantier'
       : (key === 'note_calcul_explosion' ? 'Note de calcul explosion (non remisable)' : (label || 'Calcul'))
-    const prev = buckets.get(key) || { key, label: title, amount: 0, notes: new Set(), count: 0 }
+    const prev = buckets.get(key) || { key, label: title, amount: 0, notes: new Set(), reperes: new Set(), count: 0 }
     if (amount > prev.amount) prev.amount = amount
     if (option?.note) prev.notes.add(String(option.note))
+    if (Number.isInteger(rowIndex)) prev.reperes.add(rowLetterLabel(rowIndex))
     prev.count += 1
     buckets.set(key, prev)
     return amount
   }
 
   const nextRows = []
-  for (const row of Array.isArray(rows) ? rows : []) {
+  for (const [rowIndex, row] of (Array.isArray(rows) ? rows : []).entries()) {
     if (row.line_section && row.line_section !== 'products') {
       nextRows.push(row)
       continue
@@ -504,7 +573,7 @@ function splitCalculationOptions(rows) {
       nextRows.push({ ...row, line_section: 'products' })
       continue
     }
-    const calcTotal = calcOptions.reduce((sum, option) => sum + registerCalcOption(option), 0)
+    const calcTotal = calcOptions.reduce((sum, option) => sum + registerCalcOption(option, rowIndex), 0)
     const productOptions = options.filter(option => !CALCULATION_OPTION_RE.test(option?.label || ''))
     const productTotal = row.prix_total_min_ht != null ? Math.max(0, Number(row.prix_total_min_ht) - calcTotal) : row.prix_total_min_ht
     nextRows.push({ ...row, line_section: 'products', options: productOptions, prix_total_min_ht: productTotal, total_ligne_ht: productTotal })
@@ -512,10 +581,11 @@ function splitCalculationOptions(rows) {
   for (const bucket of buckets.values()) {
     if (!(Number(bucket.amount) > 0)) continue
     const notes = [...bucket.notes]
+    const designation = calculationLabelFromBucket(bucket)
     nextRows.push({
       line_section: 'calculations',
-      type: bucket.label,
-      designation: bucket.label,
+      type: designation,
+      designation,
       prix_base_ht: Number(bucket.amount) || 0,
       prix_total_min_ht: Number(bucket.amount) || 0,
       total_ligne_ht: Number(bucket.amount) || 0,
@@ -532,10 +602,10 @@ function splitCalculationOptions(rows) {
 function normalizeCalculationRows(rows) {
   const nextRows = []
   const calcBuckets = new Map()
-  const addBucket = (key, label, amount, note) => {
+  const addBucket = (key, label, amount, note, rowIndex = null) => {
     const price = Number(amount) || 0
     if (!(price > 0)) return
-    const bucket = calcBuckets.get(key) || { key, label, amount: 0, notes: new Set(), count: 0 }
+    const bucket = calcBuckets.get(key) || { key, label, amount: 0, notes: new Set(), reperes: new Set(), count: 0 }
     if (price > bucket.amount) bucket.amount = price
     if (note) {
       String(note)
@@ -544,18 +614,19 @@ function normalizeCalculationRows(rows) {
         .filter(part => part && !/mutualis[ée]/i.test(part))
         .forEach(part => bucket.notes.add(part))
     }
+      if (Number.isInteger(rowIndex)) bucket.reperes.add(rowLetterLabel(rowIndex))
     bucket.count += 1
     calcBuckets.set(key, bucket)
   }
-  for (const row of Array.isArray(rows) ? rows : []) {
+  for (const [rowIndex, row] of (Array.isArray(rows) ? rows : []).entries()) {
     const section = row.line_section || 'products'
     const text = `${row.designation || ''} ${row.type || ''} ${(row.alertes || []).join(' ')}`
     if (section === 'products') {
       const cleanRow = sanitizeCalculationAlerts(row)
       nextRows.push(cleanRow)
       for (const alert of cleanRow.alertes || []) {
-        if (/avis de chantier|avis chantier/i.test(alert)) addBucket('avis_chantier', 'Avis de chantier', 3700, alert)
-        if (/note de calcul|calcul explosion|hors zone bleue/i.test(alert) && !/non requise|NON requise/i.test(alert)) addBucket('note_calcul_explosion', 'Note de calcul explosion (non remisable)', 9300, alert)
+        if (/avis de chantier|avis chantier/i.test(alert)) addBucket('avis_chantier', 'Avis de chantier', 3700, alert, rowIndex)
+        if (/note de calcul|calcul explosion|hors zone bleue/i.test(alert) && !/non requise|NON requise/i.test(alert)) addBucket('note_calcul_explosion', 'Note de calcul explosion (non remisable)', 9300, alert, rowIndex)
       }
       continue
     }
@@ -577,10 +648,11 @@ function normalizeCalculationRows(rows) {
   }
   for (const bucket of calcBuckets.values()) {
     const notes = [...bucket.notes].filter(Boolean)
+    const designation = calculationLabelFromBucket(bucket)
     nextRows.push({
       line_section: 'calculations',
-      type: bucket.label,
-      designation: bucket.label,
+      type: designation,
+      designation,
       prix_base_ht: bucket.amount,
       prix_total_min_ht: bucket.amount,
       total_ligne_ht: bucket.amount,
@@ -2887,7 +2959,7 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
   const [activePreviewKey, setActivePreviewKey] = useState(null)
   const previewRefs = useRef(new Map())
 
-  useEffect(() => { setDraftLines(lines) }, [lines])
+  useEffect(() => { setDraftLines(lines.map(withRequiredPdfDesignationFacts)) }, [lines])
 
   const getLineKey = useCallback((line, index) => String(line?.id ?? `line-${index}`), [])
 
@@ -3071,6 +3143,36 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
   const getLineOptions = (line) => {
     try { return JSON.parse(line.options_json || '[]') } catch { return [] }
   }
+  const getLineEquipments = (line) => {
+    try {
+      const items = JSON.parse(line.equipements_json || '[]')
+      return Array.isArray(items) ? items : []
+    } catch { return [] }
+  }
+  const equipmentLabel = (equipment) => {
+    if (!equipment) return ''
+    if (typeof equipment === 'string') return equipment
+    const label = String(equipment.label || equipment.designation || equipment.ref || '').trim()
+    const ref = String(equipment.ref || '').trim()
+    const price = Number(equipment.prix ?? equipment.price)
+    const priceLabel = Number.isFinite(price) ? ` : +${price.toLocaleString('fr-FR')} €` : ''
+    const note = String(equipment.note || '').trim()
+    const main = label ? (ref && !label.includes(ref) ? `${label} réf.${ref}` : label) : ref
+    return [main, note && !note.includes(main) ? note : ''].filter(Boolean).join(' — ') + priceLabel
+  }
+  const isDuplicatePdfOptionText = (value) => {
+    const text = String(value || '')
+    if (/acoustique|\b(30|35|40|45)\s*dB\b/i.test(text) && /plinthe/i.test(text)) return true
+    if (/^Remplissage\s+ch[âa]ssis\s+[—-]\s+/i.test(text)) return true
+    return false
+  }
+  const cleanPreviewDesignation = (value = '') => String(value || '')
+    .split('\n')
+    .filter(line => !isDuplicatePdfOptionText(line))
+    .join('\n')
+    .replace(/Equipement fourni-posé\s*:\s*\n\s*(?=(?:Localisation|Dimensions|Finition|$))/giu, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
   const getLinePassageDimensions = (line) => computePassageDimensions(dbLineToGridRow(line))
   const passageDimensionLabel = (dims) => dims?._dimensionLabel === 'CV' ? 'Clair vitrage CV' : 'Passage libre PL'
   const passageDimensionText = (line) => {
@@ -3085,13 +3187,15 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
   const buildMarkdown = () => {
     const fmt = (v) => v != null ? Number(v).toLocaleString('fr-FR') + ' €' : '—'
     const linesStr = draftLines.map((l, i) => {
-      const opts = getLineOptions(l)
+      const opts = getLineOptions(l).filter(option => !isDuplicatePdfOptionText(option?.label))
+      const equipments = getLineEquipments(l).map(equipmentLabel).filter(label => label && !isDuplicatePdfOptionText(label))
       const passageDims = getLinePassageDimensions(l)
       const optsStr = opts.map(o => `  - ${o.label} : +${(o.prix || 0).toLocaleString('fr-FR')} €`).join('\n')
+      const equipmentsStr = equipments.map(item => `  - ${item}`).join('\n')
       return [
         `### Ligne ${i + 1} — ${l.gamme || '?'} ${l.vantail || ''}`,
         `| Champ | Valeur |`, `|---|---|`,
-        `| Désignation | ${l.designation || '—'} |`,
+        `| Désignation | ${cleanPreviewDesignation(l.designation) || '—'} |`,
         l.localisation ? `| Localisation | **${l.localisation}** |` : null,
         `| Dimensions HT | H **${l.hauteur_mm || '?'}** × L **${l.largeur_mm || '?'}** mm |`,
         `| ${passageDimensionLabel(passageDims)} | H **${passageDims.hauteur_pl_mm || '?'}** × L **${passageDims.largeur_pl_mm || '?'}** mm |`,
@@ -3101,6 +3205,7 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
         l.ferme_porte_ref ? `| Ferme-porte | ${l.ferme_porte_ref} |` : null,
         `| **Total estimé** | **${fmt(l.total_ligne_ht)} HT** |`,
         optsStr ? `\n**Options :**\n${optsStr}` : null,
+        equipmentsStr ? `\n**Équipements :**\n${equipmentsStr}` : null,
       ].filter(Boolean).join('\n')
     }).join('\n\n---\n\n')
 
@@ -3251,7 +3356,8 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
               {draftLines.map((line, index) => {
                 const lineKey = getLineKey(line, index)
                 const isActive = activePreviewKey === lineKey
-                const opts = getLineOptions(line)
+                const opts = getLineOptions(line).filter(option => !isDuplicatePdfOptionText(option?.label))
+                const equipments = getLineEquipments(line).map(equipmentLabel).filter(label => label && !isDuplicatePdfOptionText(label))
                 return (
                   <section
                     key={lineKey}
@@ -3270,7 +3376,7 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
                       <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--color-primary)' }}>{fmt(line.total_ligne_ht)} HT</div>
                     </div>
                     <div style={{ padding: '12px' }}>
-                      <div style={{ whiteSpace: 'pre-wrap', fontSize: 12, lineHeight: 1.55, color: 'var(--color-text)', marginBottom: 12 }}>{line.designation || '—'}</div>
+                      <div style={{ whiteSpace: 'pre-wrap', fontSize: 12, lineHeight: 1.55, color: 'var(--color-text)', marginBottom: 12 }}>{cleanPreviewDesignation(line.designation) || '—'}</div>
                       <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 10, display: 'grid', gridTemplateColumns: 'minmax(120px, 0.35fr) minmax(0, 0.65fr)', gap: '7px 12px', fontSize: 11 }}>
                         <span style={{ color: 'var(--color-text-3)' }}>Dimensions HT</span><strong>H {line.hauteur_mm || '?'} × L {line.largeur_mm || '?'} mm</strong>
                         {line.localisation && <><span style={{ color: 'var(--color-text-3)' }}>Localisation</span><strong>{line.localisation}</strong></>}
@@ -3285,6 +3391,14 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
                           <div style={{ fontSize: 11, fontWeight: 800, marginBottom: 6 }}>Options</div>
                           <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11, lineHeight: 1.5 }}>
                             {opts.map((option, optionIndex) => <li key={`${lineKey}-option-${optionIndex}`}>{option.label} : +{(option.prix || 0).toLocaleString('fr-FR')} €</li>)}
+                          </ul>
+                        </div>
+                      )}
+                      {equipments.length > 0 && (
+                        <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--color-border)' }}>
+                          <div style={{ fontSize: 11, fontWeight: 800, marginBottom: 6 }}>Équipements</div>
+                          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11, lineHeight: 1.5 }}>
+                            {equipments.map((equipment, equipmentIndex) => <li key={`${lineKey}-equipment-${equipmentIndex}`}>{equipment}</li>)}
                           </ul>
                         </div>
                       )}
@@ -4672,7 +4786,7 @@ export default function DevisStepper() {
           />
         )}
         {confirmDialog && (
-          <div onClick={() => setConfirmDialog(null)} style={{ position: 'fixed', inset: 0, zIndex: 9500, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div data-modal-backdrop="true" onClick={() => setConfirmDialog(null)} style={{ position: 'fixed', inset: 0, zIndex: 9500, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
             <div onClick={event => event.stopPropagation()} style={{ width: 360, maxWidth: '92vw', borderRadius: 10, border: '1px solid var(--color-border)', background: 'var(--color-surface)', boxShadow: '0 14px 40px rgba(0,0,0,0.28)', padding: 16 }}>
               <div style={{ fontSize: 14, fontWeight: 900, color: 'var(--color-text)', marginBottom: 8 }}>{confirmDialog.title}</div>
               <div style={{ fontSize: 12, lineHeight: 1.5, color: 'var(--color-text-2)', marginBottom: 14 }}>{confirmDialog.message}</div>

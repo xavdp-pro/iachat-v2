@@ -1,4 +1,5 @@
 import db from './index.js'
+import { DEFAULT_WEIGHT_PROFILES } from '../services/weight-calculator.js'
 
 /**
  * Idempotent schema patches (add columns / tables if missing).
@@ -212,7 +213,7 @@ export async function ensureDbSchema() {
         devis_id          INT NOT NULL,
         position          INT NOT NULL DEFAULT 0,
         line_section      ENUM('products','calculations','transport') NOT NULL DEFAULT 'products',
-        designation       VARCHAR(500) DEFAULT NULL,
+        designation       TEXT DEFAULT NULL,
         localisation      VARCHAR(255) DEFAULT NULL,
         type_porte        VARCHAR(100) DEFAULT NULL,
         gamme             VARCHAR(50) DEFAULT NULL,
@@ -237,6 +238,15 @@ export async function ensureDbSchema() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `)
     console.log('✅ DB: devis_lines table ready')
+
+    const [designationCols] = await db.query(
+      `SELECT DATA_TYPE, CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'devis_lines' AND COLUMN_NAME = 'designation'`
+    )
+    if (designationCols[0]?.DATA_TYPE !== 'text') {
+      await db.query('ALTER TABLE devis_lines MODIFY designation TEXT DEFAULT NULL')
+      console.log('✅ DB: devis_lines.designation widened to TEXT')
+    }
 
     // ── devis_lines.line_section (idempotent patch) ─────────────────────
     const [lineSectionCols] = await db.query(
@@ -495,6 +505,48 @@ export async function ensureDbSchema() {
         await db.query(`ALTER TABLE transport_tariffs ADD COLUMN ${columnName} ${definition}`)
         console.log(`✅ DB: transport_tariffs.${columnName} column added`)
       }
+    }
+
+  // ── door weight profiles (Calcul poids.xlsx) ─────────────────────────────
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS door_weight_profiles (
+        id             INT AUTO_INCREMENT PRIMARY KEY,
+        type_label     VARCHAR(120) NOT NULL,
+        product_family ENUM('BP','CF') NOT NULL DEFAULT 'BP',
+        leaf_kg_m2     DECIMAL(10,2) DEFAULT NULL,
+        frame_kg_m     DECIMAL(10,2) DEFAULT NULL,
+        leaf_formula   VARCHAR(64) DEFAULT NULL,
+        sort_order     INT NOT NULL DEFAULT 0,
+        active         TINYINT(1) NOT NULL DEFAULT 1,
+        notes          TEXT DEFAULT NULL,
+        created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY idx_dwp_type_label (type_label),
+        INDEX idx_dwp_family (product_family),
+        INDEX idx_dwp_active (active)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `)
+    console.log('✅ DB: door_weight_profiles table ready')
+
+    const [weightProfileCount] = await db.query('SELECT COUNT(*) AS count FROM door_weight_profiles')
+    if (Number(weightProfileCount[0]?.count || 0) === 0) {
+      for (const profile of DEFAULT_WEIGHT_PROFILES) {
+        await db.query(
+          `INSERT INTO door_weight_profiles
+           (type_label, product_family, leaf_kg_m2, frame_kg_m, leaf_formula, sort_order, active, notes)
+           VALUES (?, ?, ?, ?, ?, ?, 1, ?)`,
+          [
+            profile.type_label,
+            profile.product_family,
+            profile.leaf_kg_m2,
+            profile.frame_kg_m,
+            profile.leaf_formula,
+            profile.sort_order,
+            'Import initial depuis Calcul poids.xlsx',
+          ]
+        )
+      }
+      console.log('✅ DB: door_weight_profiles seeded from Calcul poids.xlsx')
     }
 
     const [transportCount] = await db.query('SELECT COUNT(*) AS count FROM transport_tariffs')

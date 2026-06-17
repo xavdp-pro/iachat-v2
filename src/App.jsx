@@ -37,6 +37,47 @@ const PageLoader = () => (
   </div>
 )
 
+function ModalDismissController() {
+  useEffect(() => {
+    const selector = '.chat-modal-backdrop, [data-modal-backdrop="true"], [role="dialog"][aria-modal="true"]'
+    const visibleBackdrops = () => Array.from(document.querySelectorAll(selector))
+      .filter((element) => {
+        const style = window.getComputedStyle(element)
+        return style.display !== 'none' && style.visibility !== 'hidden' && element.getClientRects().length > 0
+      })
+    const topmostBackdrop = () => visibleBackdrops()
+      .map((element, index) => ({ element, index, zIndex: Number.parseInt(window.getComputedStyle(element).zIndex, 10) || 0 }))
+      .sort((a, b) => (a.zIndex - b.zIndex) || (a.index - b.index))
+      .at(-1)?.element || null
+    const dismiss = (element) => {
+      if (!element || element.dataset.modalDismissDisabled === 'true') return false
+      element.click()
+      return true
+    }
+    const onKeyDown = (event) => {
+      if (event.key !== 'Escape') return
+      if (!dismiss(topmostBackdrop())) return
+      event.preventDefault()
+      event.stopPropagation()
+      event.stopImmediatePropagation?.()
+    }
+    const onPointerDown = (event) => {
+      const target = event.target
+      if (!(target instanceof Element) || !target.matches(selector)) return
+      if (!dismiss(target)) return
+      event.preventDefault()
+      event.stopPropagation()
+    }
+    document.addEventListener('keydown', onKeyDown, true)
+    document.addEventListener('pointerdown', onPointerDown, true)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown, true)
+      document.removeEventListener('pointerdown', onPointerDown, true)
+    }
+  }, [])
+  return null
+}
+
 function MaintenanceScreen({ status }) {
   return (
     <div className="login-page maintenance-page">
@@ -94,6 +135,7 @@ export default function App() {
 
   return (
     <MotionConfig transition={{ duration: 0 }}>
+      <ModalDismissController />
       <BrowserRouter>
         <Suspense fallback={<PageLoader />}>
           <Routes>

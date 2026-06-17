@@ -300,6 +300,9 @@ function optionAsEquipment(option) {
     note: option.note || option.description || '',
     ref: extractOptionRef(option),
     prix: option.prix ?? option.price ?? option.pu_ht ?? option.prix_ht ?? option.amount,
+    price_label: option.price_label || option.priceLabel || '',
+    source: option.source || '',
+    slot: option.slot || '',
     _fromOption: true,
   }
 }
@@ -308,8 +311,42 @@ function formatEquipmentSuggestion(option) {
   if (!option) return ''
   const label = String(option.label || option.designation || option.ref || '').trim()
   const ref = String(option.ref || '').trim()
-  if (!label) return ref
-  return ref && !label.includes(ref) ? `${label} réf. ${ref}` : label
+  const price = Number(option.prix)
+  const priceLabel = Number.isFinite(price) ? `${price.toLocaleString('fr-FR')} € HT` : String(option.price_label || '').trim()
+  const source = /xlsx|tarif nexus/i.test(String(option.source || '')) ? 'tarif XLSX' : ''
+  const main = label ? (ref && !label.includes(ref) ? `${label} réf. ${ref}` : label) : ref
+  return [main, priceLabel, source].filter(Boolean).join(' — ')
+}
+
+function equipmentMatchesSlot(option, slot) {
+  if (!slot || slot === 'autres') return true
+  if (option?.slot && option.slot === slot) return true
+  const text = [option?.label, option?.designation, option?.family, option?.source, option?.ref]
+    .filter(Boolean)
+    .join(' ')
+  const patterns = {
+    serrure: /serrure|\bMSL\b|\bLSS\b|\bKEL\b|d[ée]ny|cylindre|p[êe]ne/i,
+    garniture: /garniture|b[ée]quille|poign[ée]e|plaque|tirage/i,
+    fp: /ferme.?porte|\bTS[- ]?\d+|bras glissi[èe]re|groom/i,
+    cremone: /cr[ée]mone|semi.?fixe|\bVAM\b/i,
+    vitrage: /vitrage|remplissage|panneau plein|sans tain|oculus/i,
+    contact: /contact|position|reed/i,
+    passeCable: /passe.?c[âa]ble|cable|câble/i,
+    plinthes: /plinthe/i,
+    ventouse: /ventouse/i,
+    judas: /judas|oeilleton|œilleton|oculus/i,
+    paumelle: /paumelle|pivot/i,
+  }
+  return (patterns[slot] || /.*/).test(text)
+}
+
+function equipmentOptionsForSlot(options, slot) {
+  const list = Array.isArray(options) ? options : []
+  if (slot === 'autres') {
+    const dedicatedSlots = ['serrure', 'garniture', 'fp', 'cremone', 'vitrage', 'contact', 'passeCable', 'plinthes', 'ventouse', 'judas', 'paumelle']
+    return list.filter(option => !dedicatedSlots.some(key => equipmentMatchesSlot(option, key)))
+  }
+  return list.filter(option => equipmentMatchesSlot(option, slot))
 }
 
 function useEquipmentOptions(row) {
@@ -402,7 +439,7 @@ function thermolaquageInfo(row = {}) {
   if (row._thermolaquageDisabled) return { type: null, ref: null, prix: null, label: '', note: null }
   const equipments = Array.isArray(row.equip_extra) ? row.equip_extra : []
   const equipment = equipments.find(item => /THERMOLAQUAGE|\bRAL\b|\bNCS\b|LAQUAGE/i.test(equipmentText(item)))
-  const type = row.thermolaquage_type || thermolaquageTypeFromText(equipment) || thermolaquageTypeFromText(row._raw?.[16]) || (row.thermolaquage ? 'RAL' : null)
+  const type = row.thermolaquage_type || thermolaquageTypeFromText(equipment?.label) || thermolaquageTypeFromText(row._raw?.[16]) || thermolaquageTypeFromText(equipment) || (row.thermolaquage ? 'RAL' : null)
   return {
     type,
     label: equipment?.label || (type ? `Thermolaquage ${type}` : ''),
@@ -432,12 +469,15 @@ function findExtraEquipment(row, pattern) {
 
 function nonCremoneExtraEquipments(row) {
   const thermolaquageRe = /thermolaquage|\bRAL\b|\bNCS\b|laquage/i
-  const dynamicEquipmentRe = /cr[ée]mone|semi.?fixe|vam|ferme.?porte|\bts[- ]?\d+|contact|position|reed|passe.?c[âa]ble|cable|câble|plinthe|ventouse|remplissage|vitrage|judas|oculus|oeilleton|œilleton|paumelle|pivot/i
-  const optionEquipmentRe = /judas|oeilleton|œilleton|plinthe|seuil|ventouse|contact|g[âa]che|b[ée]quille|poign[ée]e|garniture|serrure|ferme.?porte|anti.?panique|barre|paumelle|pivot|but[ée]e/i
-  const extras = (row?.equip_extra || []).filter(e => typeof e === 'object' && !dynamicEquipmentRe.test(equipmentText(e)) && !thermolaquageRe.test(equipmentText(e)))
+  const extras = (row?.equip_extra || []).filter(e => {
+    const text = equipmentText(e)
+    return typeof e === 'object' && !isDedicatedEquipmentText(text) && !thermolaquageRe.test(text) && !isPerformanceOption(e)
+  })
   const optionExtras = (row?.options || [])
-    .filter(o => (optionEquipmentRe.test(equipmentText(o)) || isAcousticValue(equipmentText(o))) && !dynamicEquipmentRe.test(equipmentText(o)))
-    .filter(o => !/remplissage|vitrage|ferme.?porte|garniture|serrure|msl|lss|kel|d[ée]ny/i.test(equipmentText(o)))
+    .filter(o => {
+      const text = equipmentText(o)
+      return !isPerformanceOption(o) && !isDedicatedEquipmentText(text) && !thermolaquageRe.test(text) && !/avis\s+de\s+chantier|note\s+de\s+calcul|calcul\s+explosion/i.test(text)
+    })
     .map(optionAsEquipment)
     .filter(Boolean)
   return [...extras, ...optionExtras]
@@ -514,6 +554,29 @@ function isAcousticValue(value) {
   return acousticValue(value) != null || /acoustique/i.test(String(value || ''))
 }
 
+function isDedicatedEquipmentText(value) {
+  return /serrure|garniture|cr[ée]mone|semi.?fixe|\bVAM\b|ferme.?porte|\bts[- ]?\d+|contact|position|reed|passe.?c[âa]ble|cable|câble|plinthe|ventouse|remplissage|vitrage|judas|oculus|oeilleton|œilleton|paumelle|pivot/i.test(String(value || ''))
+}
+
+function optionPerformanceKey(option) {
+  const label = String(option?.label || '').trim()
+  const text = equipmentText(option)
+  if (!label && !text) return null
+  if (/rallonge|4e\s+point/i.test(text) || isDedicatedEquipmentText(text)) return null
+  if (isAcousticValue(text)) return 'acoustic'
+  if (/^(?:performance\s+)?(?:CR|RC)\s*[2-6]\b/i.test(label)) return 'rc'
+  if (/^(?:performance\s+)?FB\s*[4-7]\b/i.test(label)) return 'pb'
+  if (/^(?:performance\s+)?EI\s*[²2]?\s*(30|60|90|120)\b/i.test(label)) return 'cf'
+  if (/^(?:performance\s+)?blast\s*[245]|^[245]\s*t\s*\/\s*m/i.test(label)) return 'blast'
+  if (/^(?:performance\s+)?anti.?b[ée]lier\b/i.test(label)) return 'belier'
+  if (/^(?:performance\s+)?prison\b/i.test(label)) return 'prison'
+  return null
+}
+
+function isPerformanceOption(option) {
+  return optionPerformanceKey(option) != null
+}
+
 function stripAcousticInfo(value) {
   return String(value || '')
     .replace(/\bacoustique\s*(30|35|40|45)?\s*dB\b/giu, '')
@@ -565,6 +628,48 @@ function isChassisRow(row = {}) {
   return /\bCHASSIS\b/i.test(text)
 }
 
+const CHASSIS_FILLING_REFS = {
+  CR3: '4806',
+  CR3EI60: '4806',
+  CR4: '4811',
+  CR5: '4816',
+  EI60: '4803',
+  FB6: '4830',
+  FB7: '4847',
+  BLAST: '4850',
+}
+
+function chassisFillingFamily(row = {}) {
+  const text = [row.gamme, row.designation, row.ref_base, ...(Array.isArray(row._raw) ? row._raw : [])]
+    .filter(Boolean)
+    .join(' ')
+    .toUpperCase()
+  if (/BLAST|\b[245]\s*T\b/.test(text)) return 'BLAST'
+  if (/FB\s*7/.test(text)) return 'FB7'
+  if (/FB\s*6/.test(text)) return 'FB6'
+  if (/CR\s*5|RC\s*5/.test(text)) return 'CR5'
+  if (/CR\s*4|RC\s*4/.test(text)) return 'CR4'
+  if ((/CR\s*3|RC\s*3/.test(text)) && /EI\s*(30|60)/.test(text)) return 'CR3EI60'
+  if (/CR\s*3|RC\s*3/.test(text)) return 'CR3'
+  if (/EI\s*(30|60)/.test(text)) return 'EI60'
+  return null
+}
+
+function chassisFillingRefFromText(row = {}, value = '') {
+  if (!isChassisRow(row)) return null
+  const explicit = extractRef(value)
+  if (explicit) return explicit
+  const text = [value, row._raw?.[16], row.vitrage, row.autres]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+  if (/sans\s+tain/.test(text)) return '4829'
+  if (/panneau\s+plein/.test(text)) return chassisFillingFamily(row) === 'CR3EI60' ? '4860' : null
+  if (/vitrage\s+int[ée]rieur|\b4822\b/.test(text)) return '4822'
+  if (/\b(?:hp|p5a|p7b|br4|br7|anti.?explosion|er1)\b|vitrage|remplissage/.test(text)) return CHASSIS_FILLING_REFS[chassisFillingFamily(row)] || null
+  return null
+}
+
 function isTwoLeafRow(row = {}) {
   const text = [row.type, row.designation, row.vantail, ...(Array.isArray(row._raw) ? row._raw : [])]
     .filter(Boolean)
@@ -575,15 +680,23 @@ function isTwoLeafRow(row = {}) {
 
 function acousticTariffInfo(row = {}, acoustic = null) {
   const value = acousticValue(acoustic ?? row._overrideAcoustic ?? row.acoustique ?? row._raw?.[16])
-  if (value !== '45 dB') return null
   const twoLeaf = isTwoLeafRow(row)
   const width = numberOrNull(row.larg_mm ?? row.largeur_mm)
   const height = numberOrNull(row.haut_mm ?? row.hauteur_mm)
+  const ref = width != null && (twoLeaf ? width / 2 : width) > 1450 ? '4476' : '4472'
+  if (value !== '45 dB') {
+    return value ? {
+      value,
+      prix: null,
+      ref,
+      label: `Plus-value acoustique ${value}`,
+      note: null,
+    } : null
+  }
   const gammeText = [row.gamme, row.type, row.designation].filter(Boolean).join(' ').toUpperCase()
   const stdHeightMax = /EI\s*60/.test(gammeText) ? 3555 : 3575
   const largeTwoLeaf = twoLeaf && ((width != null && width > 3470) || (height != null && height > stdHeightMax))
   const prix = twoLeaf ? (largeTwoLeaf ? 1260 : 630) : 350
-  const ref = width != null && (twoLeaf ? width / 2 : width) > 1450 ? '4476' : '4472'
   return {
     value,
     prix,
@@ -673,9 +786,9 @@ export function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
   const plinthe = findExtraEquipment(r, /plinthe/i)
   const equipmentByColumn = Object.fromEntries(EQUIPMENT_COLUMNS.map(column => [column.key, findExtraEquipment(r, column.pattern)]))
   const otherExtras = nonCremoneExtraEquipments(r)
-  const vitrageRef = optVitrage ? extractRef(optVitrage.note) || extractRef(optVitrage.label) : null
   const rawVitrage = stripEquipmentDisplayNoise(r._raw?.[16]) || null
   const vitrageLabel = stripEquipmentDisplayNoise(optVitrage?.label || optVitrage?.designation || optVitrage?.name) || rawVitrage
+  const vitrageRef = extractOptionRef(optVitrage) || extractRef(rawVitrage) || extractRef(r.vitrage_ref) || chassisFillingRefFromText(r, vitrageLabel)
   const vitrageNote = stripEquipmentDisplayNoise(optVitrage?.note || optVitrage?.description)
   const serrureRef = extractRef(r.serrure?.ref) || extractOptionRef(optSerrure) || extractRef(r.serrure?.from)
   const fpRef     = extractOptionRef(optFP) || extractRef(r.ferme_porte?.ref)
@@ -690,7 +803,7 @@ export function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
     ? r.thermolaquage
     : !!tlInfo.type
   const blastPerf = blastValue(r._raw?.[6]) || blastValue(r.blast) || blastValue(optionsText) || blastValue(r.designation) || blastValue(r.alertes?.join(' '))
-  const acousticRef = optAcoustic ? (extractRef(optAcoustic.note) || extractRef(optAcoustic.label)) : null
+  const acousticRef = optAcoustic ? (extractRef(optAcoustic.ref) || extractRef(optAcoustic.note) || extractRef(optAcoustic.label)) : null
   const passageDims = computePassageDimensions(r)
   return {
     ...r,
@@ -806,7 +919,7 @@ function GammeBadge({ gamme, fullWidth }) {
 
 // Largeur calculée automatiquement après PERF_OPTIONS
 const PERF_CONTROL_WIDTH = {}
-const PERF_LABELS = { rc: 'RC', pb: 'PB', cf: 'CF', blast: 'Blast', belier: 'Bélier', prison: 'Prison', acoustic: 'dB' }
+const PERF_LABELS = { rc: 'RC', pb: 'PB', cf: 'CF', blast: 'Blast', belier: 'Bélier', prison: 'Prison', acoustic: 'Acoustique' }
 const PERF_CONTROL_MIN_WIDTH = 62
 const PERF_CONTROL_DEFAULT_WIDTH = 72
 const PERF_MENU_MIN_WIDTH = 136
@@ -917,11 +1030,39 @@ function performanceValueRawSlotOnly(row, key) {
   return rawVal ?? null
 }
 
-function subRowPerformanceLabel(row, resolved = resolveRow(row)) {
+function performanceOptionFor(row = {}, key, value) {
+  const normalizedValue = String(value || '').replace(/\s+/g, '').toUpperCase()
+  return (row.options || []).find(option => {
+    if (optionPerformanceKey(option) !== key) return false
+    const text = equipmentText(option).replace(/\s+/g, '').toUpperCase()
+    if (key === 'acoustic') return acousticValue(text) === value || text.includes(normalizedValue)
+    if (key === 'blast') return blastValue(text) === value || text.includes(normalizedValue.replace('²', '2'))
+    return text.includes(normalizedValue)
+  }) || null
+}
+
+function performanceDetailItems(row = {}, resolved = resolveRow(row)) {
   return ['rc', 'pb', 'cf', 'blast', 'belier', 'prison', 'acoustic']
-    .map(key => performanceValue(row, resolved, key))
+    .map(key => {
+      const value = performanceValue(row, resolved, key)
+      if (!value) return null
+      const option = performanceOptionFor(row, key, value)
+      if (key === 'acoustic') return {
+        key,
+        label: `Acoustique ${value}`,
+        ref: resolved._acousticRef || extractOptionRef(option) || null,
+        prix: resolved._acousticPrix ?? option?.prix ?? null,
+        note: resolved._acousticNote || option?.note || null,
+      }
+      return {
+        key,
+        label: String(value),
+        ref: extractOptionRef(option) || null,
+        prix: option?.prix ?? null,
+        note: option?.note || null,
+      }
+    })
     .filter(Boolean)
-    .join(' · ')
 }
 
 const amountHeaderCellStyle = {
@@ -998,6 +1139,28 @@ function productLeafCount(rows = []) {
   }, 0))
 }
 
+function compactRowsForWeight(rows = []) {
+  return rows
+    .filter(row => sectionOf(row) === 'products' && !row._isFooter && !row._isBlank)
+    .map((row, index) => ({
+      index,
+      line_section: 'products',
+      designation: row.designation || row.type || '',
+      type: row.type || row.type_porte || '',
+      gamme: row.gamme || '',
+      vantail: row.vantail || '',
+      rc: row.rc || null,
+      pb: row.pb || null,
+      cf: row.cf || null,
+      blast: row.blast || null,
+      belier: row.belier || null,
+      haut_mm: row.haut_mm ?? row.hauteur_mm ?? null,
+      larg_mm: row.larg_mm ?? row.largeur_mm ?? null,
+      qty: row.qty ?? row.quantite ?? 1,
+      _raw: Array.isArray(row._raw) ? row._raw : [],
+    }))
+}
+
 // ─── Modal : enregistrer une ligne comme règle R&D ───────────────────────────
 function SaveAsRuleModal({ initial, onClose, onSave }) {
   const [title, setTitle] = useState(initial?.title || '')
@@ -1023,6 +1186,7 @@ function SaveAsRuleModal({ initial, onClose, onSave }) {
 
   return (
     <div
+      data-modal-backdrop="true"
       onClick={onClose}
       style={{ position: 'fixed', inset: 0, zIndex: 9000, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
     >
@@ -1375,6 +1539,7 @@ function VerifyRulesModal({ row, rowIndex = 0, currentKnowledge = null, onClose,
 
   return (
     <div
+      data-modal-backdrop="true"
       onClick={onClose}
       style={{ position: 'fixed', inset: 0, zIndex: 9000, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
     >
@@ -1540,7 +1705,7 @@ function ValidationSummaryModal({ report, onClose, onReviewLine }) {
     </div>
   )
   return (
-    <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 9200, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 18 }}>
+    <div data-modal-backdrop="true" onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 9200, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 18 }}>
       <div onClick={event => event.stopPropagation()} style={{ width: 780, maxWidth: '96vw', maxHeight: '88vh', overflowY: 'auto', background: 'var(--color-surface)', borderRadius: 10, border: '1px solid var(--color-border)', boxShadow: '0 16px 50px rgba(0,0,0,0.35)' }}>
         <div style={{ padding: '16px 18px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
@@ -1636,6 +1801,12 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
   const ruleIssues = blockingVerdicts(row)
   const ruleStale = isRuleCheckStale(row._ruleCheck, validationKnowledge)
   const { options: equipmentOptions, loading: equipmentOptionsLoading, fetchOptions: fetchEquipmentOptions } = useEquipmentOptions(row)
+  const equipmentSuggestions = useMemo(() => ({
+    serrure: equipmentOptionsForSlot(equipmentOptions, 'serrure'),
+    garniture: equipmentOptionsForSlot(equipmentOptions, 'garniture'),
+    autres: equipmentOptionsForSlot(equipmentOptions, 'autres'),
+  }), [equipmentOptions])
+  const equipmentSuggestionsForColumn = useCallback((key) => equipmentOptionsForSlot(equipmentOptions, key), [equipmentOptions])
   // Perf strip expand/collapse lives on the row so it survives remounts (new blank lines).
   const showEmptyPerfs = row._perfStripShowAll === true
   const perfKeys = ['rc', 'pb', 'cf', 'blast', 'belier', 'prison', 'acoustic']
@@ -1924,47 +2095,25 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
       {/* Serrure */}
       <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 80, ...assistantCellStyle('serrure') }}>
         {editMode
-          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentText value={mainEquipLabel(row._raw?.[12] ?? r._serrureLabel ?? '')} onCommit={v => onRecompute?.({ _raw_12: v })} placeholder="serrure…" datalistId={`equipment-suggestions-${displayIndex}-serrure`} fetchOptions={fetchEquipmentOptions} options={equipmentOptions} loading={equipmentOptionsLoading} />)
+          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentText value={mainEquipLabel(row._raw?.[12] ?? r._serrureLabel ?? '')} onCommit={v => onRecompute?.({ _raw_12: v })} placeholder="serrure…" datalistId={`equipment-suggestions-${displayIndex}-serrure`} fetchOptions={fetchEquipmentOptions} options={equipmentSuggestions.serrure} loading={equipmentOptionsLoading} />)
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{mainEquipLabel(row._raw?.[12] || r._serrureLabel) || '—'}</span>}
       </Td>
       {/* Garn int */}
       <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 70, ...assistantCellStyle('garniture_int') }}>
         {editMode
-          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentText value={mainEquipLabel(row._raw?.[13] ?? r._garnIntLabel ?? '')} onCommit={v => onRecompute?.({ _raw_13: v })} placeholder="garn. int…" datalistId={`equipment-suggestions-${displayIndex}-garn_int`} fetchOptions={fetchEquipmentOptions} options={equipmentOptions} loading={equipmentOptionsLoading} />)
+          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentText value={mainEquipLabel(row._raw?.[13] ?? r._garnIntLabel ?? '')} onCommit={v => onRecompute?.({ _raw_13: v })} placeholder="garn. int…" datalistId={`equipment-suggestions-${displayIndex}-garn_int`} fetchOptions={fetchEquipmentOptions} options={equipmentSuggestions.garniture} loading={equipmentOptionsLoading} />)
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{mainEquipLabel(row._raw?.[13] || r._garnIntLabel) || '—'}</span>}
       </Td>
       {/* Garn ext */}
       <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 70, ...assistantCellStyle('garniture_ext') }}>
         {editMode
-          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentText value={mainEquipLabel(row._raw?.[14] ?? r._garnExtLabel ?? '')} onCommit={v => onRecompute?.({ _raw_14: v })} placeholder="garn. ext…" datalistId={`equipment-suggestions-${displayIndex}-garn_ext`} fetchOptions={fetchEquipmentOptions} options={equipmentOptions} loading={equipmentOptionsLoading} />)
+          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentText value={mainEquipLabel(row._raw?.[14] ?? r._garnExtLabel ?? '')} onCommit={v => onRecompute?.({ _raw_14: v })} placeholder="garn. ext…" datalistId={`equipment-suggestions-${displayIndex}-garn_ext`} fetchOptions={fetchEquipmentOptions} options={equipmentSuggestions.garniture} loading={equipmentOptionsLoading} />)
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{mainEquipLabel(row._raw?.[14] || r._garnExtLabel) || '—'}</span>}
       </Td>
-      {visibleEquipmentColumns.map(column => {
-        const equipment = r._equipmentByColumn?.[column.key]
-        const ref = column.key === 'vitrage' ? r._vitrageRef : column.key === 'fp' ? r._fpRef : column.key === 'cremone' ? r._cremoneRef : column.key === 'plinthes' ? r._plintheRef : (equipment?.ref || extractRef(equipment?.note) || extractRef(equipment?.label))
-        const label = column.key === 'vitrage' ? r._vitrageLabel : column.key === 'fp' ? (row._raw?.[15] || r._fpLabel) : column.key === 'cremone' ? r._cremoneLabel : column.key === 'plinthes' ? r._plintheLabel : equipment?.label
-        const note = column.key === 'vitrage' ? r._vitrageNote : column.key === 'fp' ? r._fpLabel : column.key === 'cremone' ? r._cremoneNote : column.key === 'plinthes' ? r._plintheNote : equipment?.note
-        const price = column.key === 'vitrage' ? r._vitragePrix : column.key === 'fp' ? r._optFP?.prix : column.key === 'cremone' ? r._cremonePrix : column.key === 'plinthes' ? r._plinthePrix : equipment?.prix
-        const editValue = column.key === 'fp' ? mainEquipLabel(row._raw?.[15] ?? r._fpLabel ?? '') : column.key === 'vitrage' ? (stripEquipmentDisplayNoise(row._raw?.[16]) || mainEquipLabel(r._vitrageLabel) || '') : mainEquipLabel(label || '')
-        const hasValue = hasVisibleEquipmentValue(row, column, r)
-        return (
-          <Td key={column.key} palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: column.minWidth, ...assistantCellStyle(...column.fields) }}>
-            {editMode
-              ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentText value={editValue} onCommit={v => onRecompute?.(column.key === 'fp' ? { _raw_15: v } : { _raw_16: v })} placeholder={column.label.toLowerCase()} datalistId={`equipment-suggestions-${displayIndex}-${column.key}`} fetchOptions={fetchEquipmentOptions} options={equipmentOptions} loading={equipmentOptionsLoading} />)
-              : (hasValue ? (
-                <Popover content={note || label || ''}>
-                  <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', fontWeight: 600, color: 'var(--color-text-2)' }}>
-                    {mainEquipLabel(label)}{ref ? ` · réf.${ref}` : ''}{price != null ? ` · ${Number(price).toLocaleString('fr-FR')} €` : ''}
-                  </span>
-                </Popover>
-              ) : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', color: 'var(--color-text-2)' }}>—</span>)}
-          </Td>
-        )
-      })}
       {showOtherEquipmentColumn && (
         <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 140, ...assistantCellStyle('autres') }}>
           {editMode
-            ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentText value="" onCommit={v => { const patch = equipmentAdditionPatch(row._raw, v); if (patch) onRecompute?.(patch) }} placeholder="ajouter équip…" datalistId={`equipment-suggestions-${displayIndex}-autres`} fetchOptions={fetchEquipmentOptions} options={equipmentOptions} loading={equipmentOptionsLoading} />)
+            ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentText value="" onCommit={v => { const patch = equipmentAdditionPatch(row._raw, v); if (patch) onRecompute?.(patch) }} placeholder="ajouter équip…" datalistId={`equipment-suggestions-${displayIndex}-autres`} fetchOptions={fetchEquipmentOptions} options={equipmentSuggestions.autres} loading={equipmentOptionsLoading} />)
             : (row._overrideAutres !== undefined
                 ? (row._overrideAutres ? <span style={{ fontSize: 11, padding: '2px 4px', display: 'inline-block', fontWeight: 600, color: 'var(--color-text-2)' }}>{row._overrideAutres}</span> : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', color: 'var(--color-text-2)' }}>—</span>)
                 : (r._otherExtras?.length ? (
@@ -1980,6 +2129,28 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
                   ) : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', color: 'var(--color-text-2)' }}>—</span>))}
         </Td>
       )}
+      {visibleEquipmentColumns.map(column => {
+        const equipment = r._equipmentByColumn?.[column.key]
+        const ref = column.key === 'vitrage' ? r._vitrageRef : column.key === 'fp' ? r._fpRef : column.key === 'cremone' ? r._cremoneRef : column.key === 'plinthes' ? r._plintheRef : (equipment?.ref || extractRef(equipment?.note) || extractRef(equipment?.label))
+        const label = column.key === 'vitrage' ? r._vitrageLabel : column.key === 'fp' ? (row._raw?.[15] || r._fpLabel) : column.key === 'cremone' ? r._cremoneLabel : column.key === 'plinthes' ? r._plintheLabel : equipment?.label
+        const note = column.key === 'vitrage' ? r._vitrageNote : column.key === 'fp' ? r._fpLabel : column.key === 'cremone' ? r._cremoneNote : column.key === 'plinthes' ? r._plintheNote : equipment?.note
+        const price = column.key === 'vitrage' ? r._vitragePrix : column.key === 'fp' ? r._optFP?.prix : column.key === 'cremone' ? r._cremonePrix : column.key === 'plinthes' ? r._plinthePrix : equipment?.prix
+        const editValue = column.key === 'fp' ? mainEquipLabel(row._raw?.[15] ?? r._fpLabel ?? '') : column.key === 'vitrage' ? (stripEquipmentDisplayNoise(row._raw?.[16]) || mainEquipLabel(r._vitrageLabel) || '') : mainEquipLabel(label || '')
+        const hasValue = hasVisibleEquipmentValue(row, column, r)
+        return (
+          <Td key={column.key} palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: column.minWidth, ...assistantCellStyle(...column.fields) }}>
+            {editMode
+              ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentText value={editValue} onCommit={v => onRecompute?.(column.key === 'fp' ? { _raw_15: v } : { _raw_16: v })} placeholder={column.label.toLowerCase()} datalistId={`equipment-suggestions-${displayIndex}-${column.key}`} fetchOptions={fetchEquipmentOptions} options={equipmentSuggestionsForColumn(column.key)} loading={equipmentOptionsLoading} />)
+              : (hasValue ? (
+                <Popover content={note || label || ''}>
+                  <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', fontWeight: 600, color: 'var(--color-text-2)' }}>
+                    {mainEquipLabel(label)}{ref ? ` · réf.${ref}` : ''}{price != null ? ` · ${Number(price).toLocaleString('fr-FR')} €` : ''}
+                  </span>
+                </Popover>
+              ) : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', color: 'var(--color-text-2)' }}>—</span>)}
+          </Td>
+        )
+      })}
       {/* PU HT */}
       <Td palette="gray" style={{ textAlign: 'right', fontWeight: 600, whiteSpace: 'nowrap', ...FINAL_AMOUNT_COLUMNS.pu, ...assistantCellStyle('prix_base_ht') }}>
         {editMode && isAmountSection
@@ -2077,7 +2248,11 @@ function AmountRow({ row, index, displayIndex = index, change, tva, multGlobal, 
   const detail = isTransport ? transportAddressText(row, defaultTransportAddress) : (row.notes || row.alertes?.[0] || '')
   const rule = isTransport ? (row.transport_zone || row.ref_base || 'Tarif transport') : (row.ref_base || '—')
   const source = isTransport
-    ? (row.tranche_count ? `${row.tranche_count} tranche${row.tranche_count > 1 ? 's' : ''}` : 'recalcul auto')
+    ? [
+        row.weight_kg != null ? `${row.weight_kg} kg` : null,
+        row.leaf_count != null ? `${row.leaf_count} vant.` : null,
+        row.tranche_count ? `${row.tranche_count} tranche${row.tranche_count > 1 ? 's' : ''}` : null,
+      ].filter(Boolean).join(' · ') || 'recalcul auto'
     : (row._generatedFrom || '—')
   const detailSpan = Math.max(1, gridTotalCols - 17)
   const assistantActive = Boolean(assistantHighlight)
@@ -2167,9 +2342,30 @@ function AmountRow({ row, index, displayIndex = index, change, tva, multGlobal, 
 }
 
 // ─── Sous-row références ─────────────────────────────────────────────────────
+function SubRowLabels({ row, hiddenCols = new Set(), visibleDimensionCount = 4, visibleEquipmentColumns = [], showOtherEquipmentColumn = true }) {
+  const r = resolveRow(row)
+  const cells = []
+  cells.push(<td key="label-rowmarker" style={{ background: SUBROW_BG }}></td>)
+  cells.push(<td key="label-label" style={{ background: SUBROW_BG, ...SUBROW_LABEL_STYLE }}>Libellés</td>)
+  cells.push(<td key="label-loc" style={{ background: SUBROW_BG }}></td>)
+  cells.push(<td key="label-perfs" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}></td>)
+  for (let i = 0; i < visibleDimensionCount; ++i) cells.push(<td key={`label-dim-${i}`} style={{ background: SUBROW_BG }}></td>)
+  cells.push(<td key="label-tl" style={{ background: SUBROW_BG, borderBottom: '1px solid var(--color-border)' }}><span style={SUBROW_VALUE_STYLE}>{r._thermolaquageLabel || '—'}</span></td>)
+  cells.push(<td key="label-serrure" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}><span style={SUBROW_VALUE_STYLE}>{mainEquipLabel(row._raw?.[12] || r._serrureLabel) || '—'}</span></td>)
+  cells.push(<td key="label-garnint" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}><span style={SUBROW_VALUE_STYLE}>{mainEquipLabel(row._raw?.[13] || r._garnIntLabel) || '—'}</span></td>)
+  cells.push(<td key="label-garnext" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}><span style={SUBROW_VALUE_STYLE}>{mainEquipLabel(row._raw?.[14] || r._garnExtLabel) || '—'}</span></td>)
+  if (showOtherEquipmentColumn) cells.push(<td key="label-autres" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}><span style={SUBROW_VALUE_STYLE}>{r._otherExtras?.map(item => mainEquipLabel(item.label)).filter(Boolean).join(', ') || '—'}</span></td>)
+  visibleEquipmentColumns.forEach((column) => {
+    const equipment = r._equipmentByColumn?.[column.key]
+    const label = column.key === 'vitrage' ? r._vitrageLabel : column.key === 'fp' ? (row._raw?.[15] || r._fpLabel) : column.key === 'cremone' ? r._cremoneLabel : column.key === 'plinthes' ? r._plintheLabel : equipment?.label
+    cells.push(<td key={`label-equip-${column.key}`} style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}><span style={SUBROW_VALUE_STYLE}>{mainEquipLabel(label) || '—'}</span></td>)
+  })
+  for (let i = 0; i < 5; ++i) cells.push(<td key={`label-end-${i}`} style={{ background: SUBROW_BG, borderBottom: '1px solid var(--color-border)' }}></td>)
+  return <tr style={{ background: SUBROW_BG }}>{cells}</tr>
+}
+
 function SubRowRefs({ row, editMode, onRefCommit, hiddenCols = new Set(), visibleDimensionCount = 4, visibleEquipmentColumns = [], showOtherEquipmentColumn = true }) {
   const r = resolveRow(row)
-  const perfLabel = subRowPerformanceLabel(row, r)
   // Construction stricte : 1 cellule par colonne, pas de colSpan
   const cells = []
   // #
@@ -2179,7 +2375,7 @@ function SubRowRefs({ row, editMode, onRefCommit, hiddenCols = new Set(), visibl
   // Localisation
   cells.push(<td key="ref-loc" style={{ background: SUBROW_BG }}></td>)
   // Perfs
-  cells.push(<td key="ref-perfs" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}><span style={SUBROW_VALUE_STYLE}>{perfLabel || '—'}</span></td>)
+  cells.push(<td key="ref-perfs" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}></td>)
   // Dimensions dynamiques
   for (let i = 0; i < visibleDimensionCount; ++i) cells.push(<td key={`ref-dim-${i}`} style={{ background: SUBROW_BG }}></td>)
   // TL
@@ -2190,6 +2386,8 @@ function SubRowRefs({ row, editMode, onRefCommit, hiddenCols = new Set(), visibl
   cells.push(<td key="ref-garnint" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}>{editMode ? <EditableText value={r._garnIntRef || ''} onCommit={v => onRefCommit?.(1, v)} placeholder="réf…" fontSize={EQUIPMENT_ROW_FONT_SIZE} /> : <span style={SUBROW_VALUE_STYLE}>{r._garnIntRef || '—'}</span>}</td>)
   // Garniture ext.
   cells.push(<td key="ref-garnext" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}>{editMode ? <EditableText value={r._garnExtRef || ''} onCommit={v => onRefCommit?.(2, v)} placeholder="réf…" fontSize={EQUIPMENT_ROW_FONT_SIZE} /> : <span style={SUBROW_VALUE_STYLE}>{r._garnExtRef || '—'}</span>}</td>)
+  // Autres équipements
+  if (showOtherEquipmentColumn) cells.push(<td key="ref-autres" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}><span style={SUBROW_VALUE_STYLE}>{r._otherExtrasRefs?.join(', ') || '—'}</span></td>)
   // Colonnes équipements dynamiques
   visibleEquipmentColumns.forEach((column, idx) => {
     const equipment = r._equipmentByColumn?.[column.key]
@@ -2201,8 +2399,6 @@ function SubRowRefs({ row, editMode, onRefCommit, hiddenCols = new Set(), visibl
     else ref = equipment?.ref || extractRef(equipment?.note) || extractRef(equipment?.label) || null
     cells.push(<td key={`ref-equip-${column.key}`} style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}>{editMode ? <EditableText value={ref || ''} onCommit={v => onRefCommit?.(3 + idx, v)} placeholder="réf…" fontSize={EQUIPMENT_ROW_FONT_SIZE} /> : <span style={SUBROW_VALUE_STYLE}>{ref || '—'}</span>}</td>)
   })
-  // Autres équipements
-  if (showOtherEquipmentColumn) cells.push(<td key="ref-autres" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}></td>)
   // PU HT, Remise, Q, Total HT, actions
   for (let i = 0; i < 5; ++i) cells.push(<td key={`ref-end-${i}`} style={{ background: SUBROW_BG, borderBottom: '1px solid var(--color-border)' }}></td>)
   return <tr style={{ background: SUBROW_BG }}>{cells}</tr>
@@ -2231,6 +2427,8 @@ function SubRowPrices({ row, hiddenCols = new Set(), visibleDimensionCount = 4, 
   cells.push(<td key="price-garnint" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}><span style={SUBROW_PRICE_VALUE_STYLE}>{r._garnIntPrix != null ? r._garnIntPrix.toLocaleString('fr-FR') + ' €' : '—'}</span></td>)
   // Garniture ext.
   cells.push(<td key="price-garnext" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}><span style={SUBROW_PRICE_VALUE_STYLE}>{r._garnExtPrix != null ? r._garnExtPrix.toLocaleString('fr-FR') + ' €' : '—'}</span></td>)
+  // Autres équipements
+  if (showOtherEquipmentColumn) cells.push(<td key="price-autres" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}><span style={SUBROW_PRICE_VALUE_STYLE}>{r._otherExtrasPrix > 0 ? `${r._otherExtrasPrix.toLocaleString('fr-FR')} €` : '—'}</span></td>)
   // Colonnes équipements dynamiques
   visibleEquipmentColumns.forEach((column) => {
     const equipment = r._equipmentByColumn?.[column.key]
@@ -2242,13 +2440,33 @@ function SubRowPrices({ row, hiddenCols = new Set(), visibleDimensionCount = 4, 
     else prix = equipment?.prix ?? null
     cells.push(<td key={`price-equip-${column.key}`} style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}><span style={SUBROW_PRICE_VALUE_STYLE}>{prix != null ? prix.toLocaleString('fr-FR') + ' €' : '—'}</span></td>)
   })
-  // Autres équipements
-  if (showOtherEquipmentColumn) cells.push(<td key="price-autres" style={{ background: SUBROW_BG, ...CELL.yellow, borderBottom: '1px solid var(--color-border)' }}></td>)
   // PU HT (base)
   cells.push(<td key="price-base" style={{ background: SUBROW_BG, ...CELL.gray, borderBottom: '1px solid var(--color-border)', textAlign: 'right', color: 'var(--color-text-3)', fontSize: EQUIPMENT_ROW_FONT_SIZE, whiteSpace: 'nowrap' }}>base: {r._unpriced ? '—' : (r.prix_base_ht?.toLocaleString('fr-FR') ?? '—')} €</td>)
   // Remise, Q, Total HT, actions
   for (let i = 0; i < 4; ++i) cells.push(<td key={`price-end-${i}`} style={{ background: SUBROW_BG, borderBottom: '1px solid var(--color-border)' }}></td>)
   return <tr style={{ background: SUBROW_BG }}>{cells}</tr>
+}
+
+function PerformanceDetailRows({ row, optionNoteColSpan }) {
+  const r = resolveRow(row)
+  return performanceDetailItems(row, r).map(item => {
+    const price = Number(item.prix)
+    const hasPrice = Number.isFinite(price) && price > 0
+    return (
+      <tr key={`perf-${item.key}`} style={{ background: SUBROW_BG }}>
+        <td colSpan={3} style={{ padding: '2px 8px 2px 52px', fontSize: 10, color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }}>
+          ↳ {item.label}
+        </td>
+        <td colSpan={optionNoteColSpan} style={{ padding: '2px 8px', fontSize: 10, color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }}>
+          {item.ref || item.note || '—'}
+        </td>
+        <td style={{ padding: '2px 8px', fontSize: 11, textAlign: 'right', fontWeight: 600, ...CELL.gray, borderBottom: '1px solid var(--color-border)' }}>
+          {hasPrice ? `${price.toLocaleString('fr-FR')} €` : '—'}
+        </td>
+        <td colSpan={4} style={{ borderBottom: '1px solid var(--color-border)', ...CELL.blue }}></td>
+      </tr>
+    )
+  })
 }
 
 // ─── Options statiques Performances ─────────────────────────────────────────
@@ -2309,6 +2527,36 @@ const SECTION_ORDER = ['products', 'calculations', 'transport']
 const CALCULATION_OPTION_RE = /note de calcul|avis de chantier|avis chantier|calcul explosion/i
 const FIRE_PERFORMANCE_RE = /\bEI\s*(30|60|90|120)\b/i
 const HEIGHT_AVIS_CHANTIER_RE = /hauteur\s+\d+\s*mm\s+d[ée]passe\s+le\s+max\s+catalogue.*avis\s+de\s+chantier/i
+
+function formatRepereList(reperes = []) {
+  const list = [...new Set(reperes)].filter(Boolean)
+  if (list.length <= 1) return list[0] || ''
+  return `${list.slice(0, -1).join(', ')} et ${list[list.length - 1]}`
+}
+
+function calculationPerformanceFromBucket(bucket, fallback = '') {
+  const text = [fallback, ...(bucket?.notes ? [...bucket.notes] : [])].filter(Boolean).join(' ')
+  const fire = text.match(/\bEI\s*(30|60|90|120)\b/i)
+  if (fire) return `EI ${fire[1]}`
+  const blast = text.match(/\b([245])\s*t\s*\/\s*m(?:²|2)\b/i)
+  if (blast) return `${blast[1]} t/m²`
+  return ''
+}
+
+function calculationLabelFromBucket(bucket) {
+  const reperes = bucket?.reperes ? [...bucket.reperes] : []
+  const repLabel = formatRepereList(reperes)
+  if (bucket?.key === 'avis_chantier') {
+    const performance = calculationPerformanceFromBucket(bucket)
+    if (performance && repLabel) return `Validation par le laboratoire Efectis pour performance ${performance} sur repère${reperes.length > 1 ? 's' : ''} ${repLabel}`
+    if (performance) return `Validation par le laboratoire Efectis pour performance ${performance}`
+  }
+  if (bucket?.key === 'note_calcul_explosion') {
+    const performance = calculationPerformanceFromBucket(bucket)
+    if (performance && repLabel) return `Note de calcul pour classement anti-explosion ${performance} sur repère${reperes.length > 1 ? 's' : ''} ${repLabel}`
+  }
+  return bucket?.label || 'Calcul'
+}
 
 function sectionOf(row) {
   return SECTION_META[row?.line_section] ? row.line_section : 'products'
@@ -2635,7 +2883,7 @@ function createAmountRow(section = 'calculations', label = '', defaults = {}) {
 
 function splitCalculationOptions(rows) {
   const buckets = new Map()
-  const registerCalcOption = (option) => {
+  const registerCalcOption = (option, rowIndex) => {
     const label = String(option?.label || '').trim()
     const amount = Number(option?.prix) || 0
     const rawKey = label.toLowerCase()
@@ -2645,16 +2893,17 @@ function splitCalculationOptions(rows) {
     const title = key === 'avis_chantier'
       ? 'Avis de chantier'
       : (key === 'note_calcul_explosion' ? 'Note de calcul explosion (non remisable)' : (label || 'Calcul'))
-    const prev = buckets.get(key) || { key, label: title, amount: 0, notes: new Set(), count: 0 }
+    const prev = buckets.get(key) || { key, label: title, amount: 0, notes: new Set(), reperes: new Set(), count: 0 }
     if (amount > prev.amount) prev.amount = amount
     if (option?.note) prev.notes.add(String(option.note))
+    if (Number.isInteger(rowIndex)) prev.reperes.add(rowLetterLabel(rowIndex))
     prev.count += 1
     buckets.set(key, prev)
     return amount
   }
 
   const nextRows = []
-  for (const row of Array.isArray(rows) ? rows : []) {
+  for (const [rowIndex, row] of (Array.isArray(rows) ? rows : []).entries()) {
     if (sectionOf(row) !== 'products') {
       nextRows.push(row)
       continue
@@ -2666,16 +2915,17 @@ function splitCalculationOptions(rows) {
       continue
     }
     const productOptions = options.filter(option => !CALCULATION_OPTION_RE.test(option?.label || ''))
-    const calcTotal = calcOptions.reduce((sum, option) => sum + registerCalcOption(option), 0)
+    const calcTotal = calcOptions.reduce((sum, option) => sum + registerCalcOption(option, rowIndex), 0)
     const productTotal = row.prix_total_min_ht != null ? Math.max(0, Number(row.prix_total_min_ht) - calcTotal) : row.prix_total_min_ht
     nextRows.push({ ...row, line_section: 'products', options: productOptions, prix_total_min_ht: productTotal, total_ligne_ht: productTotal })
   }
   for (const bucket of buckets.values()) {
     if (!(Number(bucket.amount) > 0)) continue
     const notes = [...bucket.notes]
+    const designation = calculationLabelFromBucket(bucket)
     nextRows.push({
-      ...createAmountRow('calculations', bucket.label),
-      designation: bucket.label,
+      ...createAmountRow('calculations', designation),
+      designation,
       prix_base_ht: Number(bucket.amount) || 0,
       prix_total_min_ht: Number(bucket.amount) || 0,
       total_ligne_ht: Number(bucket.amount) || 0,
@@ -2692,10 +2942,10 @@ function normalizeCalculationRows(rows) {
   const nextRows = []
   const calcBuckets = new Map()
 
-  const addBucket = (key, label, amount, note) => {
+  const addBucket = (key, label, amount, note, rowIndex = null) => {
     const price = Number(amount) || 0
     if (!(price > 0)) return
-    const bucket = calcBuckets.get(key) || { key, label, amount: 0, notes: new Set(), count: 0 }
+    const bucket = calcBuckets.get(key) || { key, label, amount: 0, notes: new Set(), reperes: new Set(), count: 0 }
     if (price > bucket.amount) bucket.amount = price
     if (note) {
       String(note)
@@ -2704,20 +2954,21 @@ function normalizeCalculationRows(rows) {
         .filter(part => part && !/mutualis[ée]/i.test(part))
         .forEach(part => bucket.notes.add(part))
     }
+      if (Number.isInteger(rowIndex)) bucket.reperes.add(rowLetterLabel(rowIndex))
     bucket.count += 1
     calcBuckets.set(key, bucket)
   }
 
-  for (const row of Array.isArray(rows) ? rows : []) {
+  for (const [rowIndex, row] of (Array.isArray(rows) ? rows : []).entries()) {
     const section = sectionOf(row)
     const text = `${row.designation || ''} ${row.type || ''} ${(row.alertes || []).join(' ')}`
     if (section === 'products') {
       const cleanRow = sanitizeCalculationAlerts(row)
       nextRows.push(cleanRow)
       for (const alert of cleanRow.alertes || []) {
-        if (/avis de chantier|avis chantier/i.test(alert)) addBucket('avis_chantier', 'Avis de chantier', 3700, alert)
+        if (/avis de chantier|avis chantier/i.test(alert)) addBucket('avis_chantier', 'Avis de chantier', 3700, alert, rowIndex)
         if (/note de calcul|calcul explosion|hors zone bleue/i.test(alert) && !/non requise|NON requise/i.test(alert)) {
-          addBucket('note_calcul_explosion', 'Note de calcul explosion (non remisable)', 9300, alert)
+          addBucket('note_calcul_explosion', 'Note de calcul explosion (non remisable)', 9300, alert, rowIndex)
         }
       }
       continue
@@ -2741,9 +2992,10 @@ function normalizeCalculationRows(rows) {
 
   for (const bucket of calcBuckets.values()) {
     const notes = [...bucket.notes].filter(Boolean)
+    const designation = calculationLabelFromBucket(bucket)
     nextRows.push({
-      ...createAmountRow('calculations', bucket.label),
-      designation: bucket.label,
+      ...createAmountRow('calculations', designation),
+      designation,
       prix_base_ht: bucket.amount,
       prix_total_min_ht: bucket.amount,
       total_ligne_ht: bucket.amount,
@@ -3170,7 +3422,7 @@ function AddLineModal({ onClose, onAdd }) {
   const pf = parsed?.parsed || {}
 
   return (
-    <div style={MODAL_OVERLAY} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+    <div data-modal-backdrop="true" style={MODAL_OVERLAY} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
       <div style={MODAL_BOX}>
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 16px', borderBottom: '1px solid var(--color-border)' }}>
@@ -3403,7 +3655,7 @@ function SettingsModal({ change, multGlobal, tva, onClose, onApply }) {
     onClose()
   }
   return (
-    <div style={MODAL_OVERLAY} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+    <div data-modal-backdrop="true" style={MODAL_OVERLAY} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
       <div style={{ ...MODAL_BOX, width: 420 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 16px', borderBottom: '1px solid var(--color-border)' }}>
           <Settings size={14} style={{ color: 'var(--color-primary)' }} />
@@ -3899,11 +4151,18 @@ export function DevisGridWorkspace({
     }
     const parsed = parseTransportAddress(cleanAddress)
     const leafCount = productLeafCount(rowsRef.current)
+    let weightKg = null
+    try {
+      const weightResult = await api.post('/weight-profiles/calculate', { rows: compactRowsForWeight(rowsRef.current) })
+      weightKg = weightResult?.total_kg ?? null
+    } catch {
+      weightKg = null
+    }
     let patch = basePatch
     if (!cleanAddress || (!parsed.canton && !parsed.country && !parsed.postal_code)) {
-      const nextRows = rowsRef.current.map((row, idx) => idx === i ? { ...row, ...patch } : row)
+      const nextRows = rowsRef.current.map((row, idx) => idx === i ? { ...row, ...patch, weight_kg: weightKg } : row)
       replaceRows(nextRows)
-      onRowsCommit?.(nextRows[i], i, patch)
+      onRowsCommit?.(nextRows[i], i, { ...patch, weight_kg: weightKg })
       showToast(cleanAddress ? 'Adresse enregistrée, zone à vérifier' : 'Adresse transport vidée', cleanAddress ? 'error' : 'success')
       return
     }
@@ -3911,6 +4170,7 @@ export function DevisGridWorkspace({
       const match = await api.post('/transport-tariffs/match', {
         ...parsed,
         leaf_count: leafCount,
+        weight_kg: weightKg,
       })
       if (match?.tariff) {
         const unitPrice = Number(match.tariff.unit_price_ht ?? match.tariff.price_ht ?? 0)
@@ -3924,8 +4184,9 @@ export function DevisGridWorkspace({
           transport_zone: match.tariff.zone || match.tariff.label || null,
           tranche_count: match.tariff.tranche_count || match.tranche_count || null,
           leaf_count: leafCount,
+          weight_kg: weightKg,
         }
-        showToast('Transport recalculé', 'success')
+        showToast(weightKg != null ? `Transport recalculé (${weightKg} kg)` : 'Transport recalculé', 'success')
       } else {
         showToast('Adresse enregistrée, aucun tarif trouvé', 'error')
       }
@@ -4672,8 +4933,8 @@ export function DevisGridWorkspace({
                   <Th>Serrure</Th>
                   <Th>Garniture int.</Th>
                   <Th>Garniture ext.</Th>
-                  {visibleEquipmentColumns.map(column => <Th key={column.key}>{column.label}</Th>)}
                   {showOtherEquipmentColumn && <Th>Autres équipements</Th>}
+                  {visibleEquipmentColumns.map(column => <Th key={column.key}>{column.label}</Th>)}
                   <Th style={{ ...CELL.gray, ...FINAL_AMOUNT_COLUMNS.pu, textAlign: 'right' }}>PU HT</Th>
                   <Th style={{ ...CELL.yellow, ...FINAL_AMOUNT_COLUMNS.remise, textAlign: 'center' }}>Remise</Th>
                   <Th style={{ ...CELL.yellow, ...FINAL_AMOUNT_COLUMNS.qty, textAlign: 'center' }}>Q.</Th>
@@ -4731,21 +4992,7 @@ export function DevisGridWorkspace({
                       <Fragment>
                         <SubRowRefs row={row} editMode={editMode} onRefCommit={(colIdx, ref) => handleRefCommit(i, colIdx, ref)} hiddenCols={hiddenCols} visibleDimensionCount={visibleDimensionCount} visibleEquipmentColumns={visibleEquipmentColumns} showOtherEquipmentColumn={showOtherEquipmentColumn} />
                         <SubRowPrices row={row} hiddenCols={hiddenCols} visibleDimensionCount={visibleDimensionCount} visibleEquipmentColumns={visibleEquipmentColumns} showOtherEquipmentColumn={showOtherEquipmentColumn} />
-                        {/* Options supplémentaires */}
-                        {(row.options || []).filter(o => !isColumnEquipmentOption(o) && !/acoustique|\b(30|35|40|45)\s*dB\b|remplissage|vitrage|ferme.?porte|garniture|serrure|msl|lss|kel|d[ée]ny/i.test(equipmentText(o))).map((opt, oi) => (
-                          <tr key={`opt-${i}-${oi}`} style={{ background: SUBROW_BG }}>
-                            <td colSpan={3} style={{ padding: '2px 8px 2px 52px', fontSize: 10, color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }}>
-                              ↳ {opt.label}
-                            </td>
-                            <td colSpan={optionNoteColSpan} style={{ padding: '2px 8px', fontSize: 10, color: 'var(--color-text-3)', borderBottom: '1px solid var(--color-border)' }}>
-                              {opt.note}
-                            </td>
-                            <td style={{ padding: '2px 8px', fontSize: 11, textAlign: 'right', fontWeight: 600, ...CELL.gray, borderBottom: '1px solid var(--color-border)' }}>
-                              {opt.prix > 0 ? opt.prix.toLocaleString('fr-FR') + ' €' : <span style={{ color: '#a06a2c' }}>mutualisé</span>}
-                            </td>
-                            <td colSpan={4} style={{ borderBottom: '1px solid var(--color-border)', ...CELL.blue }}></td>
-                          </tr>
-                        ))}
+                        <PerformanceDetailRows row={row} optionNoteColSpan={optionNoteColSpan} />
                         {/* Alertes */}
                         {(row.alertes || []).filter(a => a.startsWith('❌') || a.startsWith('⚠️')).map((a, ai) => (
                           <tr key={`alerte-${i}-${ai}`} style={{ background: 'rgba(160,106,44,0.06)' }}>
@@ -4876,7 +5123,7 @@ export function DevisGridWorkspace({
       )}
 
       {confirmDialog && (
-        <div onClick={() => setConfirmDialog(null)} style={{ position: 'fixed', inset: 0, zIndex: 9500, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+        <div data-modal-backdrop="true" onClick={() => setConfirmDialog(null)} style={{ position: 'fixed', inset: 0, zIndex: 9500, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
           <div onClick={event => event.stopPropagation()} style={{ width: 360, maxWidth: '92vw', borderRadius: 10, border: '1px solid var(--color-border)', background: 'var(--color-surface)', boxShadow: '0 14px 40px rgba(0,0,0,0.28)', padding: 16 }}>
             <div style={{ fontSize: 14, fontWeight: 900, color: 'var(--color-text)', marginBottom: 8 }}>{confirmDialog.title}</div>
             <div style={{ fontSize: 12, lineHeight: 1.5, color: 'var(--color-text-2)', marginBottom: 14 }}>{confirmDialog.message}</div>

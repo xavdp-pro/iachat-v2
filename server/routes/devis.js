@@ -33,6 +33,7 @@ const execFileAsync = promisify(execFile)
 // Répertoire des markdowns NEXUS
 const XLSX_DIR = '/apps/zeruxcom-v1/app/ressources/XLSX'
 const SCRIPT = join(XLSX_DIR, 'detect_nexus.py')
+const PDF_CONTENT_WORKBOOK = join(XLSX_DIR, 'Construction détail ligne devis 20260526.xlsx')
 const QUOTE_SEQUENCE_ID = 1
 
 const router = Router()
@@ -45,6 +46,85 @@ const AI_ATTACHMENT_MIMES = new Set(['application/pdf', 'image/jpeg', 'image/jpg
 const EQUIPMENT_CATALOG_FILES = ['EQUIP-COMMUN.md', 'EQUIP-EI.md', 'EQUIP-FB.md', 'SERRURES-GARNITURES.md']
 const COMMON_EQUIPMENT_PERFORMANCES = ['BASE', 'CR2', 'CR3', 'CR4', 'CR5', 'CR6', 'EI60', 'EI120']
 const ALL_SECURITY_PERFORMANCES = ['BASE', 'CR2', 'CR3', 'CR4', 'CR5', 'CR6', 'EI30', 'EI60', 'EI120', 'FB4', 'FB6', 'FB7', 'BLAST', 'PRISON', 'ANTI-BELIER', 'EF2']
+const EQUIPMENT_REF_SLOTS = {
+  3301: 'serrure', 4070: 'serrure', 4072: 'serrure', 4074: 'serrure', 4076: 'serrure', 4102: 'serrure', 4120: 'serrure', 4126: 'serrure', 4132: 'serrure', 4140: 'serrure', 4142: 'serrure', 4146: 'serrure', 4148: 'serrure', 4150: 'serrure', 4156: 'serrure', 4172: 'serrure', 4176: 'serrure', 4304: 'serrure',
+  4022: 'garniture', 4023: 'garniture', 4024: 'garniture', 4025: 'garniture', 4026: 'garniture', 4027: 'garniture', 4030: 'garniture', 4032: 'garniture', 4091: 'garniture', 4092: 'garniture', 4093: 'garniture', 4094: 'garniture', 4180: 'garniture', 4181: 'garniture',
+  4182: 'autres', 4185: 'contact', 4086: 'autres', 4088: 'autres',
+  3640: 'fp', 3660: 'fp', 3667: 'fp', 4928: 'fp',
+  4401: 'cremone', 4402: 'cremone',
+  4450: 'judas', 4452: 'judas', 4455: 'judas', 4456: 'judas', 4458: 'judas', 4459: 'judas',
+  4472: 'plinthes', 4476: 'plinthes',
+  4803: 'vitrage', 4806: 'vitrage', 4811: 'vitrage', 4816: 'vitrage', 4822: 'vitrage', 4829: 'vitrage', 4830: 'vitrage', 4847: 'vitrage', 4850: 'vitrage', 4860: 'vitrage',
+}
+const EQUIPMENT_REF_PERFORMANCES = {
+  4120: ['CR4'],
+  4126: ['CR4'],
+  4132: ['BLAST'],
+  4140: ['FB6', 'EI60', 'EI120'],
+  4142: ['FB6', 'EI60', 'EI120'],
+  4146: ['FB6', 'EI60', 'EI120'],
+  4148: ['FB6', 'EI60', 'EI120'],
+  4150: ['CR5'],
+  4156: ['CR5'],
+  4172: ['CR6'],
+  4176: ['CR6'],
+}
+const INACTIVE_EQUIPMENT_REFS = new Set(['4091', '4092', '4093', '4094'])
+const PDF_EQUIPMENT_LABELS = {
+  3301: 'Serrure simple',
+  4070: 'MSL mécanique 1V',
+  4072: 'MSL mécanique 2V',
+  4074: 'MSL auto sortie libre 1V',
+  4076: 'MSL auto sortie libre 2V',
+  4086: 'Rallonge 4e point 550 mm',
+  4088: 'Rallonge 4e point 1000 mm',
+  4102: 'KEL 166 auto',
+  4120: 'Dény LSS 3 pts',
+  4126: 'Dény LSS 3 pts',
+  4132: 'Dény LSS 4 pts auto Blast',
+  4140: 'Dény LSS 4 pts méca profil rond',
+  4142: 'Dény LSS 4 pts auto profil rond sortie libre',
+  4146: 'Dény LSS 4 pts motorisée profil rond sortie libre',
+  4148: 'Dény LSS 4 pts motorisée profil rond sortie contrôlée DAS',
+  4150: 'Dény LSS 5 pts',
+  4156: 'Dény LSS motorisée 5 pts',
+  4172: 'Dény LSS 7 pts',
+  4185: 'Contacts de position',
+  4304: 'Réservation Dény',
+  4022: 'Béquille double plaque blindée pare-balles',
+  4023: 'Béquille double',
+  4024: 'Béquille double inox plaque longue',
+  4025: 'Béquille int. + poignée palière ext. longue',
+  4026: 'Béquille double inox plaque blindée',
+  4027: 'Béquille int. + poignée palière ext. blindée',
+  4030: 'Poignée tirage inox courte 150 mm',
+  4032: 'Poignée tirage inox 350 mm',
+  4181: 'Béquille intérieure inox LSS incluse',
+  3640: 'TS-4000 bras compas argent',
+  3660: 'TS-5000 bras glissière argent',
+  3667: 'TS-5000 avec T-stop',
+  4928: 'TS-98',
+  4401: 'Crémone sécurité avec sortie libre',
+  4402: 'Crémone sécurité + VAM haut sans sortie libre',
+  4450: 'Judas optique grand angle',
+  4452: 'Judas coupe-feu EI² 60',
+  4455: 'Judas pare-balles FB6 compatible EI 30/60',
+  4456: 'Judas FB7 non compatible coupe-feu',
+  4458: 'Œilleton RIEP non coupe-feu',
+  4459: 'Œilleton RIEP coupe-feu EI60',
+  4472: 'Plinthe auto encastrée + applique 45 dB < 1450 mm',
+  4476: 'Plinthe auto encastrée + applique 45 dB > 1450 mm',
+  4803: 'Vitrage feuilleté isolant coupe-feu EI² 60',
+  4806: 'Vitrage P5A',
+  4811: 'Vitrage HP P5A',
+  4816: 'Vitrage P7B',
+  4822: 'Vitrage intérieur',
+  4829: 'Plus-value vitrage sans tain sur châssis',
+  4830: 'Vitrage pare-balles BR4-NS intérieur',
+  4847: 'Vitrage pare-balles BR7-NS intérieur',
+  4850: 'Vitrage anti-explosion ER1-NS',
+  4860: 'Panneau plein CR3 EI60',
+}
 
 function normalizePerformanceToken(value) {
   const upper = String(value || '')
@@ -82,51 +162,329 @@ function parsePriceValue(value) {
   return match ? Number(match[0]) : null
 }
 
+function cleanMarkdownCell(value) {
+  return String(value || '').replace(/<[^>]+>/g, '').replace(/[*_`]/g, '').trim()
+}
+
+function equipmentSlotFromText(value) {
+  const text = String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+  if (/serrure|\bmsl\b|\blss\b|\bkel\b|deny|cylindre|pene|reservation deny/.test(text)) return 'serrure'
+  if (/garniture|bequille|poignee|plaque|tirage|bouclier anti-meuleuse/.test(text)) return 'garniture'
+  if (/ferme.?porte|\bts[- ]?\d+|bras glissiere|groom/.test(text)) return 'fp'
+  if (/cremone|semi.?fixe|\bvam\b/.test(text)) return 'cremone'
+  if (/vitrage|remplissage|panneau plein|sans tain|oculus/.test(text)) return 'vitrage'
+  if (/contact|position|reed/.test(text)) return 'contact'
+  if (/passe.?cable|cable/.test(text)) return 'passeCable'
+  if (/plinthe/.test(text)) return 'plinthes'
+  if (/ventouse/.test(text)) return 'ventouse'
+  if (/judas|oeilleton/.test(text)) return 'judas'
+  if (/paumelle|pivot/.test(text)) return 'paumelle'
+  return 'autres'
+}
+
+function equipmentSlotFromRef(ref, label = '') {
+  const key = String(ref || '').match(/\b[34]\d{3}\b/)?.[0]
+  if (key && EQUIPMENT_REF_SLOTS[key]) return EQUIPMENT_REF_SLOTS[key]
+  return equipmentSlotFromText(label)
+}
+
+function equipmentPerformancesFromRef(ref) {
+  const key = String(ref || '').match(/\b[34]\d{3}\b/)?.[0]
+  return key && EQUIPMENT_REF_PERFORMANCES[key] ? EQUIPMENT_REF_PERFORMANCES[key] : null
+}
+
+function pushEquipmentEntry(entries, { designation, ref, priceText, section, file, fallbackPerformances }) {
+  const cleanRef = cleanMarkdownCell(ref)
+  const cleanDesignation = cleanMarkdownCell(designation)
+  if (!cleanDesignation || !cleanRef || /^—$/.test(cleanRef) || /inclus|aucune/i.test(cleanRef)) return
+  const numericRef = cleanRef.match(/\b[34]\d{3}\b/)?.[0]
+  if (!numericRef) return
+  const slot = equipmentSlotFromRef(numericRef, `${section} ${cleanDesignation}`)
+  entries.push({
+    designation: cleanDesignation,
+    ref: numericRef,
+    price_ht: parsePriceValue(priceText),
+    price_label: cleanMarkdownCell(priceText),
+    family: section || basename(file, '.md'),
+    source: file,
+    performances: equipmentPerformancesFromRef(numericRef) || equipmentPerformancesFromText(`${section} ${cleanDesignation}`, fallbackPerformances),
+    slot,
+    active: !INACTIVE_EQUIPMENT_REFS.has(numericRef) && !/supprim/i.test(String(priceText || '')),
+  })
+}
+
 function parseEquipmentMarkdownCatalog(file, content) {
   const fallbackPerformances = equipmentFileFallbackPerformances(file)
   const entries = []
   let section = ''
+  let tableHeaders = []
   for (const rawLine of String(content || '').split('\n')) {
     const heading = rawLine.match(/^#{2,4}\s+(.+)$/)
     if (heading) {
       section = heading[1].replace(/[*_`]/g, '').trim()
+      tableHeaders = []
       continue
     }
     const line = rawLine.trim()
-    if (!line.startsWith('|') || /^\|\s*-/.test(line) || /D[ée]signation/i.test(line)) continue
+    if (!line.startsWith('|') || /^\|\s*-/.test(line)) continue
     const cells = line.split('|').slice(1, -1).map(cell => cell.trim())
-    if (cells.length < 3) continue
-    const [designation, ref, priceText] = cells
-    if (!designation || !ref || /^—$/.test(ref)) continue
-    const performances = equipmentPerformancesFromText(`${section} ${designation}`, fallbackPerformances)
-    entries.push({
-      designation: designation.replace(/<[^>]+>/g, '').replace(/[*_`]/g, '').trim(),
-      ref: ref.replace(/<[^>]+>/g, '').replace(/[*_`]/g, '').trim(),
-      price_ht: parsePriceValue(priceText),
-      price_label: priceText.replace(/<[^>]+>/g, '').replace(/[*_`]/g, '').trim(),
-      family: section || basename(file, '.md'),
-      source: file,
-      performances,
-      active: !/supprim/i.test(priceText),
+    if (/D[ée]signation|Serrure\s+Réf|Gamme/i.test(line)) {
+      tableHeaders = cells.map(cleanMarkdownCell)
+      continue
+    }
+    if (cells.length < 2) continue
+    if (tableHeaders.some(header => /Serrure\s+Réf/i.test(header)) && cells.length >= 7) {
+      const gamme = cells[0]
+      pushEquipmentEntry(entries, { designation: cells[2], ref: cells[1], priceText: '', section: `${section} ${gamme}`, file, fallbackPerformances })
+      pushEquipmentEntry(entries, { designation: cells[4], ref: cells[3], priceText: '', section: `${section} ${gamme}`, file, fallbackPerformances })
+      pushEquipmentEntry(entries, { designation: cells[6], ref: cells[5], priceText: '', section: `${section} ${gamme}`, file, fallbackPerformances })
+      continue
+    }
+    const refIndex = cells.findIndex(cell => /\b[34]\d{3}\b/.test(cleanMarkdownCell(cell)))
+    if (refIndex < 0) continue
+    const designationIndex = refIndex === 0 ? 1 : Math.max(0, refIndex - 1)
+    const priceIndex = cells.findIndex((cell, index) => index !== refIndex && index !== designationIndex && /€|CHF|\d+[,.]?\d*/i.test(cleanMarkdownCell(cell)))
+    pushEquipmentEntry(entries, {
+      designation: cells[designationIndex],
+      ref: cells[refIndex],
+      priceText: priceIndex >= 0 ? cells[priceIndex] : '',
+      section,
+      file,
+      fallbackPerformances,
     })
   }
   return entries
 }
 
+async function loadPythonEquipmentCatalog() {
+  try {
+    const { stdout } = await execFileAsync('python3', [SCRIPT, '--equipment-catalog'], { timeout: 15000, maxBuffer: 1024 * 1024 })
+    const rows = JSON.parse(stdout || '[]')
+    if (!Array.isArray(rows)) return []
+    return rows
+      .filter(row => row?.ref && row?.label)
+      .map(row => ({
+        designation: String(row.label || '').trim(),
+        ref: String(row.ref || '').trim(),
+        price_ht: Number.isFinite(Number(row.prix)) ? Number(row.prix) : null,
+        price_label: Number.isFinite(Number(row.prix)) ? `${Number(row.prix).toLocaleString('fr-FR')} € HT` : 'prix à vérifier',
+        family: 'Catalogue tarif XLSX',
+        source: row.source || 'detect_nexus.py --equipment-catalog',
+        slot: equipmentSlotFromRef(row.ref, row.label),
+        performances: equipmentPerformancesFromRef(row.ref) || [],
+        active: !INACTIVE_EQUIPMENT_REFS.has(String(row.ref || '').trim()),
+      }))
+  } catch (err) {
+    console.error('loadPythonEquipmentCatalog error:', err.message)
+    return []
+  }
+}
+
+function mergeEquipmentCatalogEntries(markdownEntries = [], pythonEntries = []) {
+  const byRef = new Map()
+  for (const entry of markdownEntries) {
+    const ref = String(entry?.ref || '').trim()
+    if (!ref) continue
+    byRef.set(ref, { ...entry, sources: [entry.source].filter(Boolean) })
+  }
+  for (const pyEntry of pythonEntries) {
+    const ref = String(pyEntry?.ref || '').trim()
+    if (!ref) continue
+    const existing = byRef.get(ref)
+    if (existing) {
+      byRef.set(ref, {
+        ...existing,
+        designation: existing.designation || pyEntry.designation,
+        price_ht: pyEntry.price_ht ?? existing.price_ht,
+        price_label: pyEntry.price_label || existing.price_label,
+        slot: existing.slot || pyEntry.slot || equipmentSlotFromRef(existing.ref, existing.designation || pyEntry.designation),
+        performances: equipmentPerformancesFromRef(ref) || existing.performances || pyEntry.performances || [],
+        active: !INACTIVE_EQUIPMENT_REFS.has(ref) && existing.active !== false && pyEntry.active !== false,
+        source: [...new Set([...(existing.sources || [existing.source]).filter(Boolean), pyEntry.source].filter(Boolean))].join(' + '),
+        sources: [...new Set([...(existing.sources || [existing.source]).filter(Boolean), pyEntry.source].filter(Boolean))],
+      })
+    } else {
+      byRef.set(ref, {
+        ...pyEntry,
+        performances: equipmentPerformancesFromRef(ref) || ALL_SECURITY_PERFORMANCES,
+        slot: pyEntry.slot || equipmentSlotFromRef(pyEntry.ref, pyEntry.designation),
+        active: !INACTIVE_EQUIPMENT_REFS.has(ref) && pyEntry.active !== false,
+        sources: [pyEntry.source].filter(Boolean),
+      })
+    }
+  }
+  return [...byRef.values()].map(({ sources, ...entry }) => entry)
+}
+
 let equipmentCatalogCache = { value: null, expiresAt: 0 }
+let pdfContentGuideCache = { value: '', expiresAt: 0 }
+let pdfEquipmentLabelCache = { value: null, expiresAt: 0 }
+
+async function loadPdfEquipmentLabelMap() {
+  const now = Date.now()
+  if (pdfEquipmentLabelCache.value && pdfEquipmentLabelCache.expiresAt > now) return pdfEquipmentLabelCache.value
+  const labels = { ...PDF_EQUIPMENT_LABELS }
+  if (!existsSync(PDF_CONTENT_WORKBOOK)) {
+    pdfEquipmentLabelCache = { value: labels, expiresAt: now + 5 * 60 * 1000 }
+    return labels
+  }
+  const code = `
+import json, re, sys
+from pathlib import Path
+import openpyxl
+
+path = Path(sys.argv[1])
+wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+
+def clean(value):
+    if value is None:
+        return ''
+    return str(value).replace('\\n', ' ').strip()
+
+ignore_sheets = {'Construction', 'Dim guichets'}
+result = {}
+for ws in wb.worksheets:
+    if ws.title in ignore_sheets:
+        continue
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        cells = [clean(value) for value in row[:8]]
+        if not any(cells):
+            continue
+        ref_match = re.search(r'\\b([A-Z]?\\d{3,4}[A-Z]?)\\b', cells[0])
+        if not ref_match:
+            continue
+        ref = ref_match.group(1)
+        candidates = [cell for cell in cells[1:] if cell and not re.fullmatch(r'(?:BP|BP 1V|BP 2V|Chassis|Oui|Non|/) .*', cell, re.I)]
+        if not candidates:
+            candidates = [cell for cell in cells[1:] if cell]
+        if not candidates:
+            continue
+        label = max(candidates, key=len)
+        if label and len(label) > len(result.get(ref, '')):
+            result[ref] = label
+print(json.dumps(result, ensure_ascii=False))
+`
+  try {
+    const { stdout } = await execFileAsync('python3', ['-c', code, PDF_CONTENT_WORKBOOK], { timeout: 15000, maxBuffer: 1024 * 1024 })
+    const workbookLabels = JSON.parse(stdout || '{}')
+    for (const [ref, label] of Object.entries(workbookLabels)) {
+      if (ref && label) labels[ref] = label
+    }
+  } catch (err) {
+    console.error('loadPdfEquipmentLabelMap error:', err.message)
+  }
+  pdfEquipmentLabelCache = { value: labels, expiresAt: now + 5 * 60 * 1000 }
+  return labels
+}
+
+async function loadPdfContentGuide() {
+  const now = Date.now()
+  if (pdfContentGuideCache.value && pdfContentGuideCache.expiresAt > now) return pdfContentGuideCache.value
+  if (!existsSync(PDF_CONTENT_WORKBOOK)) return ''
+  const code = `
+import json, sys
+from pathlib import Path
+try:
+    import openpyxl
+except Exception as exc:
+    print(json.dumps({'error': str(exc)}, ensure_ascii=False))
+    raise SystemExit(0)
+
+path = Path(sys.argv[1])
+wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+
+def clean(value):
+    if value is None:
+        return ''
+    return str(value).replace('\\n', ' ').strip()
+
+guide = []
+if 'Construction' in wb.sheetnames:
+    ws = wb['Construction']
+    construction = []
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        cells = [clean(value) for value in row[:7]]
+        if not any(cells):
+            continue
+        order, mandatory, condition, template, value_hint, example = cells[1], cells[2], cells[3], cells[4], cells[5], cells[6]
+        if template:
+            construction.append({
+                'ordre': order,
+                'obligatoire': mandatory,
+                'condition': condition,
+                'modele': template,
+                'valeur': value_hint,
+                'exemple': example,
+            })
+    guide.append({'sheet': 'Construction', 'rows': construction})
+
+lookups = []
+for sheet in wb.sheetnames:
+    if sheet == 'Construction':
+        continue
+    ws = wb[sheet]
+    entries = []
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        ref = clean(row[0] if len(row) > 0 else '')
+        affichage = clean(row[1] if len(row) > 1 else '')
+        condition = clean(row[2] if len(row) > 2 else '')
+        if ref and (affichage or condition):
+            entries.append({'ref': ref, 'affichage': affichage, 'condition': condition})
+        if len(entries) >= 80:
+            break
+    if entries:
+        lookups.append({'sheet': sheet, 'entries': entries})
+guide.extend(lookups)
+print(json.dumps(guide, ensure_ascii=False))
+`
+  try {
+    const { stdout } = await execFileAsync('python3', ['-c', code, PDF_CONTENT_WORKBOOK], { timeout: 15000, maxBuffer: 1024 * 1024 })
+    const guide = JSON.parse(stdout || '[]')
+    if (guide?.error || !Array.isArray(guide)) return ''
+    const construction = guide.find(item => item.sheet === 'Construction')?.rows || []
+    const constructionText = construction
+      .slice(0, 40)
+      .map(row => `- Ordre ${row.ordre || '?'}${row.obligatoire ? ` (${row.obligatoire})` : ''}${row.condition ? ` si ${row.condition}` : ''}: ${row.modele}${row.valeur ? ` [XX = ${row.valeur}]` : ''}${row.exemple ? ` Exemple: ${row.exemple}` : ''}`)
+      .join('\n')
+    const lookupText = guide
+      .filter(item => item.sheet !== 'Construction')
+      .map(item => {
+        const entries = (item.entries || []).slice(0, 30).map(entry => {
+          const suffix = [entry.condition, entry.affichage].filter(Boolean).join(' -> ')
+          return `${entry.ref}: ${suffix}`
+        }).join('; ')
+        return entries ? `${item.sheet}: ${entries}` : ''
+      })
+      .filter(Boolean)
+      .join('\n')
+    const text = [
+      'SOURCE CLIENT - Construction détail ligne devis 20260526.xlsx',
+      'Utiliser ce classeur client comme modèle prioritaire pour l’ordre, les intitulés et les libellés d’équipements PDF.',
+      constructionText ? `Ordre de construction des lignes:\n${constructionText}` : '',
+      lookupText ? `Libellés canoniques par référence:\n${lookupText}` : '',
+    ].filter(Boolean).join('\n\n')
+    pdfContentGuideCache = { value: text, expiresAt: now + 300000 }
+    return text
+  } catch (err) {
+    console.error('loadPdfContentGuide error:', err.message)
+    return ''
+  }
+}
 
 async function loadEquipmentCatalog() {
   const now = Date.now()
   if (equipmentCatalogCache.value && equipmentCatalogCache.expiresAt > now) return equipmentCatalogCache.value
-  const catalog = []
+  const markdownCatalog = []
   for (const file of EQUIPMENT_CATALOG_FILES) {
     const filePath = join(XLSX_DIR, file)
     if (!existsSync(filePath)) continue
     try {
       const content = await readFile(filePath, 'utf-8')
-      catalog.push(...parseEquipmentMarkdownCatalog(file, content))
+      markdownCatalog.push(...parseEquipmentMarkdownCatalog(file, content))
     } catch { /* ignore unreadable catalog file */ }
   }
+  const pythonCatalog = await loadPythonEquipmentCatalog()
+  const catalog = mergeEquipmentCatalogEntries(markdownCatalog, pythonCatalog)
   equipmentCatalogCache = { value: catalog, expiresAt: now + 60000 }
   return catalog
 }
@@ -146,7 +504,7 @@ function equipmentCompatibleWithRow(entry, rowPerformances = []) {
   if (!entry?.active) return false
   const entryPerformances = Array.isArray(entry.performances) ? entry.performances : []
   if (!rowPerformances.length) return true
-  if (entryPerformances.includes('BASE')) return true
+  if (entryPerformances.includes('BASE')) return entry.slot !== 'serrure'
   return rowPerformances.some(performance => entryPerformances.includes(performance))
 }
 
@@ -709,7 +1067,10 @@ function flattenGridIntentEdits(parsed, catalog) {
 
 function cleanDesignationFact(value) {
   return String(value || '')
+    .replace(/\s*\(xlsx\)/giu, '')
+    .replace(/\([^)]*\d+\s*(?:[+x×]\s*\d+)+[^)]*\)\s*€\s*\/\s*m²/giu, '')
     .replace(/\d+(?:[,.]\d+)?\s*€(?:\s*\/\s*m²)?/giu, '')
+    .replace(/€\s*\/\s*m²/giu, '')
     .replace(/\s*[×x]\s*\d+(?:[,.]\d+)?\s*m²/giu, '')
     .replace(/\s*\([^)]*(?:prix|tarif|€)[^)]*\)/giu, '')
     .replace(/\s{2,}/g, ' ')
@@ -746,6 +1107,258 @@ function designationTargetFacts(line = {}) {
     Array.isArray(alerts) && alerts.length ? `Notes techniques utilisables seulement si commerciales :\n${alerts.map(alert => `- ${cleanDesignationFact(alert)}`).join('\n')}` : null,
   ]
   return facts.filter(Boolean).join('\n')
+}
+
+function normalizePdfFactText(value) {
+  return cleanDesignationFact(value)
+    .replace(/\s+([,.;:])/g, '$1')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+}
+
+function pdfEquipmentRef(value) {
+  const explicit = String(value?.ref || value?.reference || '').match(/\b([A-Z]?\d{3,4}[A-Z]?)\b/i)?.[1]
+  if (explicit) return explicit
+  return equipmentText(value).match(/r[ée]f\.?\s*([A-Z]?\d{3,4}[A-Z]?)\b/i)?.[1]
+    || equipmentText(value).match(/\b([A-Z]?\d{3,4}[A-Z]?)\b/)?.[1]
+    || null
+}
+
+function humanEquipmentRole(label = '') {
+  const text = String(label || '')
+    .replace(/\b(?:défaut|xlsx)\b/giu, '')
+    .replace(/\([^)]*\)/g, '')
+    .replace(/\br[ée]f\.?\s*[A-Z]?\d{3,4}[A-Z]?\b/giu, '')
+    .replace(/\b(?:BASE|CR[2-6]|RC[2-6]|EI\s*(?:30|60|90|120)|FB[4-7]|Blast\s*\d*t?)\b/giu, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+  if (/garniture\s+double/i.test(text)) return 'Garniture double'
+  if (/garniture\s+int/i.test(text)) return 'Garniture intérieure'
+  if (/garniture\s+ext/i.test(text)) return 'Garniture extérieure'
+  if (/serrure/i.test(text)) return 'Serrure'
+  if (/cr[ée]mone/i.test(text)) return 'Crémone'
+  if (/ferme.?porte/i.test(text)) return 'Ferme-porte'
+  if (/thermolaquage/i.test(text)) return 'Thermolaquage'
+  if (/judas|œilleton|oeilleton/i.test(text)) return 'Judas / œilleton'
+  if (/plinthe/i.test(text)) return 'Plinthe automatique'
+  return text
+}
+
+function humanEquipmentName(label = '') {
+  return normalizePdfFactText(label)
+    .replace(/\br[ée]f\.?\s*[A-Z]?\d{3,6}[A-Z]?\b/giu, '')
+    .replace(/\bHT\b/g, '')
+    .replace(/\s*\+\s*-\s*/g, ' - ')
+    .replace(/profil\s+PZ\s+de\s+chantier/giu, 'profil PZ')
+    .replace(/\b1V\b/g, 'un vantail')
+    .replace(/\b2V\b/g, 'deux vantaux')
+    .replace(/\bpts\b/gi, 'points')
+    .replace(/\bméca\b/gi, 'mécanique')
+    .replace(/\bint\./gi, 'intérieure')
+    .replace(/\bext\./gi, 'extérieure')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+}
+
+function humanFallbackEquipmentLabel(label = '') {
+  const clean = humanEquipmentName(label)
+    .replace(/\br[ée]f\.?\s*[A-Z]?\d{3,4}[A-Z]?\b/giu, '')
+    .replace(/\([^)]*\)/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+  if (/^FB\s*[4-7]\b/i.test(clean)) return 'Protection pare-balles complémentaire'
+  if (/^EI\s*(30|60|90|120)\b/i.test(clean)) return 'Performance coupe-feu complémentaire'
+  if (/^CR\s*[2-6]\b/i.test(clean) || /^RC\s*[2-6]\b/i.test(clean)) return 'Renfort anti-effraction complémentaire'
+  if (/thermolaquage/i.test(clean)) return 'Thermolaquage RAL/NCS'
+  return clean
+}
+
+function pdfEquipmentLabel(value, labelMap = PDF_EQUIPMENT_LABELS) {
+  const ref = pdfEquipmentRef(value)
+  const catalogLabel = ref ? humanEquipmentName(labelMap[ref] || PDF_EQUIPMENT_LABELS[ref]) : null
+  const rawLabel = normalizePdfFactText(value?.label || value?.designation || value?.name || equipmentText(value))
+  const role = humanEquipmentRole(rawLabel)
+  if (catalogLabel && /^Garniture /i.test(role)) return catalogLabel
+  if (catalogLabel && role && catalogLabel.toLowerCase().startsWith(role.toLowerCase())) return catalogLabel
+  if (catalogLabel && role && !role.toLowerCase().includes(catalogLabel.toLowerCase())) return `${role} — ${catalogLabel}`
+  if (catalogLabel) return catalogLabel
+  return humanFallbackEquipmentLabel(rawLabel)
+}
+
+function lineTextCorpus(line = {}) {
+  const options = parseMaybeJson(line.options ?? line.options_json, [])
+  const equipments = parseMaybeJson(line.equip_extra ?? line.equipements_json, [])
+  return [
+    line.type, line.type_porte, line.designation, line.gamme, line.rc, line.pb, line.cf, line.blast, line.acoustic,
+    line.serrure?.from, line.serrure?.ref, line.serrure_ref,
+    line.garniture_int?.from, line.garniture_ext?.from, line.garniture_int_ref, line.garniture_ext_ref,
+    line.ferme_porte?.from, line.ferme_porte?.ref, line.ferme_porte_ref,
+    line.vitrage?.from, line.vitrage?.ref, line.vitrage_ref,
+    line.cremone?.from, line.cremone?.ref, line.cremone_ref,
+    line.autres, line.thermolaquage, line.notes,
+    ...(Array.isArray(options) ? options.map(option => equipmentText(option)) : []),
+    ...(Array.isArray(equipments) ? equipments.map(item => equipmentText(item)) : []),
+  ].filter(Boolean).join(' ')
+}
+
+function isChassisPdfItem(line = {}) {
+  return /\b(chassis|châssis|\bCH\b)\b/i.test(lineTextCorpus(line))
+}
+
+function isGuichetPdfItem(line = {}) {
+  return /\bguichet\b/i.test(lineTextCorpus(line))
+}
+
+const PDF_GUICHET_LABELS = {
+  4429: ['GUICHET DE FACADE FB4', 'Guichet de façade FB4 finition inox', 'Dimensions L 320 x P 215 x H 38, poids approximatif 26 kg'],
+  4430: ['GUICHET DE FACADE FB4', 'Guichet de façade FB4 avec interphone, finition inox', 'Dimensions L 320 x P 215 x H 38, poids approximatif 26 kg'],
+  4431: ['GUICHET DE FACADE FB6', 'Guichet de façade FB6 finition inox', 'Dimensions L 330 x P 341 x H 40, poids approximatif 60 kg'],
+  4432: ['GUICHET DE FACADE FB6', 'Guichet de façade FB6 avec interphone, finition inox', 'Dimensions L 330 x P 341 x H 40, poids approximatif 60 kg'],
+  4433: ['GUICHET DE FACADE FB7', 'Guichet de façade FB7 finition inox', 'Dimensions L 384 x P 340 x H 100, poids approximatif 170 kg'],
+  4434: ['GUICHET DE FACADE FB7', 'Guichet de façade FB7 avec interphone, finition inox', 'Dimensions L 384 x P 340 x H 100, poids approximatif 170 kg'],
+}
+
+function guichetPdfRef(line = {}) {
+  const text = [line.ref_base, line.ref, line.designation, line.type, line.type_porte, line.autres, line.notes].filter(Boolean).join(' ')
+  const explicit = text.match(/\b(4429|4430|4431|4432|4433|4434)\b/)
+  if (explicit) return explicit[1]
+  const perf = text.match(/\bFB\s*([467])\b/i)?.[1]
+  if (!perf) return null
+  const interphone = /interphone/i.test(text)
+  return ({ '4': interphone ? '4430' : '4429', '6': interphone ? '4432' : '4431', '7': interphone ? '4434' : '4433' })[perf] || null
+}
+
+function isTwoLeafPdfItem(line = {}) {
+  return /\b(2V|deux\s+vantaux|2\s+vantaux)\b/i.test([line.vantail, line.type, line.type_porte, line.designation].filter(Boolean).join(' '))
+}
+
+function extractPdfPerformances(line = {}) {
+  const text = lineTextCorpus(line)
+  const results = []
+  const add = (key, value, label) => {
+    if (!value || results.some(item => item.key === key && item.value === value)) return
+    results.push({ key, value, label })
+  }
+  const fire = text.match(/\bEI\s*(30|60|90|120)\b/i)
+  if (fire) add('fire', `EI${fire[1]}`, `Performances coupe-feu EI² ${fire[1]} minutes recto/verso`)
+  const cr = text.match(/\b(?:CR|RC)\s*([2-6])\b/i)
+  if (cr) add('cr', `CR${cr[1]}`, `Classement anti-effraction niveau CR${cr[1]} selon normes EN 1627 - 1630`)
+  const fb = text.match(/\bFB\s*([4-7])\b/i)
+  if (fb) add('fb', `FB${fb[1]}`, `Performances pare-balle FB${fb[1]} selon norme EN 1522`)
+  const blast = text.match(/\b([245])\s*t\s*\/\s*m(?:²|2)\b/i)
+  if (blast) add('blast', `${blast[1]} t/m²`, `Classement anti-explosion ${blast[1]} t/m² sur note de calcul`)
+  const acoustic = text.match(/\b(30|35|40|45)\s*dB\b/i)
+  if (acoustic) add('acoustic', `${acoustic[1]} dB`, `Affaiblissement acoustique ${acoustic[1]} dB sur attestation`)
+  return results
+}
+
+function extractPdfEquipmentLabels(line = {}) {
+  const options = parseMaybeJson(line.options ?? line.options_json, [])
+  const equipments = parseMaybeJson(line.equip_extra ?? line.equipements_json, [])
+  const equipmentLabelMap = line._pdfEquipmentLabels || PDF_EQUIPMENT_LABELS
+  const labels = [
+    ...(Array.isArray(options) ? options.map(option => pdfEquipmentLabel(option, equipmentLabelMap)) : []),
+    ...(Array.isArray(equipments) ? equipments.map(item => pdfEquipmentLabel(item, equipmentLabelMap)) : []),
+  ]
+    .map(normalizePdfFactText)
+    .filter(label => label && !/^(?:oui|non|x|-)$/i.test(label))
+    .filter(label => !/^(?:BP|CH|SFX|1V|2V)$/i.test(label))
+    .filter(label => !/\.md|\br[ée]f\.?\s*[A-Z]?\d{3,6}[A-Z]?\b|\bHT\b/i.test(label))
+    .filter(label => !/^Thermolaquage\b/i.test(label))
+    .filter(label => !/\bacoustique\b|\b(30|35|40|45)\s*dB\b/i.test(label))
+    .filter(label => !/^(?:Performance coupe-feu complémentaire|Protection pare-balles complémentaire|Renfort anti-effraction complémentaire)$/i.test(label))
+  return [...new Set(labels)]
+}
+
+function cleanPdfFillingLabel(label = '') {
+  return normalizePdfFactText(label)
+    .replace(/^Remplissage\s+par\s+/i, '')
+    .replace(/^(?:Remplissage\s+ch[âa]ssis|Remplissage|Vitrage\s+standard)\s*(?:[—-]\s*)?/i, '')
+    .replace(/(?:^|\s+[—-]\s*)Vitrage\s+standard\s*(?:[—-]\s*)?/i, '')
+    .replace(/^\s*[—-]\s*/, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+}
+
+function extractPdfFinition(line = {}) {
+  const text = [line.thermolaquage, line.finition, line.notes, line.designation].filter(Boolean).join(' ')
+  const ral = text.match(/\bRAL\s*([0-9]{3,4}|[A-Z][A-Z\s-]{2,})\b/i)
+  const ncs = text.match(/\bNCS\s*([A-Z0-9\s-]+)\b/i)
+  const anodised = text.match(/\bANODISED\s+[A-Z]+\b/i)
+  const shade = normalizePdfFactText(anodised?.[0] || (ral ? `RAL ${ral[1]}` : '') || (ncs ? `NCS ${ncs[1]}` : ''))
+  return shade ? `Finition : acier galvanisé + thermolaquage teinte ${shade} - à préciser pour faisabilité` : 'Finition : acier galvanisé + thermolaquage RAL/NCS'
+}
+
+function extractPdfPostLocalisationNotes(line = {}) {
+  const rawNotes = [line.note_pdf, line.pdf_note, line.notes_pdf, line.notes]
+    .filter(Boolean)
+    .flatMap(value => String(value).split(/\n|\s+—\s+/u))
+  return [...new Set(rawNotes
+    .map(note => normalizePdfFactText(note).replace(/^[•\-\s]+/u, '').trim())
+    .filter(note => note && note.length <= 90)
+    .filter(note => /\b(?:DB|MAXI|VARIANTE|OPTION|SPECIFICITE|SPÉCIFICITÉ|PRECISION|PRÉCISION)\b/i.test(note))
+    .filter(note => !/avis de chantier|note de calcul|prix|tarif|€|xlsx|\.md/i.test(note)))]
+}
+
+function composePdfItemDesignation(line = {}) {
+  if (isGuichetPdfItem(line)) {
+    const ref = guichetPdfRef(line)
+    const labels = PDF_GUICHET_LABELS[ref] || ['GUICHET DE FACADE', normalizePdfFactText(line.designation || line.type || 'Guichet de façade'), null]
+    const lines = [labels[0], labels[1], labels[2]].filter(Boolean)
+    if (line.localisation) lines.push(`Localisation : ${normalizePdfFactText(line.localisation)}`)
+    extractPdfPostLocalisationNotes(line).forEach(note => lines.push(note.toUpperCase()))
+    return lines.join('\n')
+  }
+  const chassis = isChassisPdfItem(line)
+  const twoLeaf = isTwoLeafPdfItem(line)
+  const title = chassis ? 'CHASSIS FIXE "NEXUS"' : `BLOC-PORTE "NEXUS" ${twoLeaf ? 'DEUX VANTAUX' : 'UN VANTAIL'}`
+  const lines = [title]
+  for (const perf of extractPdfPerformances(line)) lines.push(perf.label)
+  lines.push(chassis ? 'Profilés acier série froide' : 'Vantail en tôle épaisseur 20/10° double face')
+
+  const widthHt = line.larg_mm || line.largeur_mm || line.largeur_ht_mm
+  const heightHt = line.haut_mm || line.hauteur_mm || line.hauteur_ht_mm
+  const widthPl = line.largeur_pl_mm
+  const heightPl = line.hauteur_pl_mm
+  if (widthPl != null && heightPl != null) {
+    lines.push(chassis
+      ? `Dimensions sur mesure : L ${widthPl} H ${heightPl} Clair de vitrage`
+      : `Dimensions sur mesure : L ${widthPl} H ${heightPl} Passage libre à 90°`)
+  }
+  if (widthHt != null && heightHt != null) {
+    lines.push(`Dimensions hors-tout : L ${widthHt} H ${heightHt}`)
+    const reservationWidth = line.largeur_reservation_mm ?? (Number.isFinite(Number(widthHt)) ? Number(widthHt) + 10 : null)
+    const reservationHeight = line.hauteur_reservation_mm ?? (Number.isFinite(Number(heightHt)) ? Number(heightHt) + 10 : null)
+    if (reservationWidth != null && reservationHeight != null) lines.push(`Réservation gros-oeuvre prévoir : L ${reservationWidth} H ${reservationHeight}`)
+  }
+
+  const equipmentLabels = extractPdfEquipmentLabels(line)
+  const filling = equipmentLabels.find(label => /vitrage|remplissage|panneau plein/i.test(label))
+  const fillingLabel = cleanPdfFillingLabel(filling)
+  if (fillingLabel) lines.push(`Remplissage par ${fillingLabel}`)
+  lines.push(extractPdfFinition(line))
+  const equipmentOnly = equipmentLabels.filter(label => label !== filling)
+  if (equipmentOnly.length) {
+    lines.push('Equipement fourni-posé :')
+    equipmentOnly.forEach(label => lines.push(`- ${label.replace(/^-\s*/, '')}`))
+  }
+  if (line.localisation) lines.push(`Localisation : ${normalizePdfFactText(line.localisation)}`)
+  extractPdfPostLocalisationNotes(line).forEach(note => lines.push(note.toUpperCase()))
+  return lines.filter(Boolean).join('\n')
+}
+
+function polishedDesignationLooksBroken(polished = '', draft = '') {
+  const cleanPolished = String(polished || '').trim()
+  const cleanDraft = String(draft || '').trim()
+  if (!cleanDraft) return false
+  if (!cleanPolished) return true
+  const draftLines = cleanDraft.split('\n').map(line => line.trim()).filter(Boolean)
+  const polishedLines = cleanPolished.split('\n').map(line => line.trim()).filter(Boolean)
+  if (draftLines.length >= 4 && polishedLines.length <= 2) return true
+  const requiredPrefixes = ['Dimensions hors-tout :', 'Localisation :'].filter(prefix => cleanDraft.includes(prefix))
+  if (requiredPrefixes.some(prefix => !cleanPolished.includes(prefix))) return true
+  const requiredStandaloneNotes = draftLines.filter(line => /^(?:[0-9]{1,3}\s*DB\s+MAXI|VARIANTE\b|OPTION\b|SP[ÉE]CIFICIT[ÉE]\b|PR[ÉE]CISION\b)/i.test(line))
+  return requiredStandaloneNotes.some(line => !cleanPolished.includes(line))
 }
 
 // ── Multer : stockage dans /tmp, fichiers .xlsx uniquement ──────────────────
@@ -856,6 +1469,7 @@ router.post('/equipment-options', async (req, res) => {
         prix: entry.price_ht,
         price_label: entry.price_label,
         family: entry.family,
+        slot: entry.slot || equipmentSlotFromRef(entry.ref, entry.designation),
         source: entry.source,
         performances: entry.performances,
       }))
@@ -1008,16 +1622,41 @@ Règles:
 router.post('/suggest-designation', async (req, res) => {
   const line = req.body?.line || req.body || {}
   const contextLines = Array.isArray(req.body?.context_lines) ? req.body.context_lines : []
+  const pdfEquipmentLabels = await loadPdfEquipmentLabelMap()
+  const sourceLine = { ...line, designation: '', type: line.type || line.type_porte, _pdfEquipmentLabels: pdfEquipmentLabels }
   // Exclude existing designation from query: we're regenerating it from scratch
-  const query = designationSearchText({ ...line, designation: '' })
-  const targetFacts = designationTargetFacts(line)
+  const query = designationSearchText(sourceLine)
+  const targetFacts = designationTargetFacts(sourceLine)
+  const deterministicDraft = composePdfItemDesignation(sourceLine)
   if (!query) return res.status(400).json({ error: 'line requis' })
+  return res.json({
+    designation: deterministicDraft,
+    deterministic_draft: deterministicDraft,
+    target_facts: targetFacts,
+    client_workbook: existsSync(PDF_CONTENT_WORKBOOK),
+    source_policy: 'row_structured_with_client_workbook_no_historical_pdf_examples',
+    deterministic_only: true,
+  })
 
   try {
     const model = await getGlobalOllamaModel()
+    const pdfContentGuide = await loadPdfContentGuide()
     const systemPrompt = `Tu es rédacteur de devis NEXUS.
   Tu dois générer le libellé commercial complet d'une ligne de devis PDF uniquement depuis les données structurées de la ligne cible et, si utile, depuis les lignes voisines du même devis.
   Tu n'as pas accès aux anciens PDF d'exemple et tu ne dois jamais t'inspirer d'anciens devis historiques.
+
+  Source métier prioritaire client :
+  - Le classeur "Construction détail ligne devis 20260526.xlsx" définit le squelette attendu du contenu PDF par item.
+  - Tu dois suivre son ordre de lignes, ses intitulés et ses libellés canoniques lorsque la donnée existe dans la ligne cible.
+  - Les onglets de correspondance (Serrures, Garnitures, FP, Remplissages châssis, etc.) donnent le texte commercial à utiliser pour les références détectées.
+  - Le classeur guide la formulation, mais il ne t'autorise jamais à inventer une valeur absente de la ligne cible.
+
+  Rôle exact :
+  - Tu n'es PAS l'auteur libre du contenu.
+  - Un brouillon déterministe t'est fourni depuis la grid et le classeur client.
+  - Tu dois conserver sa structure, ses lignes métier, ses dimensions, ses références, ses équipements et sa localisation.
+  - Tu peux seulement corriger l'orthographe, les espaces, les accents, la ponctuation légère et les répétitions évidentes.
+  - Si le brouillon est déjà propre, renvoie-le quasiment tel quel.
 
   Règle d'homogénéité stricte :
   - Chaque ligne de détail doit toujours appartenir au même gabarit ci-dessous et rester dans le même genre de formulation.
@@ -1056,6 +1695,7 @@ Formulations canoniques attendues :
 
 Contraintes absolues :
 - Réponds UNIQUEMENT avec le libellé final brut, une information par ligne, sans markdown ni commentaire.
+- Le BROUILLON DETERMINISTE est la base obligatoire. Ne supprime aucune ligne utile du brouillon, sauf si elle est vide, contradictoire ou manifestement artefactuelle.
 - Ne mets jamais de prix, quantité, délai, montant HT ou total.
 - Utilise uniquement les informations présentes dans la ligne cible. N'utilise aucun ancien PDF, aucun exemple historique, aucune mémoire vectorielle, aucun style copié depuis un devis passé.
 - La section "DONNEES STRUCTUREES DE LA LIGNE CIBLE" est la source de vérité prioritaire. Si elle contient "Options / remplissages détectés" ou "Equipements détectés", ces éléments doivent apparaître dans le libellé, généralement sous "Equipement fourni-posé :".
@@ -1075,7 +1715,7 @@ Contraintes absolues :
       .map((ctx, idx) => `CONTEXTE ${idx + 1}: ${designationSearchText(ctx)}`)
       .filter(Boolean)
       .join('\n')
-    const userPrompt = `DONNEES STRUCTUREES DE LA LIGNE CIBLE (SOURCE DE VERITE UNIQUE):\n${targetFacts}\n\nLIGNE CIBLE (texte de recherche complémentaire):\n${query}${contextText ? `\n\nCONTEXTE DU DEVIS (lignes voisines, à utiliser seulement pour cohérence générale, sans copier leurs détails):\n${contextText}` : ''}\n\nLIBELLE A PRODUIRE:`
+    const userPrompt = `${pdfContentGuide ? `MODELE CLIENT POUR CONTENU PDF (ordre et libelles attendus, a appliquer seulement avec les donnees de la ligne cible):\n${pdfContentGuide}\n\n` : ''}BROUILLON DETERMINISTE A CONSERVER ET POLIR:\n${deterministicDraft}\n\nDONNEES STRUCTUREES DE LA LIGNE CIBLE (SOURCE DE VERITE UNIQUE):\n${targetFacts}\n\nLIGNE CIBLE (texte de recherche complémentaire):\n${query}${contextText ? `\n\nCONTEXTE DU DEVIS (lignes voisines, à utiliser seulement pour cohérence générale, sans copier leurs détails):\n${contextText}` : ''}\n\nLIBELLE FINAL A PRODUIRE:`
     const designation = await chatCompletion({
       model,
       messages: [
@@ -1136,12 +1776,18 @@ Contraintes absolues :
       .join('\n')
       .trim()
 
+    if (polishedDesignationLooksBroken(cleanDesignation, deterministicDraft)) {
+      cleanDesignation = deterministicDraft
+    }
+
     res.json({
       designation: cleanDesignation,
       query,
       target_facts: targetFacts,
+      deterministic_draft: deterministicDraft,
       context_count: contextLines.length,
-      source_policy: 'row_only_no_historical_pdf_examples',
+      source_policy: pdfContentGuide ? 'row_structured_with_client_workbook_no_historical_pdf_examples' : 'row_only_no_historical_pdf_examples',
+      client_workbook: Boolean(pdfContentGuide),
       examples: [],
     })
   } catch (err) {
