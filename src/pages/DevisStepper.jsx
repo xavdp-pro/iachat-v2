@@ -12,11 +12,17 @@ import {
   Wrench, Package, Sparkles, RefreshCw, Plus,
   Clock, FolderOpen, LayoutGrid,
   Briefcase, User, Hash, ExternalLink, Download, Columns3, Columns2, Columns,
-  Pencil, Trash2, BookOpen, Undo2, Redo2, History,
+  Pencil, Trash2, BookOpen, Undo2, Redo2, History, FlaskConical,
 } from 'lucide-react'
 import { MarkdownRenderer } from '../components/MarkdownRenderer.jsx'
+import AppNavMenu from '../components/AppNavMenu.jsx'
+import AppBreadcrumbs from '../components/AppBreadcrumbs.jsx'
+import { useAppBreadcrumbs } from '../hooks/useAppBreadcrumbs.js'
+import { useBreadcrumbOverrideEffect, useBreadcrumbBackHandler } from '../context/BreadcrumbOverrideContext.jsx'
+import EmailConversationViewer from '../components/EmailConversationViewer.jsx'
 import api from '../api/index.js'
 import { DevisGridWorkspace, resolveRow, computePassageDimensions } from './DevisGrid.jsx'
+import { dbLineToGridRow, gridRowToLinePayload, parseJsonArray } from '../lib/devisLineMappers.js'
 
 // ── Palette by gamme ─────────────────────────────────────────────────────────
 const GAMME_COLORS = {
@@ -165,12 +171,6 @@ function repLetter(index) {
   return rowLetterLabel(index)
 }
 
-function parseJsonArray(value) {
-  if (Array.isArray(value)) return value
-  if (!value) return []
-  try { return JSON.parse(value) || [] } catch { return [] }
-}
-
 function quoteNumberSortValue(value) {
   const match = String(value || '').match(/^(\d{3})\.(\d{4})$/)
   if (!match) return -1
@@ -247,70 +247,6 @@ function withRequiredPdfDesignationFacts(line = {}) {
     ? [lines[0], acousticLabel, ...lines.slice(1)].join('\n')
     : [designation, acousticLabel].filter(Boolean).join('\n')
   return { ...line, designation: nextDesignation }
-}
-
-function dbLineToGridRow(line) {
-  const raw = line.raw_json ? parseJsonArray(line.raw_json) : undefined
-  const rawMeta = raw?.find?.(item => item && typeof item === 'object' && item._devisGridMeta)
-  const row = {
-    _lineId: line.id,
-    _dbPosition: line.position,
-    line_section: line.line_section || 'products',
-    localisation: line.localisation || '',
-    type: line.type_porte || line.designation || '',
-    designation: line.designation || line.type_porte || '',
-    gamme: line.gamme || '',
-    vantail: line.vantail || '',
-    haut_mm: line.hauteur_mm ?? null,
-    larg_mm: line.largeur_mm ?? null,
-    prix_base_ht: line.prix_base_ht != null ? Number(line.prix_base_ht) : null,
-    ref_base: line.ref_base || null,
-    options: parseJsonArray(line.options_json),
-    serrure: line.serrure_ref ? { ref: line.serrure_ref } : null,
-    ferme_porte: line.ferme_porte_ref ? { ref: line.ferme_porte_ref } : null,
-    equip_extra: parseJsonArray(line.equipements_json),
-    alertes: parseJsonArray(line.alertes_json),
-    docs: parseJsonArray(line.docs_json),
-    _raw: raw,
-    _thermolaquageDisabled: rawMeta?._thermolaquageDisabled === true,
-    qty: line.qty != null ? Number(line.qty) : 1,
-    total_ligne_ht: line.total_ligne_ht != null ? Number(line.total_ligne_ht) : null,
-  }
-  return { ...row, ...computePassageDimensions(row) }
-}
-
-function gridRowToLinePayload(row, position) {
-  const resolved = typeof resolveRow === 'function' ? resolveRow(row) : row
-  const rawJson = Array.isArray(row._raw) ? row._raw.filter(item => !(item && typeof item === 'object' && item._devisGridMeta)) : null
-  if (rawJson && row._thermolaquageDisabled) rawJson.push({ _devisGridMeta: true, _thermolaquageDisabled: true })
-  const lineTotal = resolved?._unpriced
-    ? null
-    : (row.line_section === 'products' || !row.line_section
-      ? (resolved?._pu ?? row.total_ligne_ht ?? row.prix_total_min_ht ?? null)
-      : (row.total_ligne_ht ?? row.prix_total_min_ht ?? resolved?._pu ?? null))
-  return {
-    position,
-    line_section: row.line_section || 'products',
-    localisation: row.localisation || null,
-    designation: row.designation || row.type || null,
-    type_porte: row.type || row.designation || null,
-    gamme: row.gamme || null,
-    vantail: row.vantail || null,
-    hauteur_mm: row.haut_mm ?? row.hauteur_mm ?? null,
-    largeur_mm: row.larg_mm ?? row.largeur_mm ?? null,
-    prix_base_ht: row.prix_base_ht ?? null,
-    ref_base: row.ref_base || null,
-    raw_json: rawJson,
-    options_json: row.options || [],
-    serrure_ref: row.serrure?.ref || row._serrureLabel || null,
-    serrure_prix: row.serrure?.prix ?? null,
-    ferme_porte_ref: row.ferme_porte?.ref || row._fpLabel || null,
-    ferme_porte_prix: row.ferme_porte?.prix ?? null,
-    equipements_json: row.equip_extra || [],
-    total_ligne_ht: lineTotal,
-    alertes_json: row.alertes || [],
-    docs_json: row.docs || [],
-  }
 }
 
 function compactLineForAI(line, index) {
@@ -671,8 +607,33 @@ const STEP_LABELS = [
   { num: 2, label: 'Versions', icon: FolderOpen },
   { num: 3, label: 'Grid devis', icon: LayoutGrid },
   { num: 4, label: 'Préparer PDF', icon: Download },
-  { num: 5, label: 'HubSpot', icon: Send },
+  { num: 5, label: 'Envoi', icon: Send },
 ]
+
+const STEP_KEY_BY_NUM = { 1: 'client', 2: 'versions', 3: 'grid', 4: 'pdf', 5: 'envoi' }
+
+const STEP_ASSISTANT_CHIPS = {
+  1: [
+    { label: 'Résumer le fil email', prompt: 'Résume le fil de conversation email avec ce client et liste les points techniques à chiffrer.' },
+    { label: 'Infos manquantes', prompt: 'Quelles informations client ou projet manquent encore avant de créer le devis ?' },
+    { label: 'Contact & deal', prompt: 'Vérifie la cohérence entre le contact sélectionné, le deal HubSpot et le besoin exprimé dans les emails.' },
+  ],
+  2: [
+    { label: 'Comparer versions', prompt: 'Explique les différences probables entre les versions de ce devis et quand en créer une nouvelle branche.' },
+    { label: 'Checkpoint', prompt: 'Propose un commentaire de checkpoint pour figer l’état actuel avant de passer à la grille.' },
+    { label: 'Historique', prompt: 'Résume l’historique des versions et les changements majeurs déjà enregistrés.' },
+  ],
+  4: [
+    { label: 'Libellés PDF', prompt: 'Propose des libellés PDF plus clairs et professionnels pour chaque ligne produit du devis.' },
+    { label: 'Cohérence PDF', prompt: 'Vérifie la cohérence entre les lignes du devis et ce qui doit apparaître sur le PDF client.' },
+    { label: 'Alertes à mentionner', prompt: 'Quelles alertes ou réserves commerciales devraient figurer dans le PDF ou la note HubSpot ?' },
+  ],
+  5: [
+    { label: 'Brouillon email', prompt: 'Rédige un brouillon d’email de transmission du devis, ton professionnel, en français.' },
+    { label: 'Pièces jointes', prompt: 'Liste les pièces jointes à envoyer (PDF devis, fiches détail) et vérifie qu’elles sont prêtes.' },
+    { label: 'Checklist envoi', prompt: 'Donne une checklist courte avant envoi HubSpot : deal, contact, montants, PJ, statut version.' },
+  ],
+}
 
 // ── Style helpers ────────────────────────────────────────────────────────────
 function iconBtn() {
@@ -1048,6 +1009,21 @@ function StepperAssistantPanel({
       )}
 
       {activeTab === 'chat' && <div style={{ padding: 10, borderTop: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', gap: 7, flexShrink: 0 }}>
+        {(STEP_ASSISTANT_CHIPS[step] || []).length > 0 && !loading && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {(STEP_ASSISTANT_CHIPS[step] || []).map((chip) => (
+              <button
+                key={chip.label}
+                type="button"
+                onClick={() => submit(chip.prompt)}
+                disabled={loading}
+                style={{ ...ghostBtn(), fontSize: 10, padding: '4px 8px', background: 'var(--color-input-bg)', maxWidth: '100%' }}
+              >
+                {chip.label}
+              </button>
+            ))}
+          </div>
+        )}
         {pastedImages.length > 0 && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
             {pastedImages.map(image => {
@@ -1087,7 +1063,7 @@ function StepperAssistantPanel({
             onChange={handleDraftChange}
             onPaste={handleDraftPaste}
             onKeyDown={(event) => event.key === 'Enter' && !event.shiftKey && (event.preventDefault(), submit())}
-            placeholder="Dis à Zerux IA quoi modifier…"
+            placeholder={activeStep ? `Question sur l’étape ${activeStep.label}…` : 'Dis à Zerux IA quoi modifier…'}
             disabled={loading}
             rows={1}
             style={{ flex: 1, minWidth: 0, height: 36, maxHeight: 118, resize: 'none', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-input-bg)', color: 'var(--color-text)', fontSize: 12, lineHeight: '20px', outline: 'none', fontFamily: 'var(--font-body)' }}
@@ -1253,6 +1229,7 @@ function CompactDevisHeader({
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end', minWidth: 0 }}>
         {step !== 3 && (
           <>
+            <AppNavMenu buttonStyle={actionStyle} />
             <button type="button" onClick={onOpenExperiences} style={actionStyle} title="Expériences" aria-label="Expériences">
               <BookOpen size={15} />
             </button>
@@ -1292,6 +1269,11 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
   const [pendingDeleteDeal, setPendingDeleteDeal] = useState(null)
   const [deletingDevisId, setDeletingDevisId] = useState(null)
   const [deletingDealId, setDeletingDealId] = useState(null)
+  const [imapConfigured, setImapConfigured] = useState(null)
+  const [imapTestMode, setImapTestMode] = useState(false)
+  const [selectedSourceEmail, setSelectedSourceEmail] = useState(null)
+  const [noEmailSource, setNoEmailSource] = useState(false)
+  const [requesterContactId, setRequesterContactId] = useState('')
   const [toast, setToast] = useState(null)
   const toastTimerRef = useRef(null)
   const showToast = (msg, type = 'success') => {
@@ -1356,6 +1338,27 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
     })
     return () => { active = false }
   }, [selectedCompanyId, detailRefreshKey])
+
+  useEffect(() => {
+    api.get('/imap/status').then(data => {
+      setImapConfigured(Boolean(data?.configured))
+      setImapTestMode(data?.mode === 'dovecot-test')
+    }).catch(() => setImapConfigured(false))
+  }, [])
+
+  const contacts = companyDetail?.contacts || []
+  const primaryContactEmail = contacts.find(c => String(c.id) === String(requesterContactId))?.properties?.email
+    || contacts[0]?.properties?.email
+    || selectedCompany?.properties?.email
+    || ''
+
+  const persistEmailContext = async (patch) => {
+    const activeDevis = (existingDevis || []).find(d => String(d.deal_id) === String(selectedDeal?.id))
+    if (!activeDevis?.id) return
+    try {
+      await api.put(`/devis/${activeDevis.id}`, patch)
+    } catch { /* non-blocking */ }
+  }
 
   const syncSelectedCompanyFromHubSpot = async () => {
     if (!selectedCompanyId || detailLoading) return
@@ -1709,6 +1712,75 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
                   <X size={16} />
                 </button>
               </div>
+            </div>
+
+            <div style={{ marginBottom: 14, padding: '12px', borderRadius: 10, border: '1px solid var(--color-border)', background: 'var(--color-surface)' }}>
+              <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 8 }}>Contact demandeur (HubSpot)</div>
+              {contacts.length ? (
+                <select
+                  value={requesterContactId || contacts[0]?.id || ''}
+                  onChange={async (e) => {
+                    const id = e.target.value
+                    setRequesterContactId(id)
+                    const contact = contacts.find(c => String(c.id) === String(id))
+                    await persistEmailContext({
+                      requester_contact_id: id,
+                      requester_contact_name: [contact?.properties?.firstname, contact?.properties?.lastname].filter(Boolean).join(' ') || contact?.properties?.email || null,
+                    })
+                  }}
+                  style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-bg)', fontSize: 12 }}
+                >
+                  {contacts.map(contact => (
+                    <option key={contact.id} value={contact.id}>
+                      {[contact.properties?.firstname, contact.properties?.lastname].filter(Boolean).join(' ') || contact.properties?.email || `Contact #${contact.id}`}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <div style={{ fontSize: 11, color: 'var(--color-text-3)' }}>Aucun contact HubSpot — synchronisez le client.</div>
+              )}
+            </div>
+
+            <div style={{ marginBottom: 14, padding: '12px', borderRadius: 10, border: '1px solid var(--color-border)', background: 'var(--color-surface)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+                <div style={{ fontSize: 12, fontWeight: 800 }}>Conversations email (demande client)</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  {imapTestMode && (
+                    <a href="/devis/imap-lab" style={{ fontSize: 10, fontWeight: 700, color: 'var(--color-primary)', display: 'inline-flex', alignItems: 'center', gap: 4, textDecoration: 'none' }}>
+                      <FlaskConical size={12} /> Lab IMAP
+                    </a>
+                  )}
+                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+                    <input type="checkbox" checked={noEmailSource} onChange={async (e) => {
+                      const checked = e.target.checked
+                      setNoEmailSource(checked)
+                      if (checked) setSelectedSourceEmail(null)
+                      await persistEmailContext({ no_email_source: checked ? 1 : 0, source_email_json: checked ? null : undefined })
+                    }} />
+                    Pas d&apos;email
+                  </label>
+                </div>
+              </div>
+              {!noEmailSource && (
+                <>
+                  {imapConfigured === false && (
+                    <div style={{ fontSize: 11, color: '#b45309', marginBottom: 8 }}>
+                      IMAP non configuré — lancez <code style={{ fontSize: 10 }}>npm run imap:test:up</code>
+                    </div>
+                  )}
+                  <EmailConversationViewer
+                    contactEmail={primaryContactEmail}
+                    selectedMessage={selectedSourceEmail}
+                    disabled={noEmailSource || !primaryContactEmail}
+                    height={320}
+                    onSelectMessage={async (msg) => {
+                      setSelectedSourceEmail(msg)
+                      await persistEmailContext({ source_email_json: msg, no_email_source: 0 })
+                      showToast('Email source enregistré pour le devis', 'success')
+                    }}
+                  />
+                </>
+              )}
             </div>
 
             {detailLoading && deals.length === 0 ? (
@@ -2087,6 +2159,11 @@ function StepVersions({ devisId, currentVersionId, currentDevis = null, selected
   const [savingCommentVersionId, setSavingCommentVersionId] = useState(null)
   const [collapsedVersionIds, setCollapsedVersionIds] = useState(() => new Set())
   const [pendingDeleteVersion, setPendingDeleteVersion] = useState(null)
+  const [compareOpen, setCompareOpen] = useState(false)
+  const [compareA, setCompareA] = useState(null)
+  const [compareB, setCompareB] = useState(null)
+  const [compareLoading, setCompareLoading] = useState(false)
+  const [compareResult, setCompareResult] = useState(null)
   const [toast, setToast] = useState(null)
   const toastTimerRef = useRef(null)
   const showToast = (msg, type = 'success') => {
@@ -2209,6 +2286,41 @@ function StepVersions({ devisId, currentVersionId, currentDevis = null, selected
 
   const expandAllVersions = () => {
     setCollapsedVersionIds(new Set())
+  }
+
+  const openCompare = () => {
+    const ids = versions.map(v => v.id)
+    const fallbackB = ids.find(id => id !== activeVersionId) || ids[0] || null
+    setCompareA(activeVersionId || ids[0] || null)
+    setCompareB(fallbackB)
+    setCompareResult(null)
+    setCompareOpen(true)
+  }
+
+  const openCompareWith = (versionAId, versionBId) => {
+    if (!versionAId || !versionBId || versionAId === versionBId) return
+    setCompareA(versionAId)
+    setCompareB(versionBId)
+    setCompareResult(null)
+    setCompareOpen(true)
+  }
+
+  const runVersionCompare = async () => {
+    if (!devisId || !compareA || !compareB) return
+    if (compareA === compareB) {
+      setCompareResult({ error: 'Choisissez deux versions différentes' })
+      return
+    }
+    setCompareLoading(true)
+    setCompareResult(null)
+    try {
+      const data = await api.get(`/devis/${devisId}/versions/compare?a=${compareA}&b=${compareB}`)
+      setCompareResult(data)
+    } catch (err) {
+      setCompareResult({ error: err?.error || err?.message || 'Comparaison impossible' })
+    } finally {
+      setCompareLoading(false)
+    }
   }
 
   const activateVersion = async (version) => {
@@ -2346,6 +2458,115 @@ function StepVersions({ devisId, currentVersionId, currentDevis = null, selected
           <Check size={14} /> {toast.msg}
         </div>
       )}
+      {compareOpen && (
+        <div role="dialog" aria-modal="true" style={{ position: 'fixed', inset: 0, zIndex: 1250, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, background: 'rgba(15, 23, 42, 0.42)' }} onClick={() => !compareLoading && setCompareOpen(false)}>
+          <div style={{ width: 'min(720px, 100%)', maxHeight: '85vh', overflow: 'hidden', display: 'flex', flexDirection: 'column', border: '1px solid var(--color-border)', borderRadius: 10, background: 'var(--color-surface)', boxShadow: '0 20px 60px rgba(0,0,0,0.28)' }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+              <div>
+                <div style={{ fontSize: 15, fontWeight: 900 }}>Comparer deux versions</div>
+                <div style={{ fontSize: 11, color: 'var(--color-text-3)', marginTop: 2 }}>Écarts de désignation, montants et localisations</div>
+              </div>
+              <button type="button" onClick={() => setCompareOpen(false)} style={iconBtn()} aria-label="Fermer"><X size={14} /></button>
+            </div>
+            <div style={{ padding: 16, display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 10, alignItems: 'end' }}>
+              <label style={{ display: 'grid', gap: 4, fontSize: 11, fontWeight: 700 }}>
+                Version A
+                <select value={compareA || ''} onChange={(e) => setCompareA(Number(e.target.value) || null)} style={{ padding: '7px 8px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-input-bg)', fontSize: 12 }}>
+                  {versions.map(v => (
+                    <option key={v.id} value={v.id}>{v.number || versionNumberById.get(v.id) || v.version_label} — {versionDisplayName(v)}</option>
+                  ))}
+                </select>
+              </label>
+              <label style={{ display: 'grid', gap: 4, fontSize: 11, fontWeight: 700 }}>
+                Version B
+                <select value={compareB || ''} onChange={(e) => setCompareB(Number(e.target.value) || null)} style={{ padding: '7px 8px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-input-bg)', fontSize: 12 }}>
+                  {versions.map(v => (
+                    <option key={v.id} value={v.id}>{v.number || versionNumberById.get(v.id) || v.version_label} — {versionDisplayName(v)}</option>
+                  ))}
+                </select>
+              </label>
+              <button type="button" onClick={runVersionCompare} disabled={compareLoading} style={{ ...ghostBtn(), color: 'var(--color-primary)', borderColor: 'var(--color-primary)', height: 34 }}>
+                {compareLoading ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Columns2 size={13} />}
+                Analyser
+              </button>
+            </div>
+            <div style={{ padding: '0 16px 16px', overflowY: 'auto', flex: 1 }}>
+              {compareResult?.error && (
+                <div style={{ padding: 10, borderRadius: 8, background: 'rgba(220,38,38,0.08)', color: '#dc2626', fontSize: 12 }}>{compareResult.error}</div>
+              )}
+              {compareResult && !compareResult.error && (
+                <div style={{ display: 'grid', gap: 12 }}>
+                  {compareResult.relationship_label && (
+                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-3)', padding: '6px 10px', borderRadius: 6, background: 'var(--color-bg)', border: '1px dashed var(--color-border)' }}>
+                      {compareResult.relationship_label}
+                    </div>
+                  )}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                    <div style={{ border: '1px solid var(--color-border)', borderRadius: 8, padding: 10, fontSize: 12 }}>
+                      <div style={{ fontWeight: 800, marginBottom: 4 }}>Version A {compareResult.locked?.a && <span style={{ color: '#f59e0b' }} title="Verrouillée après envoi">🔒</span>}</div>
+                      <div style={{ color: 'var(--color-text-2)' }}>{compareResult.version_a?.display_label || compareResult.version_a?.version_label || '—'}</div>
+                      <div style={{ fontSize: 10, color: 'var(--color-text-3)', marginTop: 4 }}>{statusLabel(compareResult.version_a?.status)}</div>
+                      <div style={{ fontWeight: 800, marginTop: 6 }}>{compareResult.totals?.a != null ? `${Number(compareResult.totals.a).toLocaleString('fr-FR')} € HT` : '—'}</div>
+                    </div>
+                    <div style={{ border: '1px solid var(--color-border)', borderRadius: 8, padding: 10, fontSize: 12 }}>
+                      <div style={{ fontWeight: 800, marginBottom: 4 }}>Version B {compareResult.locked?.b && <span style={{ color: '#f59e0b' }} title="Verrouillée après envoi">🔒</span>}</div>
+                      <div style={{ color: 'var(--color-text-2)' }}>{compareResult.version_b?.display_label || compareResult.version_b?.version_label || '—'}</div>
+                      <div style={{ fontSize: 10, color: 'var(--color-text-3)', marginTop: 4 }}>{statusLabel(compareResult.version_b?.status)}</div>
+                      <div style={{ fontWeight: 800, marginTop: 6 }}>{compareResult.totals?.b != null ? `${Number(compareResult.totals.b).toLocaleString('fr-FR')} € HT` : '—'}</div>
+                    </div>
+                  </div>
+                  {compareResult.totals?.delta != null && compareResult.totals.delta !== 0 && (
+                    <div style={{ fontSize: 12, fontWeight: 800, color: compareResult.totals.delta > 0 ? '#15803d' : '#dc2626' }}>
+                      Écart total HT : {compareResult.totals.delta > 0 ? '+' : ''}{Number(compareResult.totals.delta).toLocaleString('fr-FR')} €
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', fontSize: 12 }}>
+                    <span style={{ padding: '4px 8px', borderRadius: 6, background: 'rgba(34,197,94,0.12)', color: '#15803d', fontWeight: 700 }}>+{compareResult.summary?.added || 0} ajoutée(s)</span>
+                    <span style={{ padding: '4px 8px', borderRadius: 6, background: 'rgba(220,38,38,0.1)', color: '#dc2626', fontWeight: 700 }}>-{compareResult.summary?.removed || 0} supprimée(s)</span>
+                    <span style={{ padding: '4px 8px', borderRadius: 6, background: 'rgba(245,158,11,0.12)', color: '#b45309', fontWeight: 700 }}>~{compareResult.summary?.changed || 0} modifiée(s)</span>
+                  </div>
+                  {(compareResult.changed || []).map((item) => (
+                    <div key={item.key} style={{ border: '1px solid var(--color-border)', borderRadius: 8, padding: 10, fontSize: 12 }}>
+                      <div style={{ fontWeight: 800, marginBottom: 6 }}>Ligne {item.key}</div>
+                      {item.diffs.map((diff) => (
+                        <div key={diff.field} style={{ marginBottom: 4, lineHeight: 1.4 }}>
+                          <span style={{ color: 'var(--color-text-3)', fontWeight: 700 }}>{diff.field} : </span>
+                          <span style={{ textDecoration: 'line-through', color: '#dc2626' }}>{String(diff.before ?? '—')}</span>
+                          {' → '}
+                          <span style={{ color: '#15803d', fontWeight: 700 }}>{String(diff.after ?? '—')}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                  {(compareResult.added || []).length > 0 && (
+                    <div style={{ fontSize: 12 }}>
+                      <div style={{ fontWeight: 800, marginBottom: 6 }}>Lignes ajoutées en B</div>
+                      {(compareResult.added || []).map((row) => (
+                        <div key={`add-${row.id}-${row.position}`} style={{ padding: '6px 0', borderBottom: '1px dashed var(--color-border)' }}>
+                          {row.designation || row.localisation || `Section ${row.line_section}`} — {row.total_ligne_ht != null ? `${Number(row.total_ligne_ht).toLocaleString('fr-FR')} €` : '—'}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {(compareResult.removed || []).length > 0 && (
+                    <div style={{ fontSize: 12 }}>
+                      <div style={{ fontWeight: 800, marginBottom: 6 }}>Lignes absentes en B</div>
+                      {(compareResult.removed || []).map((row) => (
+                        <div key={`rm-${row.id}-${row.position}`} style={{ padding: '6px 0', borderBottom: '1px dashed var(--color-border)' }}>
+                          {row.designation || row.localisation || `Section ${row.line_section}`} — {row.total_ligne_ht != null ? `${Number(row.total_ligne_ht).toLocaleString('fr-FR')} €` : '—'}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {!compareResult.changed?.length && !compareResult.added?.length && !compareResult.removed?.length && (
+                    <div style={{ fontSize: 12, color: 'var(--color-text-3)' }}>Aucun écart entre ces deux versions.</div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
       {pendingDeleteVersion && (
         <div role="dialog" aria-modal="true" aria-labelledby="delete-version-title" style={{ position: 'fixed', inset: 0, zIndex: 1200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, background: 'rgba(15, 23, 42, 0.42)' }} onClick={() => busyId !== `del-${pendingDeleteVersion.id}` && setPendingDeleteVersion(null)}>
           <div style={{ width: 'min(440px, 100%)', border: '1px solid var(--color-border)', borderRadius: 10, background: 'var(--color-surface)', boxShadow: '0 20px 60px rgba(0,0,0,0.28)', padding: 18 }} onClick={(event) => event.stopPropagation()}>
@@ -2407,6 +2628,10 @@ function StepVersions({ devisId, currentVersionId, currentDevis = null, selected
               {busyId === `root-${activeVersion?.id}` ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Plus size={13} />}
               Nouvelle version principale
             </button>
+            <button type="button" onClick={openCompare} style={ghostBtn()} disabled={versions.length < 2} title="Comparer deux versions">
+              <Columns2 size={13} />
+              Comparer
+            </button>
             <button type="button" onClick={loadVersions} style={ghostBtn()} disabled={loading}>
               {loading ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <RefreshCw size={13} />}
               Actualiser
@@ -2429,9 +2654,10 @@ function StepVersions({ devisId, currentVersionId, currentDevis = null, selected
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {orderedVersions.map(version => {
               const active = version.id === activeVersionId
-              const versionNumber = versionNumberById.get(version.id) || String(version.version_label || '').replace(/^v/i, '') || '1'
+              const versionNumber = version.number || versionNumberById.get(version.id) || String(version.version_label || '').replace(/^v/i, '') || '1'
               const parentVersion = version.parent_version_id ? versionById.get(version.parent_version_id) : null
-              const parentNumber = parentVersion ? versionNumberById.get(parentVersion.id) : null
+              const parentNumber = parentVersion ? (parentVersion.number || versionNumberById.get(parentVersion.id)) : null
+              const displayName = versionDisplayName(version)
               const sourceLabel = parentVersion ? `Enfant de ${parentNumber || versionDisplayName(parentVersion)}` : null
               const latestComment = versionComment(version)
               const latestCommentText = latestComment?.content || ''
@@ -2442,7 +2668,7 @@ function StepVersions({ devisId, currentVersionId, currentDevis = null, selected
               const childCount = (childrenByParent.get(version.id) || []).length
               const collapsed = collapsedVersionIds.has(version.id)
               return (
-                <div key={version.id} style={{ marginLeft: version._depth * 22 }}>
+                <div key={version.id} style={{ marginLeft: version._depth * 22, borderLeft: version._depth > 0 ? '2px solid color-mix(in srgb, var(--color-primary) 25%, var(--color-border))' : 'none', paddingLeft: version._depth > 0 ? 10 : 0 }}>
                   <div
                     onClick={() => activateVersion(version)}
                     style={{ border: active ? '1.5px solid var(--color-primary)' : '1px solid var(--color-border)', borderRadius: 8, background: active ? 'color-mix(in srgb, var(--color-primary) 6%, var(--color-surface))' : 'var(--color-surface)', padding: 12, cursor: active ? 'default' : 'pointer' }}
@@ -2462,14 +2688,38 @@ function StepVersions({ devisId, currentVersionId, currentDevis = null, selected
                             {versionNumber}
                           </span>
                           <div style={{ minWidth: 0, flex: 1 }}>
-                            <div style={{ fontSize: 10, color: 'var(--color-text-3)' }}>
+                            <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--color-text)', lineHeight: 1.3 }}>{displayName}</div>
+                            <div style={{ fontSize: 10, color: 'var(--color-text-3)', marginTop: 2 }}>
                               {statusLabel(version.status)} · {rowCount} ligne{rowCount > 1 ? 's' : ''} · {totalHt.toLocaleString('fr-FR')} € HT · {version.comments?.length || 0} commentaire{(version.comments?.length || 0) > 1 ? 's' : ''}{childCount ? ` · ${childCount} fille${childCount > 1 ? 's' : ''}${collapsed ? ' repliée' : ''}` : ''}
+                              {parentNumber ? ` · parent ${parentNumber}` : ''}
                             </div>
                           </div>
-                          {version.locked && <span style={{ fontSize: 10, color: '#f59e0b', fontWeight: 700 }}>verrouillée</span>}
+                          {Boolean(version.locked_at || version.status === 'sent_hubspot' || version.locked) && <span style={{ fontSize: 10, color: '#f59e0b', fontWeight: 700 }} title="Verrouillée après envoi HubSpot">🔒</span>}
                         </div>
                       </div>
-                      <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start' }} onClick={(event) => event.stopPropagation()}>
+                      <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start', flexWrap: 'wrap' }} onClick={(event) => event.stopPropagation()}>
+                          {parentVersion && (
+                            <button
+                              type="button"
+                              onClick={() => openCompareWith(parentVersion.id, version.id)}
+                              style={{ ...iconBtn(), width: 32, height: 32 }}
+                              title={`Comparer avec le parent (${parentNumber})`}
+                              aria-label={`Comparer avec le parent (${parentNumber})`}
+                            >
+                              <Columns2 size={14} />
+                            </button>
+                          )}
+                          {activeVersionId && activeVersionId !== version.id && (
+                            <button
+                              type="button"
+                              onClick={() => openCompareWith(activeVersionId, version.id)}
+                              style={{ ...iconBtn(), width: 32, height: 32 }}
+                              title="Comparer avec la version active"
+                              aria-label="Comparer avec la version active"
+                            >
+                              <History size={14} />
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={(event) => { event.stopPropagation(); openVersionAndContinue(version) }}
@@ -2787,7 +3037,7 @@ function StepEditor({
     if (!devisId) return
     setSaving(row._lineId || `new-${index}`)
     try {
-      const payload = gridRowToLinePayload(row, index)
+      const payload = gridRowToLinePayload(row, index, resolveRow)
       const beforeLine = row._lineId ? lines.find(line => String(line.id) === String(row._lineId)) : null
       const afterLine = beforeLine ? { ...beforeLine, ...payload, id: beforeLine.id } : null
       if (row._lineId) {
@@ -2837,6 +3087,7 @@ function StepEditor({
         comment: 'Checkpoint manuel depuis la grille devis',
         step_key: 'grid',
         status: 'editing',
+        sync_lines: true,
       })
       onRefresh()
     } catch (err) {
@@ -2873,7 +3124,7 @@ function StepEditor({
       const saved = []
       for (const index of targetIndexes) {
         const row = rows[index]
-        const payload = gridRowToLinePayload(row, index)
+        const payload = gridRowToLinePayload(row, index, resolveRow)
         if (row?._lineId) {
           saved.push(await api.put(`/devis/${devisId}/lines/${row._lineId}`, payload))
         } else {
@@ -2900,8 +3151,8 @@ function StepEditor({
       const afterRow = action?.afterRows?.[index]
       if (!beforeRow || !afterRow) continue
       const lineId = beforeRow._lineId || afterRow._lineId
-      const beforeLine = { id: lineId, ...gridRowToLinePayload(beforeRow, index) }
-      const afterLine = { id: lineId, ...gridRowToLinePayload(afterRow, index) }
+      const beforeLine = { id: lineId, ...gridRowToLinePayload(beforeRow, index, resolveRow) }
+      const afterLine = { id: lineId, ...gridRowToLinePayload(afterRow, index, resolveRow) }
       changes.push(...buildGridLineChanges({ beforeLine, afterLine, index, source: action?.origin || 'ai' }))
     }
     if (!changes.length) return
@@ -2957,9 +3208,50 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
   const [checkReport, setCheckReport] = useState(null)
   const [statusMsg, setStatusMsg] = useState('')
   const [activePreviewKey, setActivePreviewKey] = useState(null)
+  const [pdfPreviewUrl, setPdfPreviewUrl] = useState(null)
+  const [pdfPreviewLoading, setPdfPreviewLoading] = useState(false)
   const previewRefs = useRef(new Map())
 
   useEffect(() => { setDraftLines(lines.map(withRequiredPdfDesignationFacts)) }, [lines])
+
+  const previewLabels = useMemo(
+    () => draftLines.filter(line => line?.id).map(line => ({
+      line_id: line.id,
+      designation_pdf: line.designation || null,
+    })),
+    [draftLines]
+  )
+  const previewLabelsKey = useMemo(() => JSON.stringify(previewLabels), [previewLabels])
+
+  useEffect(() => {
+    if (!devisId) return undefined
+    let alive = true
+    const timer = window.setTimeout(() => {
+      setPdfPreviewLoading(true)
+      const token = localStorage.getItem('token')
+      api.post(`/devis/${devisId}/pdf-preview`, {
+        version_id: versionId || null,
+        labels: previewLabels,
+      }, {
+        responseType: 'blob',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        timeout: 120000,
+      }).then((blob) => {
+        if (!alive || !(blob instanceof Blob)) return
+        setPdfPreviewUrl((prev) => {
+          if (prev) URL.revokeObjectURL(prev)
+          return URL.createObjectURL(blob)
+        })
+      }).catch(() => {}).finally(() => {
+        if (alive) setPdfPreviewLoading(false)
+      })
+    }, 700)
+    return () => {
+      alive = false
+      window.clearTimeout(timer)
+      setPdfPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null })
+    }
+  }, [devisId, previewLabelsKey, versionId])
 
   const getLineKey = useCallback((line, index) => String(line?.id ?? `line-${index}`), [])
 
@@ -3345,69 +3637,22 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
             })}
           </div>
         </div>
-        <div style={{ minHeight: 0, overflowY: 'auto', padding: '20px 24px', scrollBehavior: 'smooth', background: 'var(--color-bg)' }}>
-          <div style={{ maxWidth: 760, margin: '0 auto', color: 'var(--color-text)' }}>
-            <div style={{ marginBottom: 18, paddingBottom: 14, borderBottom: '1px solid var(--color-border)' }}>
-              <h1 style={{ margin: 0, fontSize: 22, lineHeight: 1.15 }}>Devis NEXUS — {clientName || 'Client'}</h1>
-              <div style={{ marginTop: 6, fontSize: 12, color: 'var(--color-text-3)' }}>{date} — {dealName || 'Affaire'} — Estimatif tarif NEXUS 2026-01</div>
-              <div style={{ marginTop: 12, fontSize: 16, fontWeight: 800, color: 'var(--color-primary)' }}>Total général : {grandTotal.toLocaleString('fr-FR')} € HT TG</div>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-              {draftLines.map((line, index) => {
-                const lineKey = getLineKey(line, index)
-                const isActive = activePreviewKey === lineKey
-                const opts = getLineOptions(line).filter(option => !isDuplicatePdfOptionText(option?.label))
-                const equipments = getLineEquipments(line).map(equipmentLabel).filter(label => label && !isDuplicatePdfOptionText(label))
-                return (
-                  <section
-                    key={lineKey}
-                    ref={(node) => {
-                      if (node) previewRefs.current.set(lineKey, node)
-                      else previewRefs.current.delete(lineKey)
-                    }}
-                    style={{ scrollMarginTop: 18, border: `1px solid ${isActive ? 'var(--color-primary)' : 'var(--color-border)'}`, borderRadius: 8, background: 'var(--color-surface)', overflow: 'hidden', boxShadow: isActive ? '0 0 0 1px color-mix(in srgb, var(--color-primary) 35%, transparent)' : 'none' }}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderBottom: '1px solid var(--color-border)', background: isActive ? 'color-mix(in srgb, var(--color-primary) 7%, transparent)' : 'transparent' }}>
-                      <span style={{ minWidth: 24, height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 4, background: gammeColor(line.gamme), color: '#fff', fontSize: 11, fontWeight: 800 }}>{repLetter(index)}</span>
-                      <div style={{ minWidth: 0, flex: 1 }}>
-                        <h2 style={{ margin: 0, fontSize: 15, lineHeight: 1.2 }}>Ligne {index + 1} — {line.gamme || line.type_porte || line.line_section || 'Ligne'} {line.vantail || ''}</h2>
-                        <div style={{ marginTop: 2, fontSize: 11, color: 'var(--color-text-3)' }}>{line.localisation ? `Localisation : ${line.localisation} · ` : ''}HT H {line.hauteur_mm || '?'} × L {line.largeur_mm || '?'} mm · {passageDimensionText(line)} · {reservationDimensionText(line)}</div>
-                      </div>
-                      <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--color-primary)' }}>{fmt(line.total_ligne_ht)} HT</div>
-                    </div>
-                    <div style={{ padding: '12px' }}>
-                      <div style={{ whiteSpace: 'pre-wrap', fontSize: 12, lineHeight: 1.55, color: 'var(--color-text)', marginBottom: 12 }}>{cleanPreviewDesignation(line.designation) || '—'}</div>
-                      <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 10, display: 'grid', gridTemplateColumns: 'minmax(120px, 0.35fr) minmax(0, 0.65fr)', gap: '7px 12px', fontSize: 11 }}>
-                        <span style={{ color: 'var(--color-text-3)' }}>Dimensions HT</span><strong>H {line.hauteur_mm || '?'} × L {line.largeur_mm || '?'} mm</strong>
-                        {line.localisation && <><span style={{ color: 'var(--color-text-3)' }}>Localisation</span><strong>{line.localisation}</strong></>}
-                        <span style={{ color: 'var(--color-text-3)' }}>{passageDimensionLabel(getLinePassageDimensions(line))}</span><strong>H {getLinePassageDimensions(line).hauteur_pl_mm || '?'} × L {getLinePassageDimensions(line).largeur_pl_mm || '?'} mm</strong>
-                        <span style={{ color: 'var(--color-text-3)' }}>Réservation GO</span><strong>H {getLinePassageDimensions(line).hauteur_reservation_mm || '?'} × L {getLinePassageDimensions(line).largeur_reservation_mm || '?'} mm</strong>
-                        <span style={{ color: 'var(--color-text-3)' }}>Prix base TG</span><strong>{fmt(line.prix_base_ht)} HT</strong>
-                        {line.serrure_ref && <><span style={{ color: 'var(--color-text-3)' }}>Serrure</span><span>{line.serrure_ref}</span></>}
-                        {line.ferme_porte_ref && <><span style={{ color: 'var(--color-text-3)' }}>Ferme-porte</span><span>{line.ferme_porte_ref}</span></>}
-                      </div>
-                      {opts.length > 0 && (
-                        <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--color-border)' }}>
-                          <div style={{ fontSize: 11, fontWeight: 800, marginBottom: 6 }}>Options</div>
-                          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11, lineHeight: 1.5 }}>
-                            {opts.map((option, optionIndex) => <li key={`${lineKey}-option-${optionIndex}`}>{option.label} : +{(option.prix || 0).toLocaleString('fr-FR')} €</li>)}
-                          </ul>
-                        </div>
-                      )}
-                      {equipments.length > 0 && (
-                        <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--color-border)' }}>
-                          <div style={{ fontSize: 11, fontWeight: 800, marginBottom: 6 }}>Équipements</div>
-                          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11, lineHeight: 1.5 }}>
-                            {equipments.map((equipment, equipmentIndex) => <li key={`${lineKey}-equipment-${equipmentIndex}`}>{equipment}</li>)}
-                          </ul>
-                        </div>
-                      )}
-                    </div>
-                  </section>
-                )
-              })}
-            </div>
+        <div style={{ minHeight: 0, overflow: 'hidden', background: '#525659', display: 'flex', flexDirection: 'column' }}>
+          <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--color-border)', background: 'var(--color-surface)', fontSize: 11, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+            <span>Aperçu PDF live</span>
+            {pdfPreviewLoading && (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 10, color: 'var(--color-text-3)', fontWeight: 600 }}>
+                <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> Mise à jour…
+              </span>
+            )}
           </div>
+          {pdfPreviewUrl ? (
+            <iframe title="Aperçu PDF devis" src={pdfPreviewUrl} style={{ flex: 1, width: '100%', border: 'none', background: '#525659' }} />
+          ) : (
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 12 }}>
+              Génération de l&apos;aperçu PDF…
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -3417,9 +3662,7 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
 // ══════════════════════════════════════════════════════════════════════════════
 // ── STEP 6: HUBSPOT SEND ─────────────────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════════════════
-function StepHubSpot({ devisId, versionId, selectedCompany, selectedDeal, onDealChange, onGoStep, onCreateNewVersion }) {
-  const [deals, setDeals] = useState([])
-  const [loadingDeals, setLoadingDeals] = useState(false)
+function StepEnvoi({ devisId, versionId, selectedCompany, selectedDeal, onGoStep, onCreateNewVersion }) {
   const [devisInfo, setDevisInfo] = useState(null)   // { name, status, hubspot_note_id }
   const [versionInfo, setVersionInfo] = useState(null) // { version_label, title, branch_label, hubspot_note_id, hubspot_file_id }
   const [versionsInfo, setVersionsInfo] = useState([])
@@ -3428,9 +3671,26 @@ function StepHubSpot({ devisId, versionId, selectedCompany, selectedDeal, onDeal
   const [creatingVersion, setCreatingVersion] = useState(false)
   const [result, setResult] = useState(null) // { fileId, fileUrl, noteId, filename }
   const [error, setError] = useState('')
+  const [emailBody, setEmailBody] = useState('')
+  const [attachDevis, setAttachDevis] = useState(true)
+  const [attachDetailSheets, setAttachDetailSheets] = useState(true)
+  const [sourceEmail, setSourceEmail] = useState(null)
+  const [contactEmailForThread, setContactEmailForThread] = useState('')
   const [hubspotOk, setHubspotOk] = useState(null)
+  const [outlookStatus, setOutlookStatus] = useState(null)
 
-  // Load devis metadata + active version details
+  useEffect(() => {
+    if (!devisId) return
+    api.get(`/devis/${devisId}`).then((devis) => {
+      if (devis?.email_draft_body) setEmailBody(devis.email_draft_body)
+      if (devis?.source_email_json) {
+        try {
+          const parsed = typeof devis.source_email_json === 'string' ? JSON.parse(devis.source_email_json) : devis.source_email_json
+          setSourceEmail(parsed)
+        } catch { /* noop */ }
+      }
+    }).catch(() => {})
+  }, [devisId])
   useEffect(() => {
     if (!devisId) return
     setLoadingMeta(true)
@@ -3450,27 +3710,42 @@ function StepHubSpot({ devisId, versionId, selectedCompany, selectedDeal, onDeal
     }).finally(() => setLoadingMeta(false))
   }, [devisId, versionId])
 
-  // Load company's deals from HubSpot
+  // Check HubSpot availability without exposing the technical destination UI.
   useEffect(() => {
     if (!selectedCompany?.id) return
-    setLoadingDeals(true)
     api.get(`/prospects/companies/${selectedCompany.id}`)
       .then(data => {
-        const list = (data.deals || []).map(d => ({
-          id: d.id,
-          name: d.properties?.dealname || `Deal #${d.id}`,
-          amount: d.properties?.amount || null,
-          attachments: d.attachments || [],
-        }))
-        setDeals(list)
         setHubspotOk(true)
       })
       .catch(err => {
         if (err?.status === 503) setHubspotOk(false)
         else setHubspotOk(true)
       })
-      .finally(() => setLoadingDeals(false))
   }, [selectedCompany?.id])
+
+  useEffect(() => {
+    api.get('/outlook/status')
+      .then(setOutlookStatus)
+      .catch(() => setOutlookStatus({ configured: false, mode: 'mailto' }))
+  }, [])
+
+  useEffect(() => {
+    if (!selectedCompany?.id) {
+      setContactEmailForThread('')
+      return
+    }
+    api.get(`/prospects/companies/${selectedCompany.id}`)
+      .then((data) => {
+        const contacts = data.contacts || []
+        const requesterId = devisInfo?.requester_contact_id
+        const match = requesterId
+          ? contacts.find(c => String(c.id) === String(requesterId))
+          : contacts[0]
+        const email = match?.properties?.email || contacts[0]?.properties?.email || ''
+        setContactEmailForThread(String(email || '').trim())
+      })
+      .catch(() => setContactEmailForThread(''))
+  }, [selectedCompany?.id, devisInfo?.requester_contact_id])
 
   // Compute version display name (same logic as StepVersions.versionDisplayName)
   const versionDisplayLabel = versionInfo
@@ -3512,12 +3787,24 @@ function StepHubSpot({ devisId, versionId, selectedCompany, selectedDeal, onDeal
   // Already sent indicator (from version or devis)
   const alreadySentNoteId = result?.noteId || versionInfo?.hubspot_note_id || devisInfo?.hubspot_note_id || null
 
-  const currentDeal = deals.find(d => String(d.id) === String(selectedDeal?.id)) || null
-  const existingAttachments = currentDeal?.attachments || []
   const noteBodyPreview = [
     `Devis NEXUS — ${devisDisplayName({ quoteNumber: devisInfo?.quote_number || devisInfo?.name || (devisId ? `D${devisId}` : null), clientName: devisInfo?.client_name || selectedCompany?.name, versionNumber })}`,
     versionComment ? `Commentaire version : ${versionComment}` : null,
   ].filter(Boolean).join('\n')
+
+  const sourceRecipientEmail = useMemo(() => {
+    const raw = String(sourceEmail?.from || sourceEmail?.from_email || contactEmailForThread || '').trim()
+    const match = raw.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)
+    return match?.[0] || ''
+  }, [contactEmailForThread, sourceEmail])
+
+  const mailDraftUrl = useMemo(() => {
+    if (!sourceRecipientEmail) return ''
+    const subject = String(sourceEmail?.subject || devisInfo?.quote_number || 'Devis ZERUX').trim()
+    const normalizedSubject = /^re\s*:/i.test(subject) ? subject : `Re: ${subject}`
+    const body = emailBody || ''
+    return `mailto:${encodeURIComponent(sourceRecipientEmail)}?subject=${encodeURIComponent(normalizedSubject)}&body=${encodeURIComponent(body)}`
+  }, [devisInfo?.quote_number, emailBody, sourceEmail?.subject, sourceRecipientEmail])
 
   const handleSend = async () => {
     if (!devisId || !selectedDeal?.id) return
@@ -3525,12 +3812,25 @@ function StepHubSpot({ devisId, versionId, selectedCompany, selectedDeal, onDeal
     setError('')
     setResult(null)
     try {
+      await api.put(`/devis/${devisId}`, { email_draft_body: emailBody })
       const data = await api.post(`/devis/${devisId}/send-hubspot`, {
         deal_id: selectedDeal.id,
         version_id: versionId || undefined,
-        note_body: noteBodyPreview,
+        note_body: emailBody || noteBodyPreview,
+        attachments: {
+          devis_pdf: attachDevis,
+          detail_sheets: attachDetailSheets,
+        },
+        reply_to_message_id: sourceEmail?.message_id || undefined,
       })
       setResult(data)
+      const graphLink = data?.outlook_draft?.webLink
+      const draftUrl = graphLink || data?.mailto_url || mailDraftUrl
+      if (graphLink) {
+        window.open(graphLink, '_blank', 'noopener,noreferrer')
+      } else if (draftUrl) {
+        window.open(draftUrl, '_blank', 'noopener,noreferrer')
+      }
       // Refresh version info to reflect new hubspot_note_id
       if (versionId) {
         api.get(`/devis/${devisId}/versions`).then(d => {
@@ -3561,10 +3861,41 @@ function StepHubSpot({ devisId, versionId, selectedCompany, selectedDeal, onDeal
 
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: '28px 32px', maxWidth: 760, margin: '0 auto', width: '100%', boxSizing: 'border-box' }}>
-      <h2 style={{ margin: '0 0 4px', fontSize: 18, fontWeight: 800 }}>Envoyer vers HubSpot</h2>
+      <h2 style={{ margin: '0 0 4px', fontSize: 18, fontWeight: 800 }}>Envoi client</h2>
       <p style={{ margin: '0 0 24px', fontSize: 13, color: 'var(--color-text-3)' }}>
-        Génère le PDF final et le joint à l'affaire HubSpot du client en tant que note avec pièce jointe.
+        Préparez la réponse email au client, sélectionnez les pièces jointes et créez le brouillon Outlook en réponse au mail source.
       </p>
+
+      {sourceEmail && contactEmailForThread && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-3)', marginBottom: 8, textTransform: 'uppercase' }}>Conversation email client</div>
+          <EmailConversationViewer
+            contactEmail={contactEmailForThread}
+            selectedMessage={sourceEmail}
+            height={340}
+          />
+        </div>
+      )}
+
+      {sourceEmail && !contactEmailForThread && (
+        <div style={{ marginBottom: 20, padding: '12px 14px', borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-surface)' }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-3)', marginBottom: 6, textTransform: 'uppercase' }}>Email source du client</div>
+          <div style={{ fontSize: 13, fontWeight: 700 }}>{sourceEmail.subject}</div>
+          <div style={{ fontSize: 11, color: 'var(--color-text-3)', marginTop: 4 }}>{sourceEmail.from} — {sourceEmail.date ? new Date(sourceEmail.date).toLocaleString('fr-FR') : ''}</div>
+          <div style={{ fontSize: 12, marginTop: 8, color: 'var(--color-text-2)', whiteSpace: 'pre-wrap' }}>{sourceEmail.preview || sourceEmail.body_text || ''}</div>
+        </div>
+      )}
+
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-3)', marginBottom: 8, textTransform: 'uppercase' }}>Corps de la réponse</div>
+        <textarea value={emailBody} onChange={e => setEmailBody(e.target.value)} rows={8} placeholder="Bonjour,&#10;&#10;Veuillez trouver ci-joint notre proposition…" style={{ width: '100%', boxSizing: 'border-box', padding: 12, borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-bg)', color: 'var(--color-text)', fontSize: 13, lineHeight: 1.5 }} />
+      </div>
+
+      <div style={{ marginBottom: 20, display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-3)', textTransform: 'uppercase' }}>Pièces jointes</div>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}><input type="checkbox" checked={attachDevis} onChange={e => setAttachDevis(e.target.checked)} /> Devis PDF</label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}><input type="checkbox" checked={attachDetailSheets} onChange={e => setAttachDetailSheets(e.target.checked)} /> Fiches de détail</label>
+      </div>
 
       {hubspotOk === false && (
         <div style={{ padding: '12px 16px', borderRadius: 8, background: 'color-mix(in srgb, #ef4444 10%, var(--color-surface))', border: '1px solid #ef4444', color: '#ef4444', fontSize: 13, marginBottom: 20 }}>
@@ -3572,147 +3903,56 @@ function StepHubSpot({ devisId, versionId, selectedCompany, selectedDeal, onDeal
         </div>
       )}
 
-      {/* ── Document à envoyer ── */}
-      <div style={{ marginBottom: 24 }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-3)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Document à envoyer</div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 16px', borderRadius: 10, border: '1.5px solid var(--color-primary)', background: 'color-mix(in srgb, var(--color-primary) 5%, var(--color-surface))' }}>
-          <div style={{ width: 40, height: 48, borderRadius: 5, background: 'color-mix(in srgb, var(--color-primary) 12%, var(--color-surface))', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, border: '1px solid color-mix(in srgb, var(--color-primary) 25%, transparent)' }}>
-            <FileText size={22} style={{ color: 'var(--color-primary)' }} />
-          </div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            {loadingMeta ? (
-              <div style={{ fontSize: 13, color: 'var(--color-text-3)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> Chargement…
-              </div>
-            ) : pdfFilename ? (
-              <>
-                <div style={{ fontSize: 13, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pdfFilename}</div>
-                <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  <span style={{ fontSize: 11, color: 'var(--color-text-3)', display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <FolderOpen size={11} /> {versionInfo?.version_label || '—'}{versionDisplayLabel ? ` — ${versionDisplayLabel}` : ''}
-                  </span>
-                  {devisId && (
-                    <span style={{ fontSize: 10, color: 'var(--color-text-3)' }}>Devis #{devisId}</span>
-                  )}
-                </div>
-              </>
+      <div style={{ marginBottom: 24, padding: '10px 14px', borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-surface)', fontSize: 12, color: 'var(--color-text-3)' }}>
+        {loadingMeta ? (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> Préparation du devis…
+          </span>
+        ) : (
+          <>
+            Brouillon pour <strong style={{ color: 'var(--color-text)' }}>{selectedCompany?.name || 'client non sélectionné'}</strong>
+            {pdfFilename ? <> · {pdfFilename}</> : null}
+            {alreadySentNoteId && !result ? <> · déjà préparé</> : null}
+          </>
+        )}
+        {sourceRecipientEmail ? (
+          <div style={{ marginTop: 6 }}>
+            {outlookStatus?.configured && outlookStatus?.auth_ok !== false ? (
+              <>Un brouillon Outlook <strong style={{ color: 'var(--color-text)' }}>en réponse</strong> sera créé pour <strong style={{ color: 'var(--color-text)' }}>{sourceRecipientEmail}</strong> (boîte {outlookStatus.mailbox}).</>
             ) : (
-              <div style={{ fontSize: 13, color: 'var(--color-text-3)', fontStyle: 'italic' }}>
-                {devisId ? 'Chargement du devis…' : 'Aucun devis actif'}
-              </div>
+              <>Un brouillon email local sera ouvert pour <strong style={{ color: 'var(--color-text)' }}>{sourceRecipientEmail}</strong>{outlookStatus?.configured === false ? ' (Microsoft Graph non configuré — pas de threading Outlook)' : ''}.</>
             )}
           </div>
-          {/* Already sent badge */}
-          {alreadySentNoteId && !result && (
-            <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 20, background: 'color-mix(in srgb, #22c55e 12%, transparent)', border: '1px solid #22c55e', fontSize: 11, fontWeight: 700, color: '#166534' }}>
-              <Check size={11} /> Déjà envoyé
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* ── Texte de note HubSpot ── */}
-      {noteBodyPreview && (
-        <div style={{ marginBottom: 24 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-3)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Texte de la note HubSpot</div>
-          <div style={{ whiteSpace: 'pre-wrap', padding: '10px 14px', borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-surface)', fontSize: 12, lineHeight: 1.45, color: 'var(--color-text-2)' }}>
-            {noteBodyPreview}
-          </div>
-        </div>
-      )}
-
-      {/* ── Client + Affaire ── */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 24 }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-3)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Destination HubSpot</div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-surface)' }}>
-          <Building2 size={15} style={{ flexShrink: 0, color: 'var(--color-text-3)' }} />
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 11, color: 'var(--color-text-3)', marginBottom: 2 }}>Client</div>
-            <div style={{ fontSize: 13, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {selectedCompany?.name || <span style={{ color: 'var(--color-text-3)', fontStyle: 'italic' }}>Aucun client sélectionné</span>}
-            </div>
-          </div>
-          {!selectedCompany && (
-            <button onClick={() => onGoStep(1)} style={ghostBtn()}>
-              <ArrowLeft size={12} /> Étape 1
-            </button>
-          )}
-        </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-surface)' }}>
-          <Briefcase size={15} style={{ flexShrink: 0, color: 'var(--color-text-3)' }} />
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 11, color: 'var(--color-text-3)', marginBottom: 2 }}>Affaire HubSpot</div>
-            {loadingDeals ? (
-              <div style={{ fontSize: 12, color: 'var(--color-text-3)', display: 'flex', alignItems: 'center', gap: 5 }}>
-                <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> Chargement…
-              </div>
-            ) : selectedDeal ? (
-              <div style={{ fontSize: 13, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {selectedDeal.name}
-                {selectedDeal.amount ? <span style={{ marginLeft: 8, fontWeight: 400, color: 'var(--color-text-3)', fontSize: 12 }}>{Number(selectedDeal.amount).toLocaleString('fr-FR')} €</span> : null}
-              </div>
-            ) : (
-              <div style={{ fontSize: 13, color: 'var(--color-text-3)', fontStyle: 'italic' }}>Aucune affaire sélectionnée</div>
-            )}
-          </div>
-        </div>
-
-        {/* Deal picker if company has multiple deals */}
-        {deals.length > 1 && (
-          <div style={{ padding: '10px 14px', borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-surface)' }}>
-            <div style={{ fontSize: 11, color: 'var(--color-text-3)', marginBottom: 8 }}>Choisir une autre affaire</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 160, overflowY: 'auto' }}>
-              {deals.map(d => (
-                <button
-                  key={d.id}
-                  onClick={() => onDealChange({ id: d.id, name: d.name, amount: d.amount })}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px',
-                    borderRadius: 6, border: `1px solid ${String(d.id) === String(selectedDeal?.id) ? 'var(--color-primary)' : 'var(--color-border)'}`,
-                    background: String(d.id) === String(selectedDeal?.id) ? 'color-mix(in srgb, var(--color-primary) 8%, transparent)' : 'transparent',
-                    cursor: 'pointer', textAlign: 'left', color: 'var(--color-text)', fontSize: 12,
-                  }}
-                >
-                  {String(d.id) === String(selectedDeal?.id) && <Check size={12} style={{ color: 'var(--color-primary)', flexShrink: 0 }} />}
-                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name}</span>
-                  {d.amount && <span style={{ color: 'var(--color-text-3)', flexShrink: 0 }}>{Number(d.amount).toLocaleString('fr-FR')} €</span>}
-                </button>
-              ))}
-            </div>
-          </div>
+        ) : (
+          <div style={{ marginTop: 6, color: '#b45309' }}>Aucun destinataire email détecté : seul HubSpot sera mis à jour.</div>
         )}
       </div>
-
-      {/* ── Pièces jointes existantes ── */}
-      {existingAttachments.length > 0 && (
-        <div style={{ marginBottom: 24 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-3)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Pièces jointes existantes sur ce deal</div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {existingAttachments.map(a => (
-              <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-surface)', fontSize: 12 }}>
-                <FileText size={13} style={{ flexShrink: 0, color: 'var(--color-text-3)' }} />
-                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.name}</span>
-                {a.url && (
-                  <a href={a.url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-primary)', fontSize: 11, textDecoration: 'none', display: 'flex', alignItems: 'center', gap: 3, flexShrink: 0 }}>
-                    <ExternalLink size={11} /> Ouvrir
-                  </a>
-                )}
-                <span style={{ fontSize: 10, color: 'var(--color-text-3)', flexShrink: 0 }}>{a.source}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* ── Résultat envoi ── */}
       {result && (
         <div style={{ padding: '14px 16px', borderRadius: 8, background: 'color-mix(in srgb, #22c55e 10%, var(--color-surface))', border: '1px solid #22c55e', marginBottom: 20 }}>
           <div style={{ fontWeight: 700, marginBottom: 6, color: '#166534', display: 'flex', alignItems: 'center', gap: 6 }}>
-            <Check size={15} /> PDF envoyé avec succès
+            <Check size={15} /> Brouillon préparé avec succès
           </div>
-          <div style={{ fontSize: 12, color: '#166534', marginBottom: 4 }}>{result.filename}</div>
+          {Array.isArray(result.filenames) && result.filenames.length > 0 ? (
+            <div style={{ fontSize: 12, color: '#166534', marginBottom: 4 }}>{result.filenames.join(' · ')}</div>
+          ) : result.filename ? (
+            <div style={{ fontSize: 12, color: '#166534', marginBottom: 4 }}>{result.filename}</div>
+          ) : null}
           {result.version_label && <div style={{ fontSize: 11, color: '#166534', opacity: 0.8 }}>Version : {result.version_label}</div>}
+          {result.outlook_mode === 'graph' && result.outlook_draft?.webLink && (
+            <a href={result.outlook_draft.webLink} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginTop: 8, color: '#166534', fontSize: 12, fontWeight: 600 }}>
+              <ExternalLink size={11} /> Ouvrir le brouillon Outlook
+            </a>
+          )}
+          {result.outlook_mode === 'mailto' && result.mailto_url && (
+            <a href={result.mailto_url} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginTop: 8, color: '#166534', fontSize: 12, fontWeight: 600 }}>
+              <ExternalLink size={11} /> Rouvrir le brouillon email local
+            </a>
+          )}
+          {result.outlook_error && (
+            <div style={{ fontSize: 11, color: '#b45309', marginTop: 8 }}>Outlook : {result.outlook_error}</div>
+          )}
           {result.fileUrl && (
             <a href={result.fileUrl} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginTop: 8, color: '#166534', fontSize: 12, fontWeight: 600 }}>
               <ExternalLink size={11} /> Voir le fichier dans HubSpot
@@ -3757,7 +3997,7 @@ function StepHubSpot({ devisId, versionId, selectedCompany, selectedDeal, onDeal
               ? <><Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> Envoi en cours…</>
               : alreadySentNoteId && !result
                 ? <><Send size={14} /> Renvoyer le PDF vers HubSpot</>
-                : <><Send size={14} /> Envoyer le PDF vers HubSpot</>
+                : <><Send size={14} /> Préparer brouillon</>
             }
           </button>
           {alreadySentNoteId && onCreateNewVersion && (
@@ -4148,7 +4388,7 @@ export default function DevisStepper() {
     await Promise.all(targets.map(change => {
       const current = lineById.get(String(change.targetLine.id))
       const index = current?.index ?? change.index ?? 0
-      return api.put(`/devis/${currentDevisId}/lines/${change.targetLine.id}`, gridRowToLinePayload(dbLineToGridRow(change.targetLine), index))
+      return api.put(`/devis/${currentDevisId}/lines/${change.targetLine.id}`, gridRowToLinePayload(dbLineToGridRow(change.targetLine), index, resolveRow))
     }))
     await refreshLines()
     return true
@@ -4240,7 +4480,7 @@ export default function DevisStepper() {
       flashAssistantRows(changes.map(change => ({ index: change.index, id: change.lineId })), `${gridEditCommand.label} → ${gridEditCommand.value} mm`)
       await Promise.all(changes.map(change => api.put(
         `/devis/${currentDevisId}/lines/${change.lineId}`,
-        gridRowToLinePayload(dbLineToGridRow(change.afterLine), change.index)
+        gridRowToLinePayload(dbLineToGridRow(change.afterLine), change.index, resolveRow)
       )))
       recordGridAction({
         label: `${gridEditCommand.label} → ${gridEditCommand.value} mm`,
@@ -4277,7 +4517,7 @@ export default function DevisStepper() {
       await Promise.all(validIndexes.map((lineIndex) => {
         const nextLine = nextLines[lineIndex]
         if (!nextLine?.id) return Promise.resolve()
-        return api.put(`/devis/${currentDevisId}/lines/${nextLine.id}`, gridRowToLinePayload(dbLineToGridRow(nextLine), lineIndex))
+        return api.put(`/devis/${currentDevisId}/lines/${nextLine.id}`, gridRowToLinePayload(dbLineToGridRow(nextLine), lineIndex, resolveRow))
       }))
       recordGridAction({
         label: `${performanceCommand.fromToken} → ${performanceCommand.toToken}`,
@@ -4333,7 +4573,7 @@ export default function DevisStepper() {
     }]
     setLines(nextRows)
     flashAssistantRows([{ index: lineIndex, id: line.id }], `${fieldLabel} modifiée`)
-    await api.put(`/devis/${currentDevisId}/lines/${line.id}`, gridRowToLinePayload(dbLineToGridRow(nextLine), lineIndex))
+    await api.put(`/devis/${currentDevisId}/lines/${line.id}`, gridRowToLinePayload(dbLineToGridRow(nextLine), lineIndex, resolveRow))
     recordGridAction({
       label: `${fieldLabel} modifiée`,
       prompt: text,
@@ -4371,7 +4611,7 @@ export default function DevisStepper() {
     await Promise.all(uniqueIds.map((lineId) => {
       const index = working.findIndex((line) => String(line.id) === lineId)
       if (index < 0) return Promise.resolve()
-      return api.put(`/devis/${currentDevisId}/lines/${lineId}`, gridRowToLinePayload(dbLineToGridRow(working[index]), index))
+      return api.put(`/devis/${currentDevisId}/lines/${lineId}`, gridRowToLinePayload(dbLineToGridRow(working[index]), index, resolveRow))
     }))
     recordGridAction({
       label: 'Modifications (langage naturel)',
@@ -4436,13 +4676,27 @@ export default function DevisStepper() {
   }
   const handleCreateDeal = async ({ companyId, dealname, amount, pipeline, dealstage }) => {
     const createdDeal = await api.post(`/prospects/companies/${companyId}/deals`, {
-      dealname,
+      dealname: dealname || `Nouveau projet — ${selectedCompany?.name || 'Client'}`,
       amount,
       pipeline,
       dealstage,
     })
+    const newDevis = await api.post('/devis', {
+      deal_id: createdDeal?.id || null,
+      company_id: companyId,
+      client_name: selectedCompany?.name || null,
+    })
+    const quoteLabel = `${newDevis.quote_number || newDevis.name} — ${selectedCompany?.name || 'Client'}`
+    if (createdDeal?.id) {
+      await api.patch(`/prospects/deals/${createdDeal.id}`, { dealname: quoteLabel })
+      createdDeal.properties = { ...(createdDeal.properties || {}), dealname: quoteLabel }
+      createdDeal.dealname = quoteLabel
+    }
+    setExistingDevis(prev => [newDevis, ...(prev || [])])
+    setCurrentDevisId(newDevis.id)
+    setCurrentVersionId(newDevis.current_version_id || null)
     setCompanyDetailRefreshKey((value) => value + 1)
-    return createdDeal
+    return { ...createdDeal, devis: newDevis, dealname: quoteLabel }
   }
 
   const handleUpdateDeal = async ({ dealId, dealname, amount, pipeline, dealstage }) => {
@@ -4641,6 +4895,7 @@ export default function DevisStepper() {
       const data = await api.post('/devis/ask', {
         devis_id: currentDevisId,
         version_id: currentVersionId || null,
+        step_key: STEP_KEY_BY_NUM[step] || null,
         rows: compactRows,
         question: !imageOnlyQuestion && lines.length > compactRows.length
           ? `${q}\n\nContexte note: devis tronqué aux ${compactRows.length} premières lignes sur ${lines.length} pour rester sous la limite de contexte.`
@@ -4682,6 +4937,17 @@ export default function DevisStepper() {
     () => existingDevis.find((d) => String(d.id) === String(currentDevisId)) || null,
     [currentDevisId, existingDevis]
   )
+  const breadcrumbs = useAppBreadcrumbs()
+  useBreadcrumbOverrideEffect({
+    devisLabel: currentDevis?.quote_number || currentDevis?.name || undefined,
+  })
+  useBreadcrumbBackHandler(useCallback(() => {
+    if (step > 1) {
+      goStep(step - 1)
+      return true
+    }
+    return false
+  }, [step, goStep]))
 
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--color-bg)', color: 'var(--color-text)', fontFamily: 'var(--font-body)' }}>
@@ -4699,6 +4965,11 @@ export default function DevisStepper() {
         onOpenRules={() => navigate('/rules', { state: { returnTo: currentStepperUrl(), returnLabel: 'Retour au devis NEXUS' } })}
         onBackHome={() => navigate('/')}
       />
+
+      <div className="devis-stepper-crumb-bar">
+        <AppBreadcrumbs items={breadcrumbs} compact />
+        <span className="chat-crumb-hint">Alt+← retour</span>
+      </div>
 
       {/* Step content + assistant */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
@@ -4749,7 +5020,7 @@ export default function DevisStepper() {
             />
           )}
           {step === 5 && (
-            <StepHubSpot
+            <StepEnvoi
               devisId={currentDevisId}
               versionId={currentVersionId}
               selectedCompany={selectedCompany}

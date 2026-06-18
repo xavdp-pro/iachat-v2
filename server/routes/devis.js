@@ -18,7 +18,17 @@ import { getGlobalOllamaModel } from '../services/appSettings.js'
 import { parseDocument } from '../services/document-parser.js'
 import { analyzeDocument } from '../services/document-analyzer.js'
 import { searchDevisRules, searchExperiences } from '../services/memory.js'
+import { dbRowsToCatalogEntries, loadDbEquipmentCatalog } from '../services/equipment-catalog.js'
 import db from '../db/index.js'
+import {
+  buildVersionNumberMap,
+  buildVersionTree,
+  getVersionRelationship,
+  versionRelationshipLabel,
+  versionDisplayLabel,
+  isVersionLocked,
+} from '../lib/versionTree.js'
+import { resolveEquipmentCatalogPerformance } from '../lib/equipmentPerformance.js'
 import multer from 'multer'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
@@ -27,6 +37,9 @@ import { join, basename } from 'path'
 import { existsSync } from 'fs'
 import os from 'os'
 import crypto from 'crypto'
+import { attachGridMetaToRaw } from '../lib/gridRowMeta.js'
+import { persistDevisPdfPaths, saveDevisPdfBuffer } from '../services/devis-pdf-store.js'
+import { auditPerformanceCompatibility } from '../lib/performanceCompatibility.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -41,6 +54,8 @@ router.use(authenticate)
 
 const VALID_LINE_SECTIONS = new Set(['products', 'calculations', 'transport'])
 const normalizeLineSection = (value) => VALID_LINE_SECTIONS.has(value) ? value : 'products'
+const R061_DEFAULT_FERME_PORTE = 'TS-5000 bras glissière'
+const R061_DEFAULT_PLINTHE = 'plinthe automatique encastrée'
 const RD_VALIDATION_CATEGORY = 'Validations individuelles R&D'
 const AI_ATTACHMENT_MIMES = new Set(['application/pdf', 'image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif', 'image/tiff'])
 const EQUIPMENT_CATALOG_FILES = ['EQUIP-COMMUN.md', 'EQUIP-EI.md', 'EQUIP-FB.md', 'SERRURES-GARNITURES.md']
@@ -70,6 +85,89 @@ const EQUIPMENT_REF_PERFORMANCES = {
   4176: ['CR6'],
 }
 const INACTIVE_EQUIPMENT_REFS = new Set(['4091', '4092', '4093', '4094'])
+
+function appendUniqueEquipmentLabel(items, label) {
+  const list = Array.isArray(items) ? [...items] : []
+  const needle = String(label).toLowerCase()
+  const exists = list.some(item => String(item?.label || item || '').toLowerCase().includes(needle))
+  if (!exists) list.push({ label, source: 'R061' })
+  return list
+}
+
+function applyR061Defaults(line = {}) {
+  const section = normalizeLineSection(line.line_section)
+  if (section !== 'products') return line
+  const next = { ...line, line_section: section }
+  if (!String(next.ferme_porte_ref || next.ferme_porte?.ref || '').trim()) {
+    next.ferme_porte_ref = R061_DEFAULT_FERME_PORTE
+    next.ferme_porte = { ...(next.ferme_porte || {}), ref: R061_DEFAULT_FERME_PORTE }
+  }
+  const equipements = Array.isArray(next.equipements_json)
+    ? next.equipements_json
+    : Array.isArray(next.equip_extra)
+      ? next.equip_extra
+      : []
+  const withPlinthe = appendUniqueEquipmentLabel(equipements, R061_DEFAULT_PLINTHE)
+  next.equipements_json = withPlinthe
+  next.equip_extra = withPlinthe
+  return next
+}
+
+function applyR061PatchDefaults(patch = {}) {
+  const next = { ...patch }
+  const isProductPatch = !next.line_section || normalizeLineSection(next.line_section) === 'products'
+  if (!isProductPatch) return next
+  if (next.ferme_porte_ref !== undefined && !String(next.ferme_porte_ref || '').trim()) {
+    next.ferme_porte_ref = R061_DEFAULT_FERME_PORTE
+  }
+  if (next.equipements_json !== undefined) {
+    next.equipements_json = appendUniqueEquipmentLabel(next.equipements_json, R061_DEFAULT_PLINTHE)
+  }
+  return next
+}
+
+function lineQtyValue(line = {}) {
+  const qty = Number(line?.qty)
+  return Number.isFinite(qty) && qty > 0 ? Math.round(qty) : 1
+}
+
+function lineMultipleValue(line = {}) {
+  const multiple = Number(line?.multiple)
+  return Number.isFinite(multiple) && multiple > 0 ? multiple : 1
+}
+
+function lineWeightValue(line = {}) {
+  const weight = Number(line?.weight_kg)
+  return Number.isFinite(weight) && weight > 0 ? Math.round(weight * 100) / 100 : null
+}
+
+function gridRowFromClient(row = {}, position = 0) {
+  return applyR061Defaults({
+    position,
+    line_section: row.line_section || 'products',
+    localisation: row.localisation || null,
+    designation: row.designation || row.type || null,
+    type_porte: row.type || row.designation || null,
+    gamme: row.gamme || null,
+    vantail: row.vantail || null,
+    hauteur_mm: row.haut_mm ?? row.hauteur_mm ?? null,
+    largeur_mm: row.larg_mm ?? row.largeur_mm ?? null,
+    prix_base_ht: row.prix_base_ht ?? null,
+    ref_base: row.ref_base || null,
+    raw_json: attachGridMetaToRaw(Array.isArray(row._raw) ? row._raw : [], row),
+    options_json: row.options || [],
+    serrure_ref: row.serrure?.ref || row._serrureLabel || null,
+    ferme_porte_ref: row.ferme_porte?.ref || row._fpLabel || null,
+    equipements_json: row.equip_extra || [],
+    qty: lineQtyValue(row),
+    multiple: lineMultipleValue(row),
+    weight_kg: lineWeightValue(row),
+    total_ligne_ht: row.total_ligne_ht ?? row.prix_total_min_ht ?? row.prix_base_ht ?? null,
+    alertes_json: row.alertes || [],
+    docs_json: row.docs || [],
+  })
+}
+
 const PDF_EQUIPMENT_LABELS = {
   3301: 'Serrure simple',
   4070: 'MSL mécanique 1V',
@@ -489,6 +587,42 @@ async function loadEquipmentCatalog() {
   return catalog
 }
 
+function primaryRowPerformance(rowPerformances = [], gamme = '') {
+  return resolveEquipmentCatalogPerformance(rowPerformances, null, gamme)
+}
+
+async function listDbEquipmentPerformances() {
+  const [rows] = await db.query(
+    'SELECT DISTINCT performance FROM door_equipment_items WHERE active = 1 ORDER BY performance ASC'
+  )
+  return rows.map(row => String(row.performance || '').toUpperCase()).filter(Boolean)
+}
+
+async function loadEquipmentCatalogForRow(row = {}) {
+  const rowPerformances = detectRowPerformances(row)
+  const availablePerformances = await listDbEquipmentPerformances()
+  const perf = resolveEquipmentCatalogPerformance(rowPerformances, availablePerformances, row.gamme || row.gamme_label || '')
+  if (perf) {
+    const dbRows = await loadDbEquipmentCatalog({ performance: perf })
+    const dbEntries = dbRowsToCatalogEntries(dbRows)
+    if (dbEntries.length) {
+      return {
+        options: dbEntries,
+        performances: rowPerformances,
+        catalog_performance: perf,
+        source: `matrix:${perf}`,
+      }
+    }
+  }
+  const catalog = await loadEquipmentCatalog()
+  return {
+    options: catalog.filter(entry => equipmentCompatibleWithRow(entry, rowPerformances)),
+    performances: rowPerformances,
+    catalog_performance: perf || null,
+    source: 'tarif',
+  }
+}
+
 function detectRowPerformances(row = {}) {
   const parts = [
     row.gamme, row.rc, row.pb, row.cf, row.blast, row.belier, row.prison,
@@ -543,6 +677,188 @@ function buildDevisPdfFilename(devis, versionNumber = null) {
   const numberedName = [baseNumber, versionNumber].filter(Boolean).join('.')
   const parts = [numberedName, devis?.client_name || 'Client'].map(safePdfFilePart).filter(Boolean)
   return `${parts.length ? parts.join(' - ') : 'devis'}.pdf`
+}
+
+function versionLineToPdfLine(row) {
+  const grid = parseMaybeJson(row.grid_json, {})
+  const line = {
+    ...grid,
+    id: row.source_line_id || row.id,
+    line_section: row.line_section || grid.line_section || 'products',
+    position: row.position ?? grid.position ?? 0,
+    total_ligne_ht: row.total_ligne_ht ?? grid.total_ligne_ht,
+  }
+  if (row.designation_pdf) line.designation = row.designation_pdf
+  return line
+}
+
+async function loadPdfLinesForDevis(devisId, versionId = null) {
+  const numericVersionId = Number(versionId || 0)
+  if (Number.isInteger(numericVersionId) && numericVersionId > 0) {
+    const [versionLines] = await db.query(
+      `SELECT * FROM devis_version_lines
+       WHERE version_id = ?
+       ORDER BY FIELD(line_section, "products", "calculations", "transport"), position ASC, id ASC`,
+      [numericVersionId]
+    )
+    if (versionLines.length) return versionLines.map(versionLineToPdfLine)
+  }
+  const [lines] = await db.query(
+    'SELECT * FROM devis_lines WHERE devis_id = ? ORDER BY FIELD(line_section, "products", "calculations", "transport"), position ASC, id ASC',
+    [devisId]
+  )
+  return lines
+}
+
+function applyPdfLabelOverrides(lines = [], overrides = []) {
+  if (!Array.isArray(overrides) || !overrides.length) return lines
+  const byId = new Map(
+    overrides
+      .filter(item => item?.line_id != null)
+      .map(item => [Number(item.line_id), item.designation_pdf ?? item.designation ?? null])
+  )
+  if (!byId.size) return lines
+  return lines.map((line) => {
+    const lineId = Number(line.id)
+    if (!byId.has(lineId)) return line
+    const designation = byId.get(lineId)
+    return designation != null ? { ...line, designation } : line
+  })
+}
+
+async function assertDevisLinesEditable(devisId) {
+  const [[devis]] = await db.query('SELECT id, status FROM devis WHERE id = ?', [devisId])
+  if (!devis) {
+    const err = new Error('Devis introuvable')
+    err.status = 404
+    throw err
+  }
+  if (devis.status === 'sent_hubspot') {
+    const err = new Error('Devis verrouillé après envoi HubSpot — créez une nouvelle version pour modifier les lignes')
+    err.status = 423
+    throw err
+  }
+}
+
+async function assertDevisVersionEditable(devisId, versionId) {
+  const [[version]] = await db.query(
+    'SELECT id, status, locked_at FROM devis_versions WHERE id = ? AND devis_id = ?',
+    [versionId, devisId]
+  )
+  if (!version) {
+    const err = new Error('Version introuvable')
+    err.status = 404
+    throw err
+  }
+  if (version.locked_at || version.status === 'sent_hubspot' || version.status === 'archived') {
+    const err = new Error('Version verrouillée — créez une branche pour poursuivre les modifications')
+    err.status = 423
+    throw err
+  }
+  return version
+}
+
+function versionLineSummary(row) {
+  const grid = parseMaybeJson(row.grid_json, {})
+  return {
+    id: row.id,
+    source_line_id: row.source_line_id,
+    position: row.position,
+    line_section: row.line_section,
+    designation: row.designation_pdf || grid.designation || grid.type_porte || null,
+    total_ligne_ht: row.total_ligne_ht != null ? Number(row.total_ligne_ht) : null,
+    gamme: grid.gamme || null,
+    localisation: grid.localisation || null,
+  }
+}
+
+function compareVersionLineSets(linesA = [], linesB = []) {
+  const keyOf = (row) => `${row.line_section || 'products'}:${row.source_line_id || row.position}`
+  const mapA = new Map(linesA.map(row => [keyOf(row), versionLineSummary(row)]))
+  const mapB = new Map(linesB.map(row => [keyOf(row), versionLineSummary(row)]))
+  const added = []
+  const removed = []
+  const changed = []
+
+  for (const [key, rowB] of mapB) {
+    const rowA = mapA.get(key)
+    if (!rowA) {
+      added.push(rowB)
+      continue
+    }
+    const diffs = []
+    for (const field of ['designation', 'total_ligne_ht', 'gamme', 'localisation', 'line_section', 'position']) {
+      const before = rowA[field]
+      const after = rowB[field]
+      if (String(before ?? '') !== String(after ?? '')) {
+        diffs.push({ field, before, after })
+      }
+    }
+    if (diffs.length) changed.push({ key, before: rowA, after: rowB, diffs })
+  }
+  for (const [key, rowA] of mapA) {
+    if (!mapB.has(key)) removed.push(rowA)
+  }
+  return { added, removed, changed }
+}
+
+function auditR061Compliance(lines = []) {
+  const issues = []
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] || {}
+    if (normalizeLineSection(line.line_section) !== 'products') continue
+    const label = line.ligne || repLetterFromIndex(index)
+    const fp = String(line.ferme_porte_ref || line.ferme_porte || '').trim()
+    const autres = [
+      ...(Array.isArray(line.equipements_json) ? line.equipements_json : []),
+      ...(Array.isArray(line.equip_extra) ? line.equip_extra : []),
+      ...(Array.isArray(line.options_json) ? line.options_json : []),
+      ...(Array.isArray(line.options) ? line.options : []),
+    ].map(item => String(item?.label || item || '')).join(' ')
+    if (!fp) {
+      issues.push({ ligne: label, rule: 'R061', status: 'violation', reason: 'Ferme-porte manquant', fix: R061_DEFAULT_FERME_PORTE })
+    }
+    if (!/plinthe/i.test(autres)) {
+      issues.push({ ligne: label, rule: 'R061', status: 'violation', reason: 'Plinthe automatique encastrée manquante', fix: R061_DEFAULT_PLINTHE })
+    }
+  }
+  return issues
+}
+
+async function buildMandatoryRulesPromptBlock() {
+  const blocks = []
+  try {
+    const [ruleRows] = await db.query(
+      `SELECT id, rule_code, title, content, category, severity FROM devis_rules
+       WHERE status = 'active' ORDER BY rule_code ASC, id ASC LIMIT 40`
+    )
+    if (ruleRows.length) {
+      blocks.push(
+        '[RÈGLES DEVIS ACTIVES — OBLIGATOIRES]\n' +
+        ruleRows.map((row, index) => `${index + 1}. ${row.rule_code || `R${row.id}`} [${row.severity || 'info'}] ${row.title}\n${row.content}`).join('\n\n')
+      )
+    }
+    const [experienceRows] = await db.query(
+      `SELECT id, title, content, category FROM experiences
+       WHERE status = 'approved' AND category IN ('Règle métier', 'Chiffrage', 'Validations individuelles R&D')
+       ORDER BY id ASC LIMIT 30`
+    )
+    if (experienceRows.length) {
+      blocks.push(
+        '[EXPÉRIENCES / RÈGLES MÉTIER APPROUVÉES — OBLIGATOIRES]\n' +
+        experienceRows.map((row, index) => `${index + 1}. [${row.category}] ${row.title}\n${row.content}`).join('\n\n')
+      )
+    }
+  } catch { /* non-blocking */ }
+  blocks.push(`[R061 SYSTÉMATIQUE] Toute ligne produit doit avoir ferme-porte "${R061_DEFAULT_FERME_PORTE}" et "${R061_DEFAULT_PLINTHE}" si les champs sont vides.`)
+  return blocks.length ? `\n\n${blocks.join('\n\n')}` : ''
+}
+
+function buildMailtoDraftUrl({ to, subject, body }) {
+  const email = String(to || '').trim()
+  if (!email) return ''
+  const normalizedSubject = /^re\s*:/i.test(String(subject || '')) ? String(subject) : `Re: ${subject || 'Devis ZERUX'}`
+  return `mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent(normalizedSubject)}&body=${encodeURIComponent(String(body || ''))}`
 }
 
 function buildDevisDisplayName(devis, versionNumber = null) {
@@ -1453,15 +1769,36 @@ router.get('/types-options', async (_req, res) => {
   }
 })
 
+// ── POST /api/devis/export-xlsx — Armand-colored grid workbook ───────────────
+router.post('/export-xlsx', async (req, res) => {
+  const payload = req.body
+  if (!payload || !Array.isArray(payload.body) || !payload.body.length) {
+    return res.status(400).json({ error: 'body rows required (build payload client-side)' })
+  }
+  try {
+    const { renderGridXlsxBuffer } = await import('../lib/renderGridXlsx.js')
+    const buffer = await renderGridXlsxBuffer(payload)
+    const filename = String(payload.filename || 'devis-grid.xlsx').replace(/[^\w.\- ()àâäéèêëïîôùûüçÀÂÄÉÈÊËÏÎÔÙÛÜÇ-]/g, '_')
+    res.set({
+      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'Content-Disposition': `attachment; filename="${filename.replace(/"/g, "'")}"`,
+      'Content-Length': buffer.length,
+    })
+    res.end(buffer)
+  } catch (err) {
+    console.error('export-xlsx error:', err)
+    res.status(500).json({ error: 'Erreur export XLSX', details: err.message })
+  }
+})
+
 // ── POST /api/devis/recompute-row ───────────────────────────────────────────
 // body: { row: [16 cols], qty?: number } — recalcule une ligne en passant par detect_nexus.py --recompute
 router.post('/equipment-options', async (req, res) => {
   const row = req.body?.row || {}
+  const gridColumn = req.body?.grid_column ? String(req.body.grid_column) : null
   try {
-    const rowPerformances = detectRowPerformances(row)
-    const catalog = await loadEquipmentCatalog()
-    const options = catalog
-      .filter(entry => equipmentCompatibleWithRow(entry, rowPerformances))
+    const { options: catalog, performances: rowPerformances, source, catalog_performance: catalogPerformance } = await loadEquipmentCatalogForRow(row)
+    let options = catalog
       .map(entry => ({
         ref: entry.ref,
         label: entry.designation,
@@ -1470,20 +1807,36 @@ router.post('/equipment-options', async (req, res) => {
         price_label: entry.price_label,
         family: entry.family,
         slot: entry.slot || equipmentSlotFromRef(entry.ref, entry.designation),
+        grid_column: entry.grid_column || null,
         source: entry.source,
         performances: entry.performances,
+        section_label: entry.section_label || null,
       }))
       .sort((left, right) => String(left.ref || '').localeCompare(String(right.ref || ''), 'fr') || String(left.label || '').localeCompare(String(right.label || ''), 'fr'))
-    res.json({ options, performances: rowPerformances })
+    if (gridColumn) {
+      options = options.filter(entry => entry.grid_column === gridColumn || entry.slot === gridColumn)
+    }
+    res.json({ options, performances: rowPerformances, catalog_performance: catalogPerformance, catalog_source: source })
   } catch (err) {
     res.status(500).json({ error: 'Erreur equipment-options', details: err.message })
   }
 })
 
 router.post('/recompute-row', async (req, res) => {
-  const rowArr = req.body?.row
+  const rowArr = [...(req.body?.row || [])]
   const qty = Math.max(1, parseInt(req.body?.qty) || 1)
-  if (!Array.isArray(rowArr)) return res.status(400).json({ error: 'row (array) requis' })
+  if (!Array.isArray(req.body?.row)) return res.status(400).json({ error: 'row (array) requis' })
+  while (rowArr.length < 17) rowArr.push(null)
+  // R061: default ferme-porte + plinthe encastrée when slots are empty
+  const fpEmpty = !String(rowArr[15] || '').trim()
+  const autresText = String(rowArr[16] || '')
+  const plintheMissing = !/plinthe/i.test(autresText)
+  if (fpEmpty) rowArr[15] = rowArr[15] || R061_DEFAULT_FERME_PORTE
+  if (plintheMissing) {
+    rowArr[16] = autresText.trim()
+      ? `${autresText.trim()}, ${R061_DEFAULT_PLINTHE}`
+      : R061_DEFAULT_PLINTHE
+  }
   try {
     const { spawn } = await import('node:child_process')
     const child = spawn('python3', [SCRIPT, '--recompute'], { cwd: XLSX_DIR, env: await detectEnv() })
@@ -2039,6 +2392,7 @@ router.post('/grid-intent', async (req, res) => {
   }
 
   const equipmentCompatibilityBlock = await buildEquipmentCompatibilityBlock(catalog, { max: 90 })
+  const mandatoryRulesBlock = await buildMandatoryRulesPromptBlock()
   const tableJson = JSON.stringify(catalog, null, 0)
   const systemMsg = `Tu es un extracteur d'intentions pour un tableau de devis NEXUS (portes).
 L'utilisateur demande une ou plusieurs modifications en français (langage libre).
@@ -2074,6 +2428,7 @@ Règle équipements / performances (obligatoire) :
 - Si la performance de la ligne cible est inconnue, renvoie "edits": [] et demande la performance avant de choisir l'équipement.
 - Pour CR2/RC2, utiliser les compatibilités CR3.
 - Les références et prix doivent venir du catalogue filtré ci-dessous quand tu ajoutes serrure, garniture, vitrage, ferme_porte, cremone ou autres.
+- R061 est systématique : toute ligne produit doit conserver un ferme-porte "${R061_DEFAULT_FERME_PORTE}" si le champ est vide, et une option "${R061_DEFAULT_PLINTHE}" dans "autres"/options si elle manque. Ne propose jamais une édition qui les supprime sans remplacement explicite.
 
 Ciblage métier :
 - Résous toi-même les cibles à partir du tableau. Exemples : "toutes les portes CR3" = lignes dont gamme/performance contient CR3 ; "portes anti-feu" = lignes EI/coupe-feu ; "ligne B" = repère B.
@@ -2086,6 +2441,7 @@ Ne dépasse pas 12 entrées dans "edits". Regroupe les lignes qui reçoivent le 
 Tableau actuel (ordre = index 0..n-1, id peut être absent si la grille est locale) :
 ${tableJson}
 ${equipmentCompatibilityBlock}
+${mandatoryRulesBlock}
 
 Question utilisateur :
 `
@@ -2125,7 +2481,7 @@ Question utilisateur :
 // ── POST /api/devis/ask ─────────────────────────────────────────────────────
 // body: { rows: [...], question: string, mdFiles: [string], scope: 'line'|'all' }
 router.post('/ask', async (req, res) => {
-  const { rows = [], question, mdFiles = [], scope = 'line', images = [], history = [], devis_id = null, version_id = null } = req.body
+  const { rows = [], question, mdFiles = [], scope = 'line', images = [], history = [], devis_id = null, version_id = null, step_key = null } = req.body
   const safeQuestion = String(question || '').trim()
   const incomingHistory = Array.isArray(history)
     ? history
@@ -2209,21 +2565,7 @@ router.post('/ask', async (req, res) => {
   const equipmentCompatibilityBlock = casualMessage ? '' : await buildEquipmentCompatibilityBlock(contextRows, { max: 120 })
 
   // ── Règles métier : chargement SYSTÉMATIQUE (toujours injectées, indépendamment de la question) ──
-  // Les règles métier approuvées s'appliquent à CHAQUE analyse — ne pas les filtrer par similarité.
-  let mandatoryRulesBlock = ''
-  try {
-    if (!casualMessage) {
-      const [rulesRows] = await db.query(
-        `SELECT id, title, content, category FROM experiences WHERE status = 'approved' AND category IN ('Règle métier', 'Chiffrage', 'Validations individuelles R&D') ORDER BY id ASC`
-      )
-      if (rulesRows.length) {
-        mandatoryRulesBlock =
-          `\n\n[RÈGLES MÉTIER ET CHIFFRAGE APPROUVÉES — À APPLIQUER SYSTÉMATIQUEMENT SUR CHAQUE LIGNE :]\n` +
-          `Ces règles s'appliquent à TOUTES les analyses, sans exception. Vérifie chacune d'elles pour chaque porte.\n` +
-          rulesRows.map((r, i) => `${i + 1}. [${r.category}] ${r.title}\n${r.content}`).join('\n\n')
-      }
-    }
-  } catch { /* non-bloquant */ }
+  const mandatoryRulesBlock = casualMessage ? '' : await buildMandatoryRulesPromptBlock()
 
   // ── Expériences terrain : recherche sémantique (contexte-dépendant) ──
   const expKeywords = /expérience|commercial|précédent|collègue|équipe|terrain|cas vécu|autre(s)? commercial|ont traité|ont fait/i
@@ -2285,6 +2627,15 @@ Si l'utilisateur demande si tu te souviens de son nom, utilise uniquement la mé
 Ignore totalement les devis, tableaux, lignes, options ou anciens contenus techniques qui pourraient être dans un historique pollué.
 Ne parle pas de devis sauf si l'utilisateur le demande explicitement dans son dernier message.
 Réponds en français, brièvement, en Markdown si cela aide.`
+
+  const stepAssistantHints = {
+    client: `\n\nCONTEXTE ÉTAPE CLIENT :\nTu aides à sélectionner l'entreprise, le contact et le deal HubSpot. Priorise le fil email IMAP et les pièces jointes pour extraire le besoin. Ne chiffre pas encore : liste les informations manquantes et les risques avant passage à la grille.`,
+    versions: `\n\nCONTEXTE ÉTAPE VERSIONS :\nTu aides à créer, dupliquer ou commenter des versions. Explique quand figer un checkpoint, quand créer une branche, et comment préparer une comparaison A/B sans modifier les lignes.`,
+    grid: `\n\nCONTEXTE ÉTAPE GRILLE :\nTu es l'assistant d'atelier du tableau de chiffrage. Applique les règles NEXUS, propose des corrections ligne par ligne, et peux suggérer des modifications structurées.`,
+    pdf: `\n\nCONTEXTE ÉTAPE PDF :\nTu aides à reformuler les libellés PDF, vérifier la cohérence visuelle avec le modèle The Hive, et signaler les alertes à faire figurer. Ne recalcule pas les prix sauf incohérence évidente.`,
+    envoi: `\n\nCONTEXTE ÉTAPE ENVOI :\nTu rédiges le brouillon email de transmission, vérifies deal/contact HubSpot, PJ (PDF devis + fiches détail) et la checklist avant envoi. Ton professionnel, concis, en français.`,
+  }
+  const stepHint = step_key ? (stepAssistantHints[String(step_key)] || '') : ''
 
   const businessSystemMsg = `Tu es un expert NEXUS en menuiserie sécurisée (portes blindées RC3-RC6, coupe-feu EI60/EI120, pare-balles FB4-FB7).
 Tu es avant tout un assistant conversationnel et naturel. Si l'utilisateur te salue, te demande comment tu vas ou te dit "tu es là ?", réponds naturellement, brièvement et poliment, sans générer d'analyse de devis si cela n'est pas explicitement demandé ou pertinent.
@@ -2362,7 +2713,7 @@ CONVENTION DE LECTURE DES TABLEAUX DE PRIX (CRITIQUE) :
 - CR6 2 vantaux : non disponible au catalogue standard — hors catalogue.
 
 Si deux markdowns se contredisent, privilégie le markdown de la gamme principale. Signale la contradiction.
-Les fichiers transverses (GUIDE-DEVIS, BASE, EQUIP-COMMUN) sont TOUJOURS chargés pour toi — consulte-les systématiquement.
+Les fichiers transverses (GUIDE-DEVIS, BASE, EQUIP-COMMUN) sont TOUJOURS chargés pour toi — consulte-les systématiquement.${stepHint}
 ${context ? `\n\nBase documentaire NEXUS 2026 mise à disposition (${loadedDocs.length} fichiers : ${loadedDocs.join(', ')}) :\n\n${context}` : ''}${equipmentCompatibilityBlock}${mandatoryRulesBlock}${rulesBlock}${expBlock}${historyBlock}
 Réponds en français de façon structurée et professionnelle, en Markdown lisible. Si une information manque ou est incohérente, indique-le clairement.`
 
@@ -2499,7 +2850,7 @@ router.post('/', async (req, res) => {
 
 // PUT /api/devis/:id — update devis header
 router.put('/:id', async (req, res) => {
-  const allowed = ['deal_id', 'company_id', 'client_name', 'name', 'status', 'source_file', 'analysis_json', 'validation_json', 'total_ht', 'pdf_path', 'hubspot_note_id']
+  const allowed = ['deal_id', 'company_id', 'client_name', 'name', 'status', 'source_file', 'analysis_json', 'validation_json', 'total_ht', 'pdf_path', 'hubspot_note_id', 'currency', 'tva_rate', 'commercial_discount_ht', 'exchange_rate', 'exchange_locked', 'requester_contact_id', 'requester_contact_name', 'source_email_json', 'no_email_source', 'email_draft_body']
   const sets = []
   const vals = []
   for (const key of allowed) {
@@ -2562,8 +2913,9 @@ router.get('/:id/lines', async (req, res) => {
 
 // POST /api/devis/:id/lines — add a line
 router.post('/:id/lines', async (req, res) => {
-  const d = req.body
+  const d = applyR061Defaults(req.body)
   try {
+    await assertDevisLinesEditable(req.params.id)
     // Auto position = max+1
     const [maxPos] = await db.query(
       'SELECT COALESCE(MAX(position), -1) AS mp FROM devis_lines WHERE devis_id = ?',
@@ -2575,8 +2927,8 @@ router.post('/:id/lines', async (req, res) => {
        (devis_id, position, line_section, designation, localisation, type_porte, gamme, vantail,
         hauteur_mm, largeur_mm, prix_base_ht, ref_base, raw_json, options_json,
         serrure_ref, serrure_prix, ferme_porte_ref, ferme_porte_prix,
-        equipements_json, total_ligne_ht, alertes_json, docs_json)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        equipements_json, total_ligne_ht, qty, multiple, weight_kg, alertes_json, docs_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         req.params.id, pos, normalizeLineSection(d.line_section),
         d.designation || null, d.localisation || null, d.type_porte || null, d.gamme || null, d.vantail || null,
@@ -2588,6 +2940,9 @@ router.post('/:id/lines', async (req, res) => {
         d.ferme_porte_ref || null, d.ferme_porte_prix || null,
         d.equipements_json ? JSON.stringify(d.equipements_json) : null,
         d.total_ligne_ht || null,
+        lineQtyValue(d),
+        lineMultipleValue(d),
+        lineWeightValue(d),
         d.alertes_json ? JSON.stringify(d.alertes_json) : null,
         d.docs_json ? JSON.stringify(d.docs_json) : null,
       ]
@@ -2599,11 +2954,132 @@ router.post('/:id/lines', async (req, res) => {
   }
 })
 
+// POST /api/devis/:id/sync-grid — upsert lines from standalone grid (?devisId=)
+router.post('/:id/sync-grid', async (req, res) => {
+  const rows = req.body?.rows
+  if (!Array.isArray(rows)) return res.status(400).json({ error: 'rows array required' })
+  try {
+    await assertDevisLinesEditable(req.params.id)
+    const keptIds = new Set()
+    for (let index = 0; index < rows.length; index += 1) {
+      const payload = gridRowFromClient(rows[index], index)
+      const lineId = Number(rows[index]?._lineId)
+      if (Number.isInteger(lineId) && lineId > 0) {
+        await db.query(
+          `UPDATE devis_lines SET position=?, line_section=?, designation=?, localisation=?, type_porte=?, gamme=?, vantail=?,
+           hauteur_mm=?, largeur_mm=?, prix_base_ht=?, ref_base=?, raw_json=?, options_json=?, serrure_ref=?, ferme_porte_ref=?,
+           equipements_json=?, total_ligne_ht=?, qty=?, multiple=?, weight_kg=?, alertes_json=?, docs_json=?
+           WHERE id=? AND devis_id=?`,
+          [
+            payload.position, normalizeLineSection(payload.line_section), payload.designation, payload.localisation,
+            payload.type_porte, payload.gamme, payload.vantail, payload.hauteur_mm, payload.largeur_mm,
+            payload.prix_base_ht, payload.ref_base,
+            payload.raw_json ? JSON.stringify(payload.raw_json) : null,
+            payload.options_json ? JSON.stringify(payload.options_json) : null,
+            payload.serrure_ref, payload.ferme_porte_ref,
+            payload.equipements_json ? JSON.stringify(payload.equipements_json) : null,
+            payload.total_ligne_ht,
+            lineQtyValue(payload), lineMultipleValue(payload), lineWeightValue(payload),
+            payload.alertes_json ? JSON.stringify(payload.alertes_json) : null,
+            payload.docs_json ? JSON.stringify(payload.docs_json) : null,
+            lineId, req.params.id,
+          ]
+        )
+        keptIds.add(lineId)
+      } else {
+        const [result] = await db.query(
+          `INSERT INTO devis_lines
+           (devis_id, position, line_section, designation, localisation, type_porte, gamme, vantail,
+            hauteur_mm, largeur_mm, prix_base_ht, ref_base, raw_json, options_json,
+            serrure_ref, ferme_porte_ref, equipements_json, total_ligne_ht, qty, multiple, weight_kg, alertes_json, docs_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            req.params.id, payload.position, normalizeLineSection(payload.line_section),
+            payload.designation, payload.localisation, payload.type_porte, payload.gamme, payload.vantail,
+            payload.hauteur_mm, payload.largeur_mm, payload.prix_base_ht, payload.ref_base,
+            payload.raw_json ? JSON.stringify(payload.raw_json) : null,
+            payload.options_json ? JSON.stringify(payload.options_json) : null,
+            payload.serrure_ref, payload.ferme_porte_ref,
+            payload.equipements_json ? JSON.stringify(payload.equipements_json) : null,
+            payload.total_ligne_ht,
+            lineQtyValue(payload), lineMultipleValue(payload), lineWeightValue(payload),
+            payload.alertes_json ? JSON.stringify(payload.alertes_json) : null,
+            payload.docs_json ? JSON.stringify(payload.docs_json) : null,
+          ]
+        )
+        keptIds.add(result.insertId)
+      }
+    }
+    const [existing] = await db.query('SELECT id FROM devis_lines WHERE devis_id = ?', [req.params.id])
+    const orphanIds = existing.map(row => row.id).filter(id => !keptIds.has(id))
+    if (orphanIds.length) {
+      const placeholders = orphanIds.map(() => '?').join(',')
+      await db.query(`DELETE FROM devis_lines WHERE devis_id = ? AND id IN (${placeholders})`, [req.params.id, ...orphanIds])
+    }
+    const [sumRows] = await db.query(
+      'SELECT COALESCE(SUM(total_ligne_ht), 0) AS total FROM devis_lines WHERE devis_id = ?',
+      [req.params.id]
+    )
+    const meta = req.body?.meta
+    if (meta && typeof meta === 'object') {
+      const metaUpdates = ['total_ht = ?', 'status = ?']
+      const metaParams = [sumRows[0].total, 'editing']
+      if (meta.currency) {
+        metaUpdates.push('currency = ?')
+        metaParams.push(String(meta.currency).toUpperCase().slice(0, 3))
+      }
+      if (meta.tva_rate != null && Number.isFinite(Number(meta.tva_rate))) {
+        metaUpdates.push('tva_rate = ?')
+        metaParams.push(Number(meta.tva_rate))
+      }
+      if (meta.commercial_discount_ht != null && Number.isFinite(Number(meta.commercial_discount_ht))) {
+        metaUpdates.push('commercial_discount_ht = ?')
+        metaParams.push(Number(meta.commercial_discount_ht))
+      }
+      if (meta.change_rate != null && Number.isFinite(Number(meta.change_rate))) {
+        metaUpdates.push('exchange_rate = ?')
+        metaParams.push(Number(meta.change_rate))
+      } else if (meta.exchange_rate != null && Number.isFinite(Number(meta.exchange_rate))) {
+        metaUpdates.push('exchange_rate = ?')
+        metaParams.push(Number(meta.exchange_rate))
+      }
+      if (meta.exchange_locked != null) {
+        metaUpdates.push('exchange_locked = ?')
+        metaParams.push(meta.exchange_locked ? 1 : 0)
+      }
+      metaParams.push(req.params.id)
+      await db.query(`UPDATE devis SET ${metaUpdates.join(', ')} WHERE id = ?`, metaParams)
+    } else {
+      await db.query('UPDATE devis SET total_ht = ?, status = ? WHERE id = ?', [sumRows[0].total, 'editing', req.params.id])
+    }
+    const versionToSync = await resolveActiveVersionId(
+      Number(req.params.id),
+      meta?.version_id || req.body?.version_id
+    )
+    if (versionToSync) {
+      try {
+        await syncVersionLinesFromMaster(Number(req.params.id), versionToSync)
+      } catch (syncErr) {
+        console.warn('[sync-grid] version sync skipped:', syncErr.message)
+      }
+    }
+    const [saved] = await db.query(
+      'SELECT * FROM devis_lines WHERE devis_id = ? ORDER BY FIELD(line_section, "products", "calculations", "transport"), position ASC, id ASC',
+      [req.params.id]
+    )
+    res.json(saved)
+  } catch (err) {
+    const status = err.status || 500
+    res.status(status).json({ error: err.message || 'Sync grille impossible' })
+  }
+})
+
 // POST /api/devis/:id/lines/bulk — import multiple lines from analysis
 router.post('/:id/lines/bulk', async (req, res) => {
   const { lines } = req.body
   if (!Array.isArray(lines)) return res.status(400).json({ error: 'lines array required' })
   try {
+    await assertDevisLinesEditable(req.params.id)
     // Clear existing lines first
     await db.query('DELETE FROM devis_lines WHERE devis_id = ?', [req.params.id])
     if (!lines.length) {
@@ -2611,7 +3087,7 @@ router.post('/:id/lines/bulk', async (req, res) => {
       return res.json([])
     }
     for (let i = 0; i < lines.length; i++) {
-      const d = lines[i]
+      const d = applyR061Defaults(lines[i])
       const totalLigne = (d.prix_base_ht || 0) + (d.options?.reduce((s, o) => s + (o.prix || 0), 0) || 0) + (d.serrure_prix || 0) + (d.ferme_porte_prix || 0)
       const pricedTotal = d.total_ligne_ht ?? d.prix_total_min_ht ?? totalLigne
       const storedTotal = isBlockingUnpricedLine(d) ? null : (pricedTotal || null)
@@ -2620,8 +3096,8 @@ router.post('/:id/lines/bulk', async (req, res) => {
           (devis_id, position, line_section, designation, localisation, type_porte, gamme, vantail,
           hauteur_mm, largeur_mm, prix_base_ht, ref_base, raw_json, options_json,
           serrure_ref, serrure_prix, ferme_porte_ref, ferme_porte_prix,
-          equipements_json, total_ligne_ht, alertes_json, docs_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          equipements_json, total_ligne_ht, qty, multiple, weight_kg, alertes_json, docs_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           req.params.id, i, normalizeLineSection(d.line_section),
           d.designation || d.type || null, d.localisation || null, d.type || null, d.gamme || null, d.vantail || null,
@@ -2631,9 +3107,12 @@ router.post('/:id/lines/bulk', async (req, res) => {
           d.raw_json || d._raw ? JSON.stringify(d.raw_json || d._raw) : null,
           d.options ? JSON.stringify(d.options) : null,
           d.serrure?.ref || null, null,
-          d.ferme_porte?.ref || null, null,
-          d.equip_extra ? JSON.stringify(d.equip_extra) : null,
+          d.ferme_porte_ref || d.ferme_porte?.ref || null, null,
+          d.equipements_json || d.equip_extra ? JSON.stringify(d.equipements_json || d.equip_extra) : null,
           storedTotal,
+          lineQtyValue(d),
+          lineMultipleValue(d),
+          lineWeightValue(d),
           d.alertes ? JSON.stringify(d.alertes) : null,
           d.docs ? JSON.stringify(d.docs) : null,
         ]
@@ -2654,18 +3133,20 @@ router.post('/:id/lines/bulk', async (req, res) => {
 
 // PUT /api/devis/:id/lines/:lineId — update a line
 router.put('/:id/lines/:lineId', async (req, res) => {
-  const allowed = ['position', 'line_section', 'designation', 'localisation', 'type_porte', 'gamme', 'vantail', 'hauteur_mm', 'largeur_mm', 'prix_base_ht', 'ref_base', 'raw_json', 'options_json', 'serrure_ref', 'serrure_prix', 'ferme_porte_ref', 'ferme_porte_prix', 'equipements_json', 'total_ligne_ht', 'alertes_json', 'docs_json']
+  const allowed = ['position', 'line_section', 'designation', 'localisation', 'type_porte', 'gamme', 'vantail', 'hauteur_mm', 'largeur_mm', 'prix_base_ht', 'ref_base', 'raw_json', 'options_json', 'serrure_ref', 'serrure_prix', 'ferme_porte_ref', 'ferme_porte_prix', 'equipements_json', 'total_ligne_ht', 'qty', 'multiple', 'weight_kg', 'alertes_json', 'docs_json']
+  const body = applyR061PatchDefaults(req.body || {})
   const sets = []
   const vals = []
   for (const key of allowed) {
-    if (req.body[key] !== undefined) {
+    if (body[key] !== undefined) {
       sets.push(`${key} = ?`)
-      vals.push(key === 'line_section' ? normalizeLineSection(req.body[key]) : (key.endsWith('_json') ? JSON.stringify(req.body[key]) : req.body[key]))
+      vals.push(key === 'line_section' ? normalizeLineSection(body[key]) : (key.endsWith('_json') ? JSON.stringify(body[key]) : body[key]))
     }
   }
   if (!sets.length) return res.status(400).json({ error: 'Aucun champ à mettre à jour' })
   vals.push(req.params.lineId, req.params.id)
   try {
+    await assertDevisLinesEditable(req.params.id)
     await db.query(`UPDATE devis_lines SET ${sets.join(', ')} WHERE id = ? AND devis_id = ?`, vals)
     // Recalculate devis total
     const [sumRows] = await db.query(
@@ -2683,6 +3164,7 @@ router.put('/:id/lines/:lineId', async (req, res) => {
 // DELETE /api/devis/:id/lines/:lineId
 router.delete('/:id/lines/:lineId', async (req, res) => {
   try {
+    await assertDevisLinesEditable(req.params.id)
     await db.query('DELETE FROM devis_lines WHERE id = ? AND devis_id = ?', [req.params.lineId, req.params.id])
     // Recalculate devis total
     const [sumRows] = await db.query(
@@ -2696,6 +3178,29 @@ router.delete('/:id/lines/:lineId', async (req, res) => {
   }
 })
 
+// ── GET /api/devis/:id/detail-pdf — fiches de détail assemblées ───────────
+router.get('/:id/detail-pdf', async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'ID invalide' })
+  try {
+    const [devisRows] = await db.query('SELECT * FROM devis WHERE id = ?', [id])
+    if (!devisRows.length) return res.status(404).json({ error: 'Devis introuvable' })
+    const devis = devisRows[0]
+    const lines = await loadPdfLinesForDevis(id, req.query.version_id || req.query.version || devis.current_version_id)
+    const { buildDetailSheetsPdf } = await import('../devis-detail-pdf.js')
+    const { buffer, filename } = await buildDetailSheetsPdf({ devis, lines })
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': req.query.inline ? `inline; filename="${String(filename).replace(/"/g, "'")}"` : attachmentDisposition(filename),
+      'Content-Length': buffer.length,
+    })
+    res.end(buffer)
+  } catch (err) {
+    console.error('detail pdf error:', err)
+    res.status(500).json({ error: 'Erreur génération fiches détail', details: err.message })
+  }
+})
+
 // ── GET /api/devis/:id/pdf — generate Playwright PDF for a devis ───────────
 router.get('/:id/pdf', async (req, res) => {
   const id = Number(req.params.id)
@@ -2705,16 +3210,15 @@ router.get('/:id/pdf', async (req, res) => {
     if (!devisRows.length) return res.status(404).json({ error: 'Devis introuvable' })
     const devis = devisRows[0]
 
-    const [lines] = await db.query(
-      'SELECT * FROM devis_lines WHERE devis_id = ? ORDER BY FIELD(line_section, "products", "calculations", "transport"), position ASC, id ASC',
-      [id]
-    )
-    const versionNumber = await resolveDevisVersionNumber(id, req.query.version_id || devis.current_version_id)
+    const targetVersionId = req.query.version_id || req.query.version || devis.current_version_id
+    const lines = await loadPdfLinesForDevis(id, targetVersionId)
+    const versionNumber = await resolveDevisVersionNumber(id, targetVersionId)
     const pdfFilename = buildDevisPdfFilename(devis, versionNumber)
 
     // Lazy-load PDF builder to avoid Playwright startup on every server boot
     const { buildDevisNexusPdf } = await import('../devis-pdf.js')
     const { buffer, filename } = await buildDevisNexusPdf({ devis: { ...devis, pdf_filename: pdfFilename }, lines })
+    await storeGeneratedDevisPdf({ devisId: id, versionId: targetVersionId, filename, buffer })
 
     res.set({
       'Content-Type': 'application/pdf',
@@ -2725,6 +3229,33 @@ router.get('/:id/pdf', async (req, res) => {
   } catch (err) {
     console.error('devis pdf generation error:', err)
     res.status(500).json({ error: 'Erreur génération PDF', details: err.message })
+  }
+})
+
+// POST /api/devis/:id/pdf-preview — live preview with unsaved PDF label overrides
+router.post('/:id/pdf-preview', async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'ID invalide' })
+  try {
+    const [devisRows] = await db.query('SELECT * FROM devis WHERE id = ?', [id])
+    if (!devisRows.length) return res.status(404).json({ error: 'Devis introuvable' })
+    const devis = devisRows[0]
+    const targetVersionId = req.body?.version_id || req.query.version_id || devis.current_version_id
+    const rawLines = await loadPdfLinesForDevis(id, targetVersionId)
+    const lines = applyPdfLabelOverrides(rawLines, req.body?.labels)
+    const versionNumber = await resolveDevisVersionNumber(id, targetVersionId)
+    const pdfFilename = buildDevisPdfFilename(devis, versionNumber)
+    const { buildDevisNexusPdf } = await import('../devis-pdf.js')
+    const { buffer, filename } = await buildDevisNexusPdf({ devis: { ...devis, pdf_filename: pdfFilename }, lines })
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `inline; filename="${String(filename).replace(/"/g, "'")}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+      'Content-Length': buffer.length,
+    })
+    res.end(buffer)
+  } catch (err) {
+    console.error('devis pdf preview error:', err)
+    res.status(500).json({ error: 'Erreur aperçu PDF', details: err.message })
   }
 })
 
@@ -2803,10 +3334,13 @@ router.post('/:id/validate-rules', async (req, res) => {
 // Persiste un bilan de validation IA produit par la grille progressive.
 router.post('/:id/rule-checks', async (req, res) => {
   const id = Number(req.params.id)
-  const versionId = Number(req.body?.version_id)
+  let versionId = Number(req.body?.version_id)
   const report = req.body?.report
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'ID invalide' })
-  if (!Number.isInteger(versionId) || versionId < 1) return res.status(400).json({ error: 'version_id invalide' })
+  if (!Number.isInteger(versionId) || versionId < 1) {
+    versionId = await resolveActiveVersionId(id)
+  }
+  if (!versionId) return res.status(400).json({ error: 'version_id requis (aucune version active sur ce devis)' })
   if (!report || typeof report !== 'object') return res.status(400).json({ error: 'report requis' })
   try {
     const reportWithMeta = { ...report, devis_id: id, version_id: versionId }
@@ -2847,6 +3381,18 @@ router.post('/validate-lines', async (req, res) => {
   if (!Array.isArray(lines) || !lines.length) {
     return res.status(400).json({ error: 'lines array required' })
   }
+  const r061Issues = auditR061Compliance(lines)
+  const perfCompatIssues = auditPerformanceCompatibility(lines, repLetterFromIndex)
+  const staticViolationCount = r061Issues.length + perfCompatIssues.filter(i => i.status === 'violation').length
+  const staticWarningCount = perfCompatIssues.filter(i => i.status === 'warning').length
+  if (req.body?.static_only) {
+    return res.json({
+      generated_at: new Date().toISOString(),
+      static_only: true,
+      static_checks: { r061: r061Issues, performance_compat: perfCompatIssues },
+      summary: { ok: 0, warning: staticWarningCount, violation: staticViolationCount, na: 0 },
+    })
+  }
   try {
     const { getValidationKnowledgeVersion, loadApprovedRules, validateLine } = await import('../services/rules-validator.js')
     const generatedAt = new Date().toISOString()
@@ -2866,7 +3412,8 @@ router.post('/validate-lines', async (req, res) => {
           vantail: line.vantail || null,
           verdicts: [],
         })),
-        summary: { ok: 0, warning: 0, violation: 0, na: 0 },
+        static_checks: { r061: r061Issues, performance_compat: perfCompatIssues },
+        summary: { ok: 0, warning: perfCompatIssues.filter(i => i.status === 'warning').length, violation: staticViolationCount, na: 0 },
       })
     }
     const model = await getGlobalOllamaModel()
@@ -2908,7 +3455,7 @@ router.post('/validate-lines', async (req, res) => {
         verdicts,
       }
     })
-    const summary = { ok: 0, warning: 0, violation: 0, na: 0 }
+    const summary = { ok: 0, warning: perfCompatIssues.filter(i => i.status === 'warning').length, violation: staticViolationCount, na: 0 }
     for (const result of results) {
       for (const v of result?.verdicts || []) summary[v.status] = (summary[v.status] || 0) + 1
     }
@@ -2919,6 +3466,7 @@ router.post('/validate-lines', async (req, res) => {
       knowledge_version: knowledge.version,
       knowledge_updated_at: knowledge.updated_at,
       lines: results,
+      static_checks: { r061: r061Issues, performance_compat: perfCompatIssues },
       summary,
     })
   } catch (err) {
@@ -2964,7 +3512,11 @@ router.get('/:id/versions', async (req, res) => {
 
     const [versions] = await db.query(
       `SELECT v.*,
-              (SELECT COUNT(*) FROM devis_version_lines vl WHERE vl.version_id = v.id) AS row_count
+              (SELECT COUNT(*) FROM devis_version_lines vl WHERE vl.version_id = v.id) AS row_count,
+              COALESCE(
+                v.total_ht,
+                (SELECT COALESCE(SUM(vl.total_ligne_ht), 0) FROM devis_version_lines vl WHERE vl.version_id = v.id)
+              ) AS total_ht
        FROM devis_versions v
        WHERE v.devis_id = ?
        ORDER BY v.id ASC`,
@@ -2995,9 +3547,17 @@ router.get('/:id/versions', async (req, res) => {
     }
 
     const currentVersionId = devisRow.current_version_id || versions[0]?.id || null
+    const numberMap = buildVersionNumberMap(versions)
     res.json({
       current_version_id: currentVersionId,
-      versions: versions.map(v => ({ ...v, comments: commentsByVersion[v.id] || [] })),
+      tree: buildVersionTree(versions),
+      versions: versions.map(v => ({
+        ...v,
+        total_ht: Number(v.total_ht || 0),
+        number: numberMap.get(Number(v.id)) || v.version_label,
+        locked: isVersionLocked(v),
+        comments: commentsByVersion[v.id] || [],
+      })),
     })
   } catch (err) {
     console.error('GET versions error:', err)
@@ -3134,6 +3694,71 @@ router.delete('/:id/versions/:vId', async (req, res) => {
   }
 })
 
+// GET /api/devis/:id/versions/compare?a=&b=
+router.get('/:id/versions/compare', async (req, res) => {
+  const devisId = Number(req.params.id)
+  const versionA = Number(req.query.a)
+  const versionB = Number(req.query.b)
+  if (!Number.isInteger(devisId) || devisId < 1) return res.status(400).json({ error: 'ID devis invalide' })
+  if (!Number.isInteger(versionA) || !Number.isInteger(versionB)) {
+    return res.status(400).json({ error: 'Query params a et b (version ids) requis' })
+  }
+  try {
+    const [versions] = await db.query(
+      'SELECT id, parent_version_id, version_label, title, branch_label, status, locked_at FROM devis_versions WHERE devis_id = ?',
+      [devisId]
+    )
+    const [[metaA]] = await db.query('SELECT id, parent_version_id, version_label, title, branch_label, status, locked_at FROM devis_versions WHERE id = ? AND devis_id = ?', [versionA, devisId])
+    const [[metaB]] = await db.query('SELECT id, parent_version_id, version_label, title, branch_label, status, locked_at FROM devis_versions WHERE id = ? AND devis_id = ?', [versionB, devisId])
+    if (!metaA || !metaB) return res.status(404).json({ error: 'Version introuvable pour ce devis' })
+    const [linesA] = await db.query(
+      'SELECT * FROM devis_version_lines WHERE version_id = ? ORDER BY FIELD(line_section, "products", "calculations", "transport"), position ASC, id ASC',
+      [versionA]
+    )
+    const [linesB] = await db.query(
+      'SELECT * FROM devis_version_lines WHERE version_id = ? ORDER BY FIELD(line_section, "products", "calculations", "transport"), position ASC, id ASC',
+      [versionB]
+    )
+    const diff = compareVersionLineSets(linesA, linesB)
+    const totalA = linesA.reduce((sum, row) => sum + (Number(row.total_ligne_ht) || 0), 0)
+    const totalB = linesB.reduce((sum, row) => sum + (Number(row.total_ligne_ht) || 0), 0)
+    const numberMap = buildVersionNumberMap(versions)
+    const relationship = getVersionRelationship(versionA, versionB, versions)
+    res.json({
+      version_a: {
+        ...metaA,
+        number: numberMap.get(Number(metaA.id)) || metaA.version_label,
+        display_label: versionDisplayLabel(metaA, numberMap),
+      },
+      version_b: {
+        ...metaB,
+        number: numberMap.get(Number(metaB.id)) || metaB.version_label,
+        display_label: versionDisplayLabel(metaB, numberMap),
+      },
+      relationship,
+      relationship_label: versionRelationshipLabel(relationship),
+      ...diff,
+      totals: {
+        a: Math.round(totalA * 100) / 100,
+        b: Math.round(totalB * 100) / 100,
+        delta: Math.round((totalB - totalA) * 100) / 100,
+      },
+      locked: {
+        a: isVersionLocked(metaA),
+        b: isVersionLocked(metaB),
+      },
+      summary: {
+        added: diff.added.length,
+        removed: diff.removed.length,
+        changed: diff.changed.length,
+      },
+    })
+  } catch (err) {
+    console.error('compare versions error:', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
 // POST /api/devis/:id/versions/:vId/activate
 router.post('/:id/versions/:vId/activate', async (req, res) => {
   const devisId = Number(req.params.id)
@@ -3164,6 +3789,7 @@ router.patch('/:id/versions/:vId', async (req, res) => {
   if (!sets.length) return res.status(400).json({ error: 'Aucun champ à mettre à jour' })
   vals.push(vId, devisId)
   try {
+    await assertDevisVersionEditable(devisId, vId)
     await db.query(`UPDATE devis_versions SET ${sets.join(', ')} WHERE id = ? AND devis_id = ?`, vals)
     const [[row]] = await db.query('SELECT * FROM devis_versions WHERE id = ?', [vId])
     res.json(row)
@@ -3206,16 +3832,79 @@ router.patch('/:id/versions/:vId/comments/:cId', async (req, res) => {
   }
 })
 
+async function resolveActiveVersionId(devisId, versionId = null) {
+  const explicit = Number(versionId)
+  if (Number.isInteger(explicit) && explicit > 0) return explicit
+  const [[devisRow]] = await db.query('SELECT current_version_id FROM devis WHERE id = ?', [devisId])
+  const current = Number(devisRow?.current_version_id)
+  return Number.isInteger(current) && current > 0 ? current : null
+}
+
+async function storeGeneratedDevisPdf({ devisId, versionId, filename, buffer }) {
+  try {
+    const relativePath = await saveDevisPdfBuffer({ devisId, filename, buffer })
+    const activeVersionId = await resolveActiveVersionId(devisId, versionId)
+    await persistDevisPdfPaths(db, { devisId, versionId: activeVersionId, relativePath })
+    return relativePath
+  } catch (err) {
+    console.warn('[devis] pdf persist skipped:', err.message)
+    return null
+  }
+}
+
+async function syncVersionLinesFromMaster(devisId, versionId) {
+  await db.query('DELETE FROM devis_version_lines WHERE version_id = ?', [versionId])
+  const [masterLines] = await db.query(
+    `SELECT * FROM devis_lines WHERE devis_id = ?
+     ORDER BY FIELD(line_section, 'products', 'calculations', 'transport'), position ASC, id ASC`,
+    [devisId]
+  )
+  for (const line of masterLines) {
+    let optionsJson = null
+    if (line.options_json) {
+      try {
+        optionsJson = typeof line.options_json === 'string' ? JSON.parse(line.options_json) : line.options_json
+      } catch {
+        optionsJson = null
+      }
+    }
+    await db.query(
+      `INSERT INTO devis_version_lines (version_id, source_line_id, position, line_section, grid_json, designation_pdf, total_ligne_ht)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        versionId,
+        line.id,
+        line.position,
+        line.line_section,
+        JSON.stringify({ ...line, options_json: optionsJson }),
+        line.designation,
+        line.total_ligne_ht,
+      ]
+    )
+  }
+  const [[sumRow]] = await db.query(
+    'SELECT COALESCE(SUM(total_ligne_ht), 0) AS total FROM devis_version_lines WHERE version_id = ?',
+    [versionId]
+  )
+  await db.query('UPDATE devis_versions SET total_ht = ? WHERE id = ?', [sumRow.total, versionId])
+  return masterLines.length
+}
+
 // POST /api/devis/:id/versions/:vId/checkpoint
 // Body: { comment?, step_key?, status? }
 router.post('/:id/versions/:vId/checkpoint', async (req, res) => {
   const devisId = Number(req.params.id)
   const vId = Number(req.params.vId)
-  const { comment, step_key, status } = req.body
+  const { comment, step_key, status, sync_lines } = req.body
   try {
+    await assertDevisVersionEditable(devisId, vId)
     // Optionally update version status
     if (status) {
       await db.query('UPDATE devis_versions SET status = ? WHERE id = ? AND devis_id = ?', [status, vId, devisId])
+    }
+    let syncedLineCount = null
+    if (sync_lines) {
+      syncedLineCount = await syncVersionLinesFromMaster(devisId, vId)
     }
     const content = comment?.trim() || `Checkpoint — ${new Date().toLocaleString('fr-FR')}`
     const [result] = await db.query(
@@ -3223,7 +3912,7 @@ router.post('/:id/versions/:vId/checkpoint', async (req, res) => {
       [vId, step_key || null, content, req.user.id]
     )
     const [[row]] = await db.query('SELECT * FROM devis_version_comments WHERE id = ?', [result.insertId])
-    res.status(201).json(row)
+    res.status(201).json({ ...row, synced_line_count: syncedLineCount })
   } catch (err) {
     console.error('checkpoint error:', err)
     res.status(500).json({ error: err.message })
@@ -3238,6 +3927,7 @@ router.put('/:id/versions/:vId/pdf-labels', async (req, res) => {
   const { labels, comment } = req.body
   if (!Array.isArray(labels)) return res.status(400).json({ error: 'labels array requis' })
   try {
+    await assertDevisVersionEditable(devisId, vId)
     for (const label of labels) {
       if (!label.line_id) continue
       // Upsert into devis_version_lines
@@ -3285,7 +3975,10 @@ router.put('/:id/versions/:vId/pdf-labels', async (req, res) => {
 router.post('/:id/send-hubspot', async (req, res) => {
   const id = Number(req.params.id)
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'ID invalide' })
-  const { deal_id, note_body, version_id } = req.body || {}
+  const { deal_id, note_body, version_id, reply_to_message_id } = req.body || {}
+  const requestedAttachments = req.body?.attachments || {}
+  const includeDevisPdf = requestedAttachments.devis_pdf !== false
+  const includeDetailSheets = requestedAttachments.detail_sheets === true
   try {
     const [rows] = await db.query('SELECT * FROM devis WHERE id = ?', [id])
     if (!rows.length) return res.status(404).json({ error: 'Devis introuvable' })
@@ -3311,16 +4004,26 @@ router.post('/:id/send-hubspot', async (req, res) => {
       }
     }
 
-    const [lines] = await db.query(
-      'SELECT * FROM devis_lines WHERE devis_id = ? ORDER BY FIELD(line_section,"products","calculations","transport"), position ASC, id ASC',
-      [id]
-    )
+    const lines = await loadPdfLinesForDevis(id, targetVersionId)
 
-    const { buildDevisNexusPdf } = await import('../devis-pdf.js')
     const versionNumber = await resolveDevisVersionNumber(id, targetVersionId)
     const versionLabel = versionNumber ? `v${versionNumber}` : (versionRow?.version_label || null)
-    const enrichedDevis = { ...devis, pdf_filename: buildDevisPdfFilename(devis, versionNumber) }
-    const { buffer, filename } = await buildDevisNexusPdf({ devis: enrichedDevis, lines })
+    const filesToAttach = []
+    let filename = null
+    if (includeDevisPdf) {
+      const { buildDevisNexusPdf } = await import('../devis-pdf.js')
+      const enrichedDevis = { ...devis, pdf_filename: buildDevisPdfFilename(devis, versionNumber) }
+      const pdf = await buildDevisNexusPdf({ devis: enrichedDevis, lines })
+      filename = pdf.filename
+      filesToAttach.push({ buffer: pdf.buffer, filename: pdf.filename })
+      await storeGeneratedDevisPdf({ devisId: id, versionId: targetVersionId, filename: pdf.filename, buffer: pdf.buffer })
+    }
+    if (includeDetailSheets) {
+      const { buildDetailSheetsPdf } = await import('../devis-detail-pdf.js')
+      const detailPdf = await buildDetailSheetsPdf({ devis, lines })
+      filesToAttach.push({ buffer: detailPdf.buffer, filename: detailPdf.filename })
+      if (!filename) filename = detailPdf.filename
+    }
 
     const { uploadPdfToDeal, updateDeal, isHubspotConfigured } = await import('../services/hubspot.js')
     if (!isHubspotConfigured()) {
@@ -3351,12 +4054,12 @@ router.post('/:id/send-hubspot', async (req, res) => {
         `Devis NEXUS — ${buildDevisDisplayName(devis, versionNumber)}`,
         versionComment ? `Commentaire version : ${versionComment}` : null,
       ].filter(Boolean).join('\n')
-    const result = await uploadPdfToDeal({ buffer, filename, dealId: targetDealId, noteBody: body })
+    const result = await uploadPdfToDeal({ files: filesToAttach, dealId: targetDealId, noteBody: body })
 
     // Update version row if available
     if (versionRow) {
       await db.query(
-        'UPDATE devis_versions SET hubspot_note_id = ?, hubspot_file_id = ?, status = ? WHERE id = ?',
+        'UPDATE devis_versions SET hubspot_note_id = ?, hubspot_file_id = ?, status = ?, locked_at = COALESCE(locked_at, NOW()) WHERE id = ?',
         [result.noteId, result.fileId, 'sent_hubspot', versionRow.id]
       )
     }
@@ -3365,7 +4068,57 @@ router.post('/:id/send-hubspot', async (req, res) => {
       [result.noteId, 'sent_hubspot', id]
     )
 
-    res.json({ ...result, filename, amount: hubspotAmount > 0 ? hubspotAmount : null, version_id: versionRow?.id || null, version_label: versionLabel, version_comment: versionComment })
+    let mailtoUrl = ''
+    let sourceEmail = null
+    if (devis.source_email_json) {
+      try {
+        sourceEmail = typeof devis.source_email_json === 'string'
+          ? JSON.parse(devis.source_email_json)
+          : devis.source_email_json
+        const recipient = String(sourceEmail?.from || sourceEmail?.from_email || devis.requester_contact_name || '').match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0]
+        if (recipient) {
+          mailtoUrl = buildMailtoDraftUrl({
+            to: recipient,
+            subject: sourceEmail?.subject || `Devis ${devis.quote_number || devis.id}`,
+            body: note_body || body,
+          })
+        }
+      } catch { /* ignore malformed source email */ }
+    }
+
+    const replyInternetMessageId = reply_to_message_id || sourceEmail?.message_id || null
+    let outlookDraft = null
+    let outlookError = null
+    if (replyInternetMessageId) {
+      try {
+        const { createReplyDraftWithAttachments, isGraphConfigured } = await import('../services/microsoftGraph.js')
+        if (isGraphConfigured()) {
+          outlookDraft = await createReplyDraftWithAttachments({
+            internetMessageId: replyInternetMessageId,
+            bodyText: note_body || body,
+            attachments: filesToAttach.map(file => ({ filename: file.filename, buffer: file.buffer })),
+          })
+        }
+      } catch (err) {
+        outlookError = err.message || 'Erreur création brouillon Outlook'
+        console.warn('[devis] Graph draft failed:', outlookError)
+      }
+    }
+
+    res.json({
+      ...result,
+      filename,
+      filenames: filesToAttach.map(file => file.filename),
+      amount: hubspotAmount > 0 ? hubspotAmount : null,
+      version_id: versionRow?.id || null,
+      version_label: versionLabel,
+      version_comment: versionComment,
+      reply_to_message_id: replyInternetMessageId,
+      outlook_draft: outlookDraft,
+      outlook_mode: outlookDraft ? 'graph' : (mailtoUrl ? 'mailto' : null),
+      outlook_error: outlookError,
+      mailto_url: outlookDraft ? null : (mailtoUrl || null),
+    })
   } catch (err) {
     if (err.code === 'NO_TOKEN') return res.status(503).json({ error: err.message })
     console.error('[devis] send-hubspot error:', err)

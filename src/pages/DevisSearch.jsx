@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { ArrowLeft, Download, ExternalLink, FileSearch, Loader2, RefreshCw, Search } from 'lucide-react'
+import { Download, ExternalLink, FileSearch, Loader2, RefreshCw, Search } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import api from '../api/index.js'
+import AppPageShell from '../components/AppPageShell.jsx'
 
 function formatMoney(value) {
   const amount = Number(value || 0)
@@ -50,20 +51,16 @@ export default function DevisSearch() {
   const filteredRows = useMemo(() => rows.filter(row => matchesSearch(row, query)), [query, rows])
 
   return (
-    <div className="quote-search-shell">
-      <header className="quote-search-header">
-        <button type="button" className="admin-btn-ghost" onClick={() => navigate('/')}>
-          <ArrowLeft size={15} /> Accueil
-        </button>
-        <div>
-          <h1>Recherche devis</h1>
-          <p>Tous les devis en ordre chronologique, avec accès rapide au devis et au PDF.</p>
-        </div>
+    <AppPageShell
+      title="Recherche devis"
+      subtitle="Tous les devis en ordre chronologique, avec accès rapide au devis et au PDF."
+      contentClassName="quote-search-main-wrap"
+      headerActions={(
         <button type="button" className="admin-btn-ghost" onClick={loadRows} disabled={loading}>
           {loading ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />} Actualiser
         </button>
-      </header>
-
+      )}
+    >
       <main className="quote-search-main">
         <div className="quote-search-toolbar">
           <div className="quote-search-input-wrap">
@@ -117,6 +114,6 @@ export default function DevisSearch() {
           </table>
         </div>
       </main>
-    </div>
+    </AppPageShell>
   )
 }

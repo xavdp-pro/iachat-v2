@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { authenticate, requireAdmin } from '../middleware/auth.js'
 import db from '../db/index.js'
+import { getSetting, setSetting, KEY_WEIGHT_VITRAGE_KG_M2 } from '../services/appSettings.js'
 import {
   DEFAULT_WEIGHT_PROFILES,
   calculateDevisWeight,
@@ -58,6 +59,34 @@ async function loadAllProfiles() {
 
 router.use(authenticate)
 
+router.get('/settings', async (_req, res) => {
+  try {
+    const raw = await getSetting(KEY_WEIGHT_VITRAGE_KG_M2)
+    const value = raw != null && raw !== '' ? Number(String(raw).replace(',', '.')) : null
+    res.json({ vitrage_kg_m2: Number.isFinite(value) ? value : null })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.put('/settings', requireAdmin, async (req, res) => {
+  try {
+    const value = req.body?.vitrage_kg_m2
+    if (value === '' || value == null) {
+      await setSetting(KEY_WEIGHT_VITRAGE_KG_M2, '')
+      return res.json({ vitrage_kg_m2: null })
+    }
+    const parsed = Number(String(value).replace(',', '.'))
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      return res.status(400).json({ error: 'vitrage_kg_m2 invalide' })
+    }
+    await setSetting(KEY_WEIGHT_VITRAGE_KG_M2, String(parsed))
+    res.json({ vitrage_kg_m2: parsed })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 router.get('/', async (_req, res) => {
   try {
     res.json(await loadAllProfiles())
@@ -70,9 +99,15 @@ router.post('/calculate', async (req, res) => {
   try {
     const profiles = await loadActiveProfiles()
     const rows = Array.isArray(req.body?.rows) ? req.body.rows : []
-    const result = calculateDevisWeight(rows, profiles, {
-      vitrage_kg_m2: req.body?.vitrage_kg_m2 ?? null,
-    })
+    let vitrageKgM2 = req.body?.vitrage_kg_m2 ?? null
+    if (vitrageKgM2 == null) {
+      const stored = await getSetting(KEY_WEIGHT_VITRAGE_KG_M2)
+      if (stored != null && stored !== '') {
+        const parsed = Number(String(stored).replace(',', '.'))
+        if (Number.isFinite(parsed)) vitrageKgM2 = parsed
+      }
+    }
+    const result = calculateDevisWeight(rows, profiles, { vitrage_kg_m2: vitrageKgM2 })
     res.json(result)
   } catch (err) {
     res.status(500).json({ error: err.message })

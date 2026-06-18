@@ -6,3 +6,4 @@ tmp/
 *.log
 *.pem
 .DS_Store
+infra/imap-test/maildir/

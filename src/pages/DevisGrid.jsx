@@ -5,9 +5,15 @@
  * Phase MVP : lecture seule + expand/collapse sous-rows
  */
 import { useState, useCallback, useRef, useEffect, useMemo, Fragment } from 'react'
-import { Upload, RefreshCw, ChevronRight, ChevronDown, AlertTriangle, MessageSquare, ArrowLeft, PanelLeftClose, PanelLeftOpen, Plus, Minus, X, Check, Loader2, Settings, Trash2, Calculator, Truck, Package, EyeOff, Eye, BookOpen, ShieldCheck, FileText, Bot, Sparkles, History, Send, Columns2, Undo2 } from 'lucide-react'
-import { useNavigate } from 'react-router-dom'
+import { Upload, RefreshCw, ChevronRight, ChevronDown, AlertTriangle, MessageSquare, ArrowLeft, PanelLeftClose, PanelLeftOpen, Plus, Minus, X, Check, Loader2, Settings, Trash2, Calculator, Truck, Package, EyeOff, Eye, BookOpen, ShieldCheck, FileText, Bot, Sparkles, History, Send, Columns2, Undo2, RotateCcw, Redo2, Download, FileSpreadsheet } from 'lucide-react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import api, { hasAuthToken } from '../api/index.js'
+import AppSidebar from '../components/AppSidebar.jsx'
+import AppBreadcrumbs from '../components/AppBreadcrumbs.jsx'
+import { useAppBreadcrumbs } from '../hooks/useAppBreadcrumbs.js'
+import { useBreadcrumbOverrideEffect } from '../context/BreadcrumbOverrideContext.jsx'
+import { dbLineToGridRow, gridRowToLinePayload } from '../lib/devisLineMappers.js'
+import { buildGridXlsxPayload } from '../lib/gridXlsxPayload.js'
 import Select from 'react-select'
 
 // ─── Palettes ──────────────────────────────────────────────────────────────
@@ -303,6 +309,7 @@ function optionAsEquipment(option) {
     price_label: option.price_label || option.priceLabel || '',
     source: option.source || '',
     slot: option.slot || '',
+    grid_column: option.grid_column || '',
     _fromOption: true,
   }
 }
@@ -313,14 +320,22 @@ function formatEquipmentSuggestion(option) {
   const ref = String(option.ref || '').trim()
   const price = Number(option.prix)
   const priceLabel = Number.isFinite(price) ? `${price.toLocaleString('fr-FR')} € HT` : String(option.price_label || '').trim()
-  const source = /xlsx|tarif nexus/i.test(String(option.source || '')) ? 'tarif XLSX' : ''
+  const sourceText = String(option.source || '')
+  const source = /door_equipment_items|matrix|matrice/i.test(sourceText)
+    ? 'matrice équipements'
+    : (/xlsx|tarif nexus/i.test(sourceText) ? 'tarif XLSX' : '')
   const main = label ? (ref && !label.includes(ref) ? `${label} réf. ${ref}` : label) : ref
   return [main, priceLabel, source].filter(Boolean).join(' — ')
 }
 
 function equipmentMatchesSlot(option, slot) {
   if (!slot || slot === 'autres') return true
-  if (option?.slot && option.slot === slot) return true
+  const aliases = { plinthe: 'plinthes', plinthes: 'plinthes', garniture_int: 'garniture', garniture_ext: 'garniture' }
+  const normalizedSlot = aliases[slot] || slot
+  const optionColumn = aliases[option?.grid_column] || option?.grid_column
+  const optionSlot = aliases[option?.slot] || option?.slot
+  if (optionColumn && optionColumn === normalizedSlot) return true
+  if (optionSlot && optionSlot === normalizedSlot) return true
   const text = [option?.label, option?.designation, option?.family, option?.source, option?.ref]
     .filter(Boolean)
     .join(' ')
@@ -337,7 +352,7 @@ function equipmentMatchesSlot(option, slot) {
     judas: /judas|oeilleton|œilleton|oculus/i,
     paumelle: /paumelle|pivot/i,
   }
-  return (patterns[slot] || /.*/).test(text)
+  return (patterns[normalizedSlot] || /.*/).test(text)
 }
 
 function equipmentOptionsForSlot(options, slot) {
@@ -349,9 +364,27 @@ function equipmentOptionsForSlot(options, slot) {
   return list.filter(option => equipmentMatchesSlot(option, slot))
 }
 
+const EQUIPMENT_FETCH_COLUMNS = {
+  serrure: 'serrure',
+  garniture: null,
+  garniture_int: 'garniture_int',
+  garniture_ext: 'garniture_ext',
+  fp: 'fp',
+  cremone: 'cremone',
+  contact: 'contact',
+  plinthe: 'plinthe',
+  plinthes: 'plinthe',
+  vitrage: 'vitrage',
+  protection: 'protection',
+  options_serrure: 'options_serrure',
+  autres: 'autres',
+}
+
 function useEquipmentOptions(row) {
-  const [options, setOptions] = useState([])
-  const [loading, setLoading] = useState(false)
+  const [cache, setCache] = useState({})
+  const [loadingKey, setLoadingKey] = useState(null)
+  const [catalogSource, setCatalogSource] = useState('')
+  const [catalogPerformance, setCatalogPerformance] = useState('')
   const [error, setError] = useState(null)
   const rowPayload = useMemo(() => ({
     type: row?.type || '',
@@ -365,28 +398,58 @@ function useEquipmentOptions(row) {
   }), [row?.type, row?.designation, row?.gamme, row?.vantail, row?.ref_base, row?._raw, row?.options, row?.equip_extra])
 
   useEffect(() => {
-    setOptions([])
+    setCache({})
+    setCatalogSource('')
+    setCatalogPerformance('')
     setError(null)
   }, [rowPayload])
 
-  const fetchOptions = useCallback(async () => {
-    if (loading || options.length > 0) return
-    setLoading(true)
+  const fetchOptions = useCallback(async (slot = null) => {
+    const gridColumn = slot ? (EQUIPMENT_FETCH_COLUMNS[slot] ?? slot) : null
+    const key = gridColumn || (slot === 'garniture' ? '__garniture__' : '__all__')
+    if (cache[key]?.length) return cache[key]
+    setLoadingKey(key)
+    setError(null)
     try {
-      const data = await api.post('/devis/equipment-options', { row: rowPayload }, { timeout: 20000 })
+      const data = await api.post('/devis/equipment-options', {
+        row: rowPayload,
+        ...(gridColumn ? { grid_column: gridColumn } : {}),
+      }, { timeout: 20000 })
       const normalized = Array.isArray(data?.options) ? data.options.map(optionAsEquipment).filter(Boolean) : []
-      setOptions(normalized)
+      if (data?.catalog_source) setCatalogSource(String(data.catalog_source))
+      if (data?.catalog_performance) setCatalogPerformance(String(data.catalog_performance))
+      setCache((prev) => ({ ...prev, [key]: normalized }))
+      return normalized
     } catch (err) {
       setError(err?.error || err?.message || 'Erreur de chargement')
+      return []
     } finally {
-      setLoading(false)
+      setLoadingKey(null)
     }
-  }, [rowPayload, loading, options.length])
+  }, [cache, rowPayload])
 
-  return { options, loading, error, fetchOptions }
+  const getOptions = useCallback((slot) => {
+    const gridColumn = slot ? (EQUIPMENT_FETCH_COLUMNS[slot] ?? slot) : null
+    const key = gridColumn || (slot === 'garniture' ? '__garniture__' : '__all__')
+    const list = cache[key] || []
+    if (slot === 'garniture' && !list.length) {
+      const merged = [...(cache.garniture_int || []), ...(cache.garniture_ext || []), ...(cache.__all__ || [])]
+      return equipmentOptionsForSlot(merged, 'garniture')
+    }
+    if (!list.length && slot) return equipmentOptionsForSlot(cache.__all__ || [], slot)
+    return slot ? equipmentOptionsForSlot(list, slot) : list
+  }, [cache])
+
+  const isLoading = useCallback((slot = null) => {
+    const gridColumn = slot ? (EQUIPMENT_FETCH_COLUMNS[slot] ?? slot) : null
+    const key = gridColumn || (slot === 'garniture' ? '__garniture__' : '__all__')
+    return loadingKey === key
+  }, [loadingKey])
+
+  return { getOptions, isLoading, error, catalogSource, catalogPerformance, fetchOptions }
 }
 
-function EditableEquipmentText({ value, onCommit, placeholder = '—', datalistId, fetchOptions, options = [], loading = false, fontSize = 11, width = '100%' }) {
+function EditableEquipmentText({ value, onCommit, placeholder = '—', datalistId, fetchOptions, equipmentSlot = null, options = [], loading = false, fontSize = 11, width = '100%' }) {
   const [v, setV] = useState(value ?? '')
   const focused = useRef(false)
   useEffect(() => {
@@ -410,7 +473,7 @@ function EditableEquipmentText({ value, onCommit, placeholder = '—', datalistI
         list={datalistId}
         value={v}
         onChange={e => setV(e.target.value)}
-        onFocus={() => { focused.current = true; fetchOptions?.() }}
+        onFocus={() => { focused.current = true; fetchOptions?.(equipmentSlot) }}
         onBlur={commit}
         onKeyDown={e => { if (e.key === 'Enter') { e.currentTarget.blur() } }}
         onClick={e => e.stopPropagation()}
@@ -733,6 +796,153 @@ function htPatchFromPassageDimension(row, field, value) {
   if (field === 'hauteur_pl_mm') return { haut_mm: n + (chassis ? 140 : 70) }
   if (field === 'largeur_pl_mm') return { larg_mm: n + (chassis ? 140 : (twoLeaf ? 270 : 205)) }
   return {}
+}
+
+const USER_OVERRIDE_KEYS = new Set([
+  'qty', 'quantite', 'multiple', 'designation', 'localisation', 'gamme', 'vantail',
+  'haut_mm', 'hauteur_mm', 'larg_mm', 'largeur_mm', 'type', 'type_porte', 'ref_base',
+  'thermolaquage', 'acoustique', 'delivery_address', 'transport_address',
+  'prix_base_ht', 'total_ligne_ht', 'prix_total_min_ht',
+])
+
+function preserveOverrideSnapshot(row = {}, overrideKeys = []) {
+  const snap = {}
+  const keys = Array.isArray(overrideKeys) ? overrideKeys : []
+  for (const key of keys) {
+    if (/^_raw_\d+$/.test(key)) continue
+    if (Object.prototype.hasOwnProperty.call(row, key)) snap[key] = row[key]
+  }
+  const rawIndices = keys
+    .map(key => key.match(/^_raw_(\d+)$/)?.[1])
+    .filter(Boolean)
+    .map(Number)
+  if (rawIndices.length && Array.isArray(row._raw)) {
+    snap._rawSlots = Object.fromEntries(rawIndices.map(idx => [idx, row._raw[idx]]))
+  }
+  return snap
+}
+
+function applyOverrideSnapshot(row = {}, snap = {}, overrideKeys = []) {
+  const next = { ...row }
+  const keys = Array.isArray(overrideKeys) ? overrideKeys : []
+  for (const key of keys) {
+    if (/^_raw_\d+$/.test(key)) continue
+    if (Object.prototype.hasOwnProperty.call(snap, key)) next[key] = snap[key]
+  }
+  if (snap._rawSlots && Array.isArray(next._raw)) {
+    const raw = [...next._raw]
+    while (raw.length < 17) raw.push(null)
+    for (const [idx, val] of Object.entries(snap._rawSlots)) {
+      raw[Number(idx)] = val
+    }
+    next._raw = raw
+  }
+  if (keys.length) next._userOverrides = [...keys]
+  return next
+}
+
+function clearRowOverrideArtifacts(row = {}) {
+  const next = { ...row, _userOverrides: [] }
+  delete next._perfOverrides
+  delete next._thermolaquageDisabled
+  delete next._overrideAcoustic
+  delete next._overrideCremone
+  delete next._overrideCremonePrix
+  delete next._overrideAutres
+  delete next._overrideAutresPrix
+  return next
+}
+
+async function recomputeRowFromApi(row, { preserveOverrides = true } = {}) {
+  if (sectionOf(row) !== 'products') return row
+  const overrides = preserveOverrides ? (row._userOverrides || []) : []
+  const preserved = preserveOverrides ? preserveOverrideSnapshot(row, overrides) : {}
+  const raw = Array.isArray(row._raw) ? [...row._raw] : new Array(17).fill(null)
+  while (raw.length < 17) raw.push(null)
+  raw[0] = raw[0] ?? row.type ?? row.designation ?? null
+  raw[1] = raw[1] ?? row.larg_mm ?? row.largeur_mm ?? null
+  raw[2] = raw[2] ?? row.haut_mm ?? row.hauteur_mm ?? null
+  const qtyInt = Number.isFinite(row.qty) && row.qty > 0 ? Math.round(row.qty) : 1
+  const res = await api.post('/devis/recompute-row', { row: raw, qty: qtyInt }, { timeout: 30000 })
+  const result = res?.result
+  if (!result) return row
+  let recomputed = {
+    ...result,
+    _raw: raw,
+    _lineId: row._lineId,
+    _dbPosition: row._dbPosition,
+    _manualBlank: row._manualBlank,
+    _perfStripShowAll: row._perfStripShowAll,
+    localisation: row.localisation,
+    qty: row.qty,
+    multiple: row.multiple,
+    change_override: row.change_override,
+    ...(row._perfOverrides && preserveOverrides ? { _perfOverrides: row._perfOverrides } : {}),
+    ...(row._thermolaquageDisabled && preserveOverrides ? { _thermolaquageDisabled: true } : {}),
+    _recomputing: false,
+  }
+  if (preserveOverrides && overrides.length) {
+    recomputed = applyOverrideSnapshot(recomputed, preserved, overrides)
+  } else {
+    recomputed = clearRowOverrideArtifacts(recomputed)
+  }
+  return recomputed
+}
+
+function parseValidationReport(raw) {
+  if (!raw) return null
+  try {
+    const report = typeof raw === 'string' ? JSON.parse(raw) : raw
+    return report?.total_lines ? report : null
+  } catch {
+    return null
+  }
+}
+
+function csvEscape(value) {
+  const text = String(value ?? '')
+  if (/[;"\n\r]/.test(text)) return `"${text.replace(/"/g, '""')}"`
+  return text
+}
+
+function downloadGridCsv(rows, { change = 1, tva = 0.2, multGlobal = 1, fileName = 'devis-grid.csv' } = {}) {
+  const headers = ['Rep', 'Section', 'Désignation', 'Localisation', 'Gamme', 'H mm', 'L mm', 'PU HT', 'Remise', 'Q', 'Total HT', 'Poids kg']
+  const productRows = rows.map((row, index) => {
+    const resolved = resolveRow(row, change, tva, multGlobal)
+    const rep = row.line_section === 'products'
+      ? String.fromCharCode(65 + rows.slice(0, index).filter(r => sectionOf(r) === 'products').length)
+      : String(index + 1)
+    return [
+      rep,
+      row.line_section || 'products',
+      row.designation || row.type || '',
+      row.localisation || '',
+      row.gamme || '',
+      row.haut_mm ?? row.hauteur_mm ?? '',
+      row.larg_mm ?? row.largeur_mm ?? '',
+      row.prix_base_ht ?? '',
+      row.multiple ?? multGlobal,
+      row.qty ?? 1,
+      resolved._totalHt ?? row.total_ligne_ht ?? '',
+      row.weight_kg ?? '',
+    ]
+  })
+  const body = [headers, ...productRows].map(line => line.map(csvEscape).join(';')).join('\n')
+  const blob = new Blob([`\uFEFF${body}`], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = fileName
+  anchor.click()
+  URL.revokeObjectURL(url)
+}
+
+function trackUserOverrideKeys(patch = {}) {
+  return Object.keys(patch).filter((key) => (
+    USER_OVERRIDE_KEYS.has(key)
+    || /^_raw_\d+$/.test(key)
+    || key.startsWith('_override')
+  ))
 }
 
 // eslint-disable-next-line react-refresh/only-export-components
@@ -1092,6 +1302,35 @@ const stickyRowMarkerHeaderStyle = {
   zIndex: 5,
 }
 
+const stickyDesignationStyle = {
+  position: 'sticky',
+  left: 36,
+  zIndex: 3,
+  minWidth: 160,
+  background: 'var(--color-surface)',
+  boxShadow: '1px 0 0 var(--color-border)',
+}
+
+const stickyDesignationHeaderStyle = {
+  ...stickyDesignationStyle,
+  zIndex: 5,
+}
+
+const stickyLocalisationStyle = {
+  position: 'sticky',
+  left: 196,
+  zIndex: 3,
+  minWidth: 90,
+  width: 110,
+  background: 'var(--color-surface)',
+  boxShadow: '1px 0 0 var(--color-border)',
+}
+
+const stickyLocalisationHeaderStyle = {
+  ...stickyLocalisationStyle,
+  zIndex: 5,
+}
+
 function amountEuro(value) {
   if (value == null || value === '') return '—'
   const amount = Number(value)
@@ -1141,9 +1380,11 @@ function productLeafCount(rows = []) {
 
 function compactRowsForWeight(rows = []) {
   return rows
-    .filter(row => sectionOf(row) === 'products' && !row._isFooter && !row._isBlank)
-    .map((row, index) => ({
-      index,
+    .map((row, gridIndex) => ({ row, gridIndex }))
+    .filter(({ row }) => sectionOf(row) === 'products' && !row._isFooter && !row._isBlank)
+    .map(({ row, gridIndex }) => ({
+      gridIndex,
+      index: gridIndex,
       line_section: 'products',
       designation: row.designation || row.type || '',
       type: row.type || row.type_porte || '',
@@ -1251,6 +1492,8 @@ function lineLikeForRuleValidation(row, position = 0) {
   const resolved = resolveRow(row)
   return {
     position,
+    ligne: rowLetterLabel(position),
+    line_section: row.line_section || sectionOf(row),
     designation: row.designation || row.type,
     localisation: row.localisation,
     type: row.type,
@@ -1270,8 +1513,10 @@ function lineLikeForRuleValidation(row, position = 0) {
     prix_total_min_ht: row.prix_total_min_ht,
     options: row.options,
     equip_extra: row.equip_extra,
+    _raw: Array.isArray(row._raw) ? row._raw : undefined,
     serrure: row.serrure,
     ferme_porte: row.ferme_porte,
+    ferme_porte_ref: row.ferme_porte?.ref || resolved._fpRef || null,
     equipements_resolus: {
       serrure: resolved._serrureLabel || null,
       garniture_interieure: resolved._garnIntLabel || null,
@@ -1401,6 +1646,13 @@ function buildValidationReport(rows, meta = {}) {
   const issueLines = lineReports.filter(line => line.issues.length > 0)
   const technicalLines = lineReports.filter(line => line.technical.length > 0)
   const cleanLines = lineReports.filter(line => !line.issues.length && !line.technical.length)
+  const staticChecks = meta.static_checks || null
+  const staticIssues = [
+    ...(staticChecks?.r061 || []),
+    ...(staticChecks?.performance_compat || []),
+  ]
+  const staticViolations = staticIssues.filter(issue => issue.status === 'violation')
+  const staticWarnings = staticIssues.filter(issue => issue.status === 'warning')
   return {
     generated_at: meta.generatedAt || new Date().toISOString(),
     mode: meta.mode || 'manual',
@@ -1408,11 +1660,14 @@ function buildValidationReport(rows, meta = {}) {
     knowledge: meta.knowledge || null,
     knowledge_version: meta.knowledge?.version || null,
     knowledge_updated_at: meta.knowledge?.updated_at || null,
-    status: issueLines.length ? 'issues' : (technicalLines.length ? 'technical' : 'validated'),
+    status: (issueLines.length || staticViolations.length) ? 'issues' : (technicalLines.length ? 'technical' : 'validated'),
     total_lines: lineReports.length,
     validated_rows: cleanLines.length,
-    issue_rows: issueLines.length,
+    issue_rows: issueLines.length + staticViolations.length,
     technical_rows: technicalLines.length,
+    static_checks: staticChecks,
+    static_violations: staticViolations.length,
+    static_warnings: staticWarnings.length,
     applicable_sources: [...sourceMap.values()].reduce((sum, source) => sum + source.count, 0),
     sources: [...sourceMap.values()].sort((leftSource, rightSource) => (rightSource.status === 'violation') - (leftSource.status === 'violation') || (rightSource.status === 'warning') - (leftSource.status === 'warning') || rightSource.count - leftSource.count),
     summary,
@@ -1695,6 +1950,12 @@ function ValidationSummaryModal({ report, onClose, onReviewLine }) {
       : { label: 'Problème à corriger', color: '#dc2626', bg: 'rgba(220,38,38,0.12)', border: 'rgba(220,38,38,0.35)', icon: <X size={16} /> }
   const issueLines = report.lines.filter(line => line.issues.length > 0)
   const technicalLines = report.lines.filter(line => line.technical.length > 0)
+  const staticIssues = [
+    ...(report.static_checks?.r061 || []),
+    ...(report.static_checks?.performance_compat || []),
+  ]
+  const staticViolations = staticIssues.filter(issue => issue.status === 'violation')
+  const staticWarnings = staticIssues.filter(issue => issue.status === 'warning')
   const okSources = report.sources.filter(source => source.status === 'ok')
   const problematicSources = report.sources.filter(source => source.status === 'warning' || source.status === 'violation')
   const noSourceCount = report.lines.filter(line => !line.issues.length && !line.ok.length && !line.technical.length).length
@@ -1732,6 +1993,29 @@ function ValidationSummaryModal({ report, onClose, onReviewLine }) {
             {statCell('à relancer', report.technical_rows, report.technical_rows ? '#b45309' : '#16a34a')}
             {statCell('sources appliquées', report.applicable_sources)}
           </div>
+
+          {staticViolations.length > 0 && (
+            <div style={{ border: '1px solid rgba(220,38,38,0.28)', borderRadius: 8, overflow: 'hidden' }}>
+              <div style={{ padding: '8px 10px', background: 'rgba(220,38,38,0.10)', color: '#dc2626', fontSize: 11, fontWeight: 950 }}>Contrôles statiques CR / FB / EI / R061</div>
+              {staticViolations.slice(0, 16).map((issue, issueIndex) => (
+                <div key={`static-${issue.ligne}-${issue.rule}-${issueIndex}`} style={{ padding: '9px 10px', borderTop: '1px solid var(--color-border)', fontSize: 11, lineHeight: 1.45 }}>
+                  <strong style={{ color: '#dc2626' }}>Ligne {issue.ligne} · {issue.rule}</strong>
+                  {issue.reason ? ` : ${issue.reason}` : ''}
+                  {issue.fix ? <span style={{ color: '#dc2626' }}> Correctif : {issue.fix}</span> : null}
+                  {issue.performances?.length ? <div style={{ marginTop: 3, color: 'var(--color-text-3)', fontSize: 10 }}>Performances : {issue.performances.join(', ')}</div> : null}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {staticWarnings.length > 0 && (
+            <div style={{ padding: '10px 12px', borderRadius: 8, background: 'rgba(245,158,11,0.10)', border: '1px solid rgba(245,158,11,0.28)', fontSize: 11, color: '#b45309' }}>
+              <strong>{staticWarnings.length} alerte(s) compatibilité performance.</strong>
+              {staticWarnings.slice(0, 4).map((issue, issueIndex) => (
+                <div key={`static-warn-${issueIndex}`} style={{ marginTop: 4 }}>Ligne {issue.ligne} · {issue.rule} : {issue.reason}</div>
+              ))}
+            </div>
+          )}
 
           {issueLines.length > 0 && (
             <div style={{ border: '1px solid rgba(220,38,38,0.28)', borderRadius: 8, overflow: 'hidden' }}>
@@ -1791,7 +2075,7 @@ function ValidationSummaryModal({ report, onClose, onReviewLine }) {
 }
 
 // ─── Composant ligne principale ──────────────────────────────────────────────
-function MainRow({ row, index, displayIndex = index, expanded, onToggle, change, tva, multGlobal, editMode, onUpdate, onRecompute, onDelete, onSaveAsRule, onVerifyRules, assistantHighlight = null, validationKnowledge = null, hiddenCols = new Set(), hiddenDimensionCols = new Set(), visibleEquipmentColumns = [], showOtherEquipmentColumn = true }) {
+function MainRow({ row, index, displayIndex = index, expanded, onToggle, change, tva, multGlobal, editMode, onUpdate, onRecompute, onDelete, onSaveAsRule, onVerifyRules, onReanalyze, onResetOverrides, assistantHighlight = null, validationKnowledge = null, hiddenCols = new Set(), hiddenDimensionCols = new Set(), visibleEquipmentColumns = [], showOtherEquipmentColumn = true, formatMoney = null }) {
   const [perfPopoverAnchor, setPerfPopoverAnchor] = useState(null)
   const r = resolveRow(row, change, tva, multGlobal)
   const qty = Number.isFinite(r.qty) ? r.qty : 1
@@ -1800,14 +2084,19 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
   const ruleSummary = row._ruleCheck?.summary || null
   const ruleIssues = blockingVerdicts(row)
   const ruleStale = isRuleCheckStale(row._ruleCheck, validationKnowledge)
-  const { options: equipmentOptions, loading: equipmentOptionsLoading, fetchOptions: fetchEquipmentOptions } = useEquipmentOptions(row)
+  const { getOptions, isLoading, catalogSource, catalogPerformance, fetchOptions: fetchEquipmentOptions } = useEquipmentOptions(row)
   const equipmentSuggestions = useMemo(() => ({
-    serrure: equipmentOptionsForSlot(equipmentOptions, 'serrure'),
-    garniture: equipmentOptionsForSlot(equipmentOptions, 'garniture'),
-    autres: equipmentOptionsForSlot(equipmentOptions, 'autres'),
-  }), [equipmentOptions])
-  const equipmentSuggestionsForColumn = useCallback((key) => equipmentOptionsForSlot(equipmentOptions, key), [equipmentOptions])
-  // Perf strip expand/collapse lives on the row so it survives remounts (new blank lines).
+    serrure: getOptions('serrure'),
+    garniture_int: getOptions('garniture_int'),
+    garniture_ext: getOptions('garniture_ext'),
+    garniture: getOptions('garniture'),
+    autres: getOptions('autres'),
+  }), [getOptions])
+  const equipmentSuggestionsForColumn = useCallback((key) => getOptions(key), [getOptions])
+  const equipmentOptionsLoading = isLoading
+  useEffect(() => {
+    if (expanded && editMode && !isAmountSection) fetchEquipmentOptions()
+  }, [expanded, editMode, isAmountSection, fetchEquipmentOptions])
   const showEmptyPerfs = row._perfStripShowAll === true
   const perfKeys = ['rc', 'pb', 'cf', 'blast', 'belier', 'prison', 'acoustic']
   const rawIndexByPerf = { rc: 3, pb: 4, cf: 5, blast: 6, belier: 7, prison: 8, acoustic: null }
@@ -1856,7 +2145,7 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
         </span>
       </Td>
       {/* Désignation */}
-      <Td style={{ minWidth: 160, fontWeight: 600, ...assistantCellStyle('type', 'type_porte', 'designation', 'gamme', 'vantail') }}>
+      <Td style={{ ...stickyDesignationStyle, fontWeight: 600, ...assistantCellStyle('type', 'type_porte', 'designation', 'gamme', 'vantail') }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           {editMode ? (
             <div style={{ background: 'color-mix(in srgb, #fbbf24 12%, transparent)', borderRadius: 3 }}>
@@ -1883,6 +2172,11 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
               réf. {r.ref_base}
             </span>
           )}
+          {catalogSource && !isAmountSection && (
+            <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--color-text-3)', paddingLeft: 4 }} title={`Source équipements : ${catalogSource}`}>
+              Matrice {catalogPerformance || catalogSource.replace(/^matrix:/, '')}
+            </span>
+          )}
           {ruleSummary && (ruleSummary.violation > 0 || ruleSummary.warning > 0) && (
             <span style={{ fontSize: 9, fontWeight: 800, color: ruleSummary.violation ? '#dc2626' : '#b45309', paddingLeft: 4 }}>
               {ruleSummary.violation > 0 ? `${ruleSummary.violation} violation${ruleSummary.violation > 1 ? 's' : ''}` : `${ruleSummary.warning} attention${ruleSummary.warning > 1 ? 's' : ''}`}
@@ -1894,7 +2188,7 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
         </div>
       </Td>
       {/* Localisation */}
-      <Td style={{ minWidth: 90, width: 110, padding: 0, ...assistantCellStyle('localisation') }}>
+      <Td style={{ ...stickyLocalisationStyle, padding: 0, ...assistantCellStyle('localisation') }}>
         {editMode && !isAmountSection ? (
           <EditableText
             value={row.localisation || ''}
@@ -1949,12 +2243,16 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
                 const isSet = cur != null
                 const controlWidth = perfSelectedControlWidth(key, cur)
                 const menuWidth = PERF_CONTROL_WIDTH[key] || PERF_MENU_MIN_WIDTH
+                const is2V = /\b2\s*V|2\s*vantaux/i.test(String(row.type || row.designation || '')) || (Number(row.larg_mm || row.largeur_mm) > 1415)
+                const perfOptions = key === 'belier' && is2V
+                  ? [{ value: '', label: '— (hors tarif 2V)' }]
+                  : PERF_OPTIONS[key]
                 return (
                   <div key={key} onClick={e => e.stopPropagation()} style={{ position: 'relative', flex: `0 0 ${controlWidth}px`, display: 'flex', flexDirection: 'column', gap: 1 }}>
                     <span style={{ fontSize: 8, lineHeight: 1, color: 'var(--color-text-3)', fontWeight: 900, textTransform: 'uppercase', textAlign: 'center' }}>{PERF_LABELS[key]}</span>
                     <PrettyCellSelect
                       value={cur ?? ''}
-                      options={PERF_OPTIONS[key]}
+                      options={perfOptions}
                       onCommit={value => {
                         const s = value == null ? '' : String(value).trim()
                         const cleared = value == null || value === '' || isUnsetPerfRaw(s)
@@ -2095,25 +2393,25 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
       {/* Serrure */}
       <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 80, ...assistantCellStyle('serrure') }}>
         {editMode
-          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentText value={mainEquipLabel(row._raw?.[12] ?? r._serrureLabel ?? '')} onCommit={v => onRecompute?.({ _raw_12: v })} placeholder="serrure…" datalistId={`equipment-suggestions-${displayIndex}-serrure`} fetchOptions={fetchEquipmentOptions} options={equipmentSuggestions.serrure} loading={equipmentOptionsLoading} />)
+          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentText value={mainEquipLabel(row._raw?.[12] ?? r._serrureLabel ?? '')} onCommit={v => onRecompute?.({ _raw_12: v })} placeholder="serrure…" datalistId={`equipment-suggestions-${displayIndex}-serrure`} equipmentSlot="serrure" fetchOptions={fetchEquipmentOptions} options={equipmentSuggestions.serrure} loading={equipmentOptionsLoading('serrure')} />)
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{mainEquipLabel(row._raw?.[12] || r._serrureLabel) || '—'}</span>}
       </Td>
       {/* Garn int */}
       <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 70, ...assistantCellStyle('garniture_int') }}>
         {editMode
-          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentText value={mainEquipLabel(row._raw?.[13] ?? r._garnIntLabel ?? '')} onCommit={v => onRecompute?.({ _raw_13: v })} placeholder="garn. int…" datalistId={`equipment-suggestions-${displayIndex}-garn_int`} fetchOptions={fetchEquipmentOptions} options={equipmentSuggestions.garniture} loading={equipmentOptionsLoading} />)
+          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentText value={mainEquipLabel(row._raw?.[13] ?? r._garnIntLabel ?? '')} onCommit={v => onRecompute?.({ _raw_13: v })} placeholder="garn. int…" datalistId={`equipment-suggestions-${displayIndex}-garn_int`} equipmentSlot="garniture_int" fetchOptions={fetchEquipmentOptions} options={equipmentSuggestions.garniture_int} loading={equipmentOptionsLoading('garniture_int')} />)
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{mainEquipLabel(row._raw?.[13] || r._garnIntLabel) || '—'}</span>}
       </Td>
       {/* Garn ext */}
       <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 70, ...assistantCellStyle('garniture_ext') }}>
         {editMode
-          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentText value={mainEquipLabel(row._raw?.[14] ?? r._garnExtLabel ?? '')} onCommit={v => onRecompute?.({ _raw_14: v })} placeholder="garn. ext…" datalistId={`equipment-suggestions-${displayIndex}-garn_ext`} fetchOptions={fetchEquipmentOptions} options={equipmentSuggestions.garniture} loading={equipmentOptionsLoading} />)
+          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentText value={mainEquipLabel(row._raw?.[14] ?? r._garnExtLabel ?? '')} onCommit={v => onRecompute?.({ _raw_14: v })} placeholder="garn. ext…" datalistId={`equipment-suggestions-${displayIndex}-garn_ext`} equipmentSlot="garniture_ext" fetchOptions={fetchEquipmentOptions} options={equipmentSuggestions.garniture_ext} loading={equipmentOptionsLoading('garniture_ext')} />)
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{mainEquipLabel(row._raw?.[14] || r._garnExtLabel) || '—'}</span>}
       </Td>
       {showOtherEquipmentColumn && (
         <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 140, ...assistantCellStyle('autres') }}>
           {editMode
-            ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentText value="" onCommit={v => { const patch = equipmentAdditionPatch(row._raw, v); if (patch) onRecompute?.(patch) }} placeholder="ajouter équip…" datalistId={`equipment-suggestions-${displayIndex}-autres`} fetchOptions={fetchEquipmentOptions} options={equipmentSuggestions.autres} loading={equipmentOptionsLoading} />)
+            ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentText value="" onCommit={v => { const patch = equipmentAdditionPatch(row._raw, v); if (patch) onRecompute?.(patch) }} placeholder="ajouter équip…" datalistId={`equipment-suggestions-${displayIndex}-autres`} equipmentSlot="autres" fetchOptions={fetchEquipmentOptions} options={equipmentSuggestions.autres} loading={equipmentOptionsLoading('autres')} />)
             : (row._overrideAutres !== undefined
                 ? (row._overrideAutres ? <span style={{ fontSize: 11, padding: '2px 4px', display: 'inline-block', fontWeight: 600, color: 'var(--color-text-2)' }}>{row._overrideAutres}</span> : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', color: 'var(--color-text-2)' }}>—</span>)
                 : (r._otherExtras?.length ? (
@@ -2140,7 +2438,7 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
         return (
           <Td key={column.key} palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: column.minWidth, ...assistantCellStyle(...column.fields) }}>
             {editMode
-              ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentText value={editValue} onCommit={v => onRecompute?.(column.key === 'fp' ? { _raw_15: v } : { _raw_16: v })} placeholder={column.label.toLowerCase()} datalistId={`equipment-suggestions-${displayIndex}-${column.key}`} fetchOptions={fetchEquipmentOptions} options={equipmentSuggestionsForColumn(column.key)} loading={equipmentOptionsLoading} />)
+              ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentText value={editValue} onCommit={v => onRecompute?.(column.key === 'fp' ? { _raw_15: v } : { _raw_16: v })} placeholder={column.label.toLowerCase()} datalistId={`equipment-suggestions-${displayIndex}-${column.key}`} equipmentSlot={column.key} fetchOptions={fetchEquipmentOptions} options={equipmentSuggestionsForColumn(column.key)} loading={equipmentOptionsLoading(column.key)} />)
               : (hasValue ? (
                 <Popover content={note || label || ''}>
                   <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', fontWeight: 600, color: 'var(--color-text-2)' }}>
@@ -2175,9 +2473,9 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
       </Td>
       {/* Total HT */}
       <Td palette="blue" style={{ textAlign: 'right', fontWeight: 800, whiteSpace: 'nowrap', fontSize: 12, ...FINAL_AMOUNT_COLUMNS.total }}>
-        {r._pu > 0 ? r._totalHt.toLocaleString('fr-FR') + ' €' : '—'}
+        {r._pu > 0 ? (formatMoney ? formatMoney(r._totalHt) : `${r._totalHt.toLocaleString('fr-FR')} €`) : '—'}
       </Td>
-      <Td style={{ width: editMode ? 72 : FINAL_AMOUNT_COLUMNS.actions.width, minWidth: editMode ? 72 : FINAL_AMOUNT_COLUMNS.actions.minWidth, textAlign: 'center', padding: 0 }}>
+      <Td style={{ width: editMode ? 96 : FINAL_AMOUNT_COLUMNS.actions.width, minWidth: editMode ? 96 : FINAL_AMOUNT_COLUMNS.actions.minWidth, textAlign: 'center', padding: 0 }}>
         {(editMode || !isAmountSection) && (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2 }}>
             {!isAmountSection && (
@@ -2193,14 +2491,32 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
                   </button>
                 </Popover>
                 {editMode && (
-                  <button
-                    type="button"
-                    onClick={e => { e.stopPropagation(); onSaveAsRule?.() }}
-                    title="Enregistrer comme règle R&D"
-                    style={{ width: 22, height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 'none', background: 'transparent', color: '#0f766e', cursor: 'pointer', borderRadius: 3 }}
-                  >
-                    <BookOpen size={12} />
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      onClick={e => { e.stopPropagation(); onReanalyze?.() }}
+                      title="Réanalyser cette ligne (conserve les saisies manuelles)"
+                      style={{ width: 22, height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 'none', background: 'transparent', color: 'var(--color-primary)', cursor: 'pointer', borderRadius: 3 }}
+                    >
+                      {row._recomputing ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <RefreshCw size={12} />}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={e => { e.stopPropagation(); onResetOverrides?.() }}
+                      title="Réinitialiser la ligne (efface les surcharges utilisateur)"
+                      style={{ width: 22, height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 'none', background: 'transparent', color: '#b45309', cursor: 'pointer', borderRadius: 3 }}
+                    >
+                      <RotateCcw size={12} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={e => { e.stopPropagation(); onSaveAsRule?.() }}
+                      title="Enregistrer comme règle R&D"
+                      style={{ width: 22, height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 'none', background: 'transparent', color: '#0f766e', cursor: 'pointer', borderRadius: 3 }}
+                    >
+                      <BookOpen size={12} />
+                    </button>
+                  </>
                 )}
               </>
             )}
@@ -2240,7 +2556,7 @@ function AmountSectionColumns({ section, gridTotalCols }) {
   )
 }
 
-function AmountRow({ row, index, displayIndex = index, change, tva, multGlobal, editMode, defaultTransportAddress = '', onUpdate, onTransportAddressCommit, onDelete, assistantHighlight = null, gridTotalCols }) {
+function AmountRow({ row, index, displayIndex = index, change, tva, multGlobal, editMode, defaultTransportAddress = '', onUpdate, onTransportAddressCommit, onDelete, assistantHighlight = null, gridTotalCols, formatMoney = null }) {
   const r = resolveRow(row, change, tva, multGlobal)
   const section = sectionOf(row)
   const isTransport = section === 'transport'
@@ -2323,7 +2639,7 @@ function AmountRow({ row, index, displayIndex = index, change, tva, multGlobal, 
         <EditableNumber value={qty} onCommit={value => onUpdate?.({ qty: value })} step={1} min={1} max={9999} width="100%" />
       </Td>
       <Td palette="blue" style={{ textAlign: 'right', fontWeight: 800, whiteSpace: 'nowrap', fontSize: 12, ...FINAL_AMOUNT_COLUMNS.total }}>
-        {amountEuro(r._totalHt)}
+        {formatMoney ? formatMoney(r._totalHt) : amountEuro(r._totalHt)}
       </Td>
       <Td style={{ textAlign: 'center', padding: 0, ...FINAL_AMOUNT_COLUMNS.actions }}>
         {editMode && (
@@ -3640,17 +3956,30 @@ function ModeSwitch({ value, onChange }) {
 }
 
 // ─── Modal Paramètres du devis ───────────────────────────────────────────────
-function SettingsModal({ change, multGlobal, tva, onClose, onApply }) {
+function SettingsModal({ change, multGlobal, tva, currency, gesteCommercial, changeLocked = false, onClose, onApply }) {
   const [c, setC] = useState(String(change))
   const [m, setM] = useState(String(multGlobal))
   const [t, setT] = useState(tva)
+  const [cur, setCur] = useState(currency || 'EUR')
+  const [geste, setGeste] = useState(String(gesteCommercial ?? 0))
+  const [locked, setLocked] = useState(changeLocked)
+  const [fxRates, setFxRates] = useState(null)
+  useEffect(() => {
+    if (!hasAuthToken()) return
+    api.get('/exchange-rates/status').then(data => setFxRates(data)).catch(() => {})
+  }, [])
   const apply = () => {
     const cn = parseFloat(String(c).replace(',', '.'))
     const mn = parseFloat(String(m).replace(',', '.'))
+    const gn = parseFloat(String(geste).replace(',', '.'))
+    const selected = fxRates?.rates?.find(r => r.currency === cur)
     onApply({
       change: Number.isFinite(cn) && cn > 0 ? cn : 1,
       multGlobal: Number.isFinite(mn) && mn > 0 ? mn : 1,
-      tva: Number.isFinite(t) ? t : 0.2,
+      tva: selected ? Number(selected.tva_rate) : (Number.isFinite(t) ? t : 0.2),
+      currency: cur,
+      gesteCommercial: Number.isFinite(gn) ? gn : 0,
+      changeLocked: locked,
     })
     onClose()
   }
@@ -3666,13 +3995,48 @@ function SettingsModal({ change, multGlobal, tva, onClose, onApply }) {
         </div>
         <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-2)' }}>Taux de change CHF → EUR</span>
+            <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-2)' }}>Devise d&apos;affichage</span>
+            <select value={cur} onChange={e => {
+              const next = e.target.value
+              setCur(next)
+              if (locked) return
+              const selected = fxRates?.rates?.find(r => r.currency === next)
+              if (selected) {
+                setC(String(selected.rate_to_eur))
+                setT(Number(selected.tva_rate))
+              }
+            }}
+              style={{ fontSize: 13, padding: '6px 10px', background: 'var(--color-bg)', border: '1px solid var(--color-border)', borderRadius: 6, color: 'var(--color-text)' }}>
+              <option value="EUR">EUR — Euro</option>
+              <option value="CHF">CHF — Franc suisse</option>
+              <option value="GBP">GBP — Livre sterling</option>
+              <option value="USD">USD — Dollar US</option>
+            </select>
+            {fxRates?.alert_active && (
+              <span style={{ fontSize: 10, color: '#dc2626', fontWeight: 700 }}>Taux à valider (1er janv. / 1er juin) — voir Admin → Taux de change</span>
+            )}
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-2)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              Taux de change vers EUR
+              <button type="button" onClick={() => setLocked(v => !v)} title={locked ? 'Taux verrouillé — clic pour déverrouiller' : 'Verrouiller le taux manuellement'} style={{ fontSize: 10, padding: '2px 8px', borderRadius: 6, border: '1px solid var(--color-border)', background: locked ? 'color-mix(in srgb, var(--color-primary) 12%, transparent)' : 'transparent', color: locked ? 'var(--color-primary)' : 'var(--color-text-3)', cursor: 'pointer', fontWeight: 800 }}>
+                {locked ? '🔒 Verrouillé' : '🔓 Auto'}
+              </button>
+            </span>
             <input
               type="text" inputMode="decimal" value={c} onChange={e => setC(e.target.value)}
               placeholder="1.00"
               style={{ fontSize: 13, padding: '6px 10px', background: 'var(--color-bg)', border: '1px solid var(--color-border)', borderRadius: 6, color: 'var(--color-text)' }}
             />
-            <span style={{ fontSize: 10, color: 'var(--color-text-3)' }}>Multiplie tous les prix. 1.00 = pas de conversion.</span>
+            <span style={{ fontSize: 10, color: 'var(--color-text-3)' }}>Multiplie tous les prix EUR. 1.00 = pas de conversion. {locked ? 'Le changement de devise ne modifie plus le taux.' : 'Le taux suit la devise sélectionnée.'}</span>
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-2)' }}>Geste commercial (€ HT, négatif = remise)</span>
+            <input
+              type="text" inputMode="decimal" value={geste} onChange={e => setGeste(e.target.value)}
+              placeholder="0"
+              style={{ fontSize: 13, padding: '6px 10px', background: 'var(--color-bg)', border: '1px solid var(--color-border)', borderRadius: 6, color: 'var(--color-text)' }}
+            />
           </label>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-2)' }}>Remise globale (coefficient)</span>
@@ -3716,6 +4080,7 @@ export function DevisGridWorkspace({
   defaultTransportAddress = '',
   startWithBlank = false,
   onRowsChange = null,
+  onMetaChange = null,
   onRowsCommit = null,
   onRowsBulkCommit = null,
   onRowsDelete = null,
@@ -3793,6 +4158,22 @@ export function DevisGridWorkspace({
   const [multGlobal, setMultGlobal] = useState(() => {
     try { const v = parseFloat(localStorage.getItem('devisGridMultGlobal')); return Number.isFinite(v) && v > 0 ? v : 1.0 } catch { return 1.0 }
   })
+  const [currency, setCurrency] = useState(() => {
+    try { return localStorage.getItem('devisGridCurrency') || 'EUR' } catch { return 'EUR' }
+  })
+  const [gesteCommercial, setGesteCommercial] = useState(() => {
+    try { const v = parseFloat(localStorage.getItem('devisGridGesteCommercial')); return Number.isFinite(v) ? v : 0 } catch { return 0 }
+  })
+  const [changeLocked, setChangeLocked] = useState(() => {
+    try { return localStorage.getItem('devisGridChangeLocked') === '1' } catch { return false }
+  })
+  const hydratedDevisSettingsRef = useRef(null)
+  const currencySymbol = currency === 'CHF' ? 'CHF' : currency === 'GBP' ? '£' : currency === 'USD' ? '$' : '€'
+  const formatGridMoney = useCallback((valueEur) => {
+    const n = Number(valueEur) || 0
+    // Line totals already include `change` via resolveRow — display only, no second conversion.
+    return `${n.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} ${currencySymbol}`
+  }, [currencySymbol])
   const [editMode, setEditMode] = useState(() => {
     try { return localStorage.getItem('devisGridEditMode') !== '0' } catch { return true }
   })
@@ -3803,7 +4184,64 @@ export function DevisGridWorkspace({
   useEffect(() => { try { localStorage.setItem('devisGridChange', String(change)) } catch { /* noop */ } }, [change])
   useEffect(() => { try { localStorage.setItem('devisGridTva', String(tva)) } catch { /* noop */ } }, [tva])
   useEffect(() => { try { localStorage.setItem('devisGridMultGlobal', String(multGlobal)) } catch { /* noop */ } }, [multGlobal])
+  useEffect(() => { try { localStorage.setItem('devisGridCurrency', currency) } catch { /* noop */ } }, [currency])
+  useEffect(() => { try { localStorage.setItem('devisGridGesteCommercial', String(gesteCommercial)) } catch { /* noop */ } }, [gesteCommercial])
+  useEffect(() => { try { localStorage.setItem('devisGridChangeLocked', changeLocked ? '1' : '0') } catch { /* noop */ } }, [changeLocked])
   useEffect(() => { try { localStorage.setItem('devisGridEditMode', editMode ? '1' : '0') } catch { /* noop */ } }, [editMode])
+  useEffect(() => {
+    if (!devisId || hydratedDevisSettingsRef.current === String(devisId)) return
+    hydratedDevisSettingsRef.current = String(devisId)
+    Promise.all([
+      api.get(`/devis/${devisId}`),
+      api.get('/exchange-rates/status').catch(() => null),
+    ]).then(([devis, fx]) => {
+      if (devis?.currency) setCurrency(devis.currency)
+      if (devis?.tva_rate != null) setTva(Number(devis.tva_rate))
+      if (devis?.commercial_discount_ht != null) setGesteCommercial(Number(devis.commercial_discount_ht))
+      if (devis?.exchange_rate != null && Number.isFinite(Number(devis.exchange_rate))) {
+        setChange(Number(devis.exchange_rate))
+      }
+      if (devis?.exchange_locked != null) setChangeLocked(Boolean(Number(devis.exchange_locked)))
+      const locked = devis?.exchange_locked != null ? Boolean(Number(devis.exchange_locked)) : changeLocked
+      const selected = fx?.rates?.find(r => r.currency === (devis?.currency || currency))
+      if (!locked && devis?.exchange_rate == null && selected?.rate_to_eur != null) setChange(Number(selected.rate_to_eur))
+      if (devis?.tva_rate == null && selected?.tva_rate != null) setTva(Number(selected.tva_rate))
+      const savedReport = parseValidationReport(devis?.validation_json)
+      if (savedReport) {
+        setLastValidationReport(savedReport)
+        setImportValidationSummary({
+          ...(savedReport.summary || {}),
+          issueRows: savedReport.issue_rows,
+          technicalRows: savedReport.technical_rows,
+          rules_count: savedReport.rules_count || 0,
+        })
+      }
+    }).catch(() => {})
+  }, [devisId])
+  useEffect(() => {
+    onMetaChange?.({
+      currency,
+      tva_rate: tva,
+      commercial_discount_ht: gesteCommercial,
+      change_rate: change,
+      exchange_rate: change,
+      exchange_locked: changeLocked,
+      version_id: versionId || undefined,
+    })
+  }, [change, changeLocked, currency, gesteCommercial, onMetaChange, tva, versionId])
+  useEffect(() => {
+    if (!devisId || hydratedDevisSettingsRef.current !== String(devisId)) return
+    const timer = window.setTimeout(() => {
+      api.put(`/devis/${devisId}`, {
+        currency,
+        tva_rate: tva,
+        commercial_discount_ht: gesteCommercial,
+        exchange_rate: change,
+        exchange_locked: changeLocked ? 1 : 0,
+      }).catch(() => {})
+    }, 400)
+    return () => window.clearTimeout(timer)
+  }, [change, changeLocked, currency, devisId, gesteCommercial, tva])
   const refreshValidationKnowledge = useCallback(async () => {
     if (!hasAuthToken()) return null
     try {
@@ -3827,10 +4265,60 @@ export function DevisGridWorkspace({
   // Ref vers les rows courants — permet à recomputeRow de lire sans passer par un updater
   const rowsRef = useRef(rows)
   useEffect(() => { rowsRef.current = rows }, [rows])
+  const undoStackRef = useRef([])
+  const redoStackRef = useRef([])
+  const pushUndoSnapshot = useCallback(() => {
+    const snap = JSON.parse(JSON.stringify(rowsRef.current))
+    undoStackRef.current = [...undoStackRef.current.slice(-19), snap]
+    redoStackRef.current = []
+  }, [])
   const replaceRows = useCallback((nextRows) => {
     rowsRef.current = nextRows
     setRows(nextRows)
   }, [])
+  const undoLastEdit = useCallback(() => {
+    const stack = undoStackRef.current
+    if (!stack.length) {
+      showToast('Rien à annuler', 'error')
+      return
+    }
+    const previous = stack[stack.length - 1]
+    redoStackRef.current = [...redoStackRef.current.slice(-19), JSON.parse(JSON.stringify(rowsRef.current))]
+    undoStackRef.current = stack.slice(0, -1)
+    replaceRows(previous)
+    onRowsChange?.(previous)
+    showToast('Modification annulée', 'success')
+  }, [onRowsChange, replaceRows, showToast])
+  const redoLastEdit = useCallback(() => {
+    const stack = redoStackRef.current
+    if (!stack.length) {
+      showToast('Rien à rétablir', 'error')
+      return
+    }
+    const next = stack[stack.length - 1]
+    undoStackRef.current = [...undoStackRef.current.slice(-19), JSON.parse(JSON.stringify(rowsRef.current))]
+    redoStackRef.current = stack.slice(0, -1)
+    replaceRows(next)
+    onRowsChange?.(next)
+    showToast('Modification rétablie', 'success')
+  }, [onRowsChange, replaceRows, showToast])
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (!(event.ctrlKey || event.metaKey)) return
+      const tag = String(event.target?.tagName || '').toUpperCase()
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || event.target?.isContentEditable) return
+      const key = event.key.toLowerCase()
+      if (key === 'z' && !event.shiftKey) {
+        event.preventDefault()
+        undoLastEdit()
+      } else if (key === 'y' || (key === 'z' && event.shiftKey)) {
+        event.preventDefault()
+        redoLastEdit()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [redoLastEdit, undoLastEdit])
   const initialRowsInitializedRef = useRef(false)
   useEffect(() => {
     if (!Array.isArray(initialRows)) return
@@ -3895,7 +4383,13 @@ export function DevisGridWorkspace({
   }, [])
 
   const updateRow = useCallback((i, patch) => {
-    const nextRows = rowsRef.current.map((r, idx) => idx === i ? { ...r, ...patch } : r)
+    pushUndoSnapshot()
+    const overrideKeys = trackUserOverrideKeys(patch)
+    const nextRows = rowsRef.current.map((r, idx) => {
+      if (idx !== i) return r
+      const userOverrides = [...new Set([...(Array.isArray(r._userOverrides) ? r._userOverrides : []), ...overrideKeys])]
+      return { ...r, ...patch, ...(overrideKeys.length ? { _userOverrides: userOverrides } : {}) }
+    })
     replaceRows(nextRows)
     onRowsCommit?.(nextRows[i], i, patch)
     const silentUi = patch && Object.keys(patch).length === 1 && Object.prototype.hasOwnProperty.call(patch, '_perfStripShowAll')
@@ -3903,9 +4397,28 @@ export function DevisGridWorkspace({
       recordGridHistory(`Ligne ${rowLetterLabel(i)} modifiée`)
       showToast('Enregistré', 'success')
     }
-  }, [onRowsCommit, recordGridHistory, replaceRows, showToast])
+    const weightKeys = new Set(['haut_mm', 'hauteur_mm', 'larg_mm', 'largeur_mm', 'gamme', 'type', 'type_porte', 'qty', 'quantite', 'vantail', 'rc', 'pb', 'cf'])
+    const shouldRecalcWeight = sectionOf(nextRows[i]) === 'products'
+      && Object.keys(patch).some(key => weightKeys.has(key))
+    if (shouldRecalcWeight) {
+      void (async () => {
+        try {
+          const compact = compactRowsForWeight(nextRows)
+          const compactIdx = compact.findIndex(entry => entry.gridIndex === i)
+          if (compactIdx < 0) return
+          const weightResult = await api.post('/weight-profiles/calculate', { rows: compact })
+          const weightKg = weightResult?.lines?.[compactIdx]?.weight_kg ?? null
+          if (weightKg == null) return
+          const weightedRows = rowsRef.current.map((row, idx) => idx === i ? { ...row, weight_kg: weightKg } : row)
+          replaceRows(weightedRows)
+          onRowsCommit?.(weightedRows[i], i, { weight_kg: weightKg })
+        } catch { /* non-blocking */ }
+      })()
+    }
+  }, [onRowsCommit, pushUndoSnapshot, recordGridHistory, replaceRows, showToast])
 
   const addRow = useCallback((newRow) => {
+    pushUndoSnapshot()
     const nextRows = [...rowsRef.current, newRow]
     replaceRows(nextRows)
     onRowsCommit?.(newRow, nextRows.length - 1, { _created: true })
@@ -3916,16 +4429,17 @@ export function DevisGridWorkspace({
       recordGridHistory(`Ligne ${rowLetterLabel(nextRows.length - 1)} ajoutée`)
       showToast('Ligne ajoutée', 'success')
     }
-  }, [onRowsCommit, recordGridHistory, replaceRows, showToast])
+  }, [onRowsCommit, pushUndoSnapshot, recordGridHistory, replaceRows, showToast])
 
   const addBlankRow = useCallback(() => {
+    pushUndoSnapshot()
     const nextRows = [...rowsRef.current, createBlankGridRow()]
     replaceRows(nextRows)
     setEditMode(true)
     setExpandedRows(prev => new Set([...prev, nextRows.length - 1]))
     recordGridHistory(`Ligne ${rowLetterLabel(nextRows.length - 1)} blanche ajoutée`)
     showToast('Ligne blanche ajoutée', 'success')
-  }, [recordGridHistory, replaceRows, showToast])
+  }, [pushUndoSnapshot, recordGridHistory, replaceRows, showToast])
 
   useEffect(() => {
     if (embedded) return
@@ -4208,6 +4722,7 @@ export function DevisGridWorkspace({
       danger: true,
       confirmLabel: 'Supprimer',
       onConfirm: () => {
+        pushUndoSnapshot()
         const nextRows = rowsRef.current.filter((_, idx) => idx !== i)
         replaceRows(nextRows)
         setExpandedRows(prev => new Set([...prev].filter(idx => idx !== i).map(idx => idx > i ? idx - 1 : idx)))
@@ -4216,7 +4731,82 @@ export function DevisGridWorkspace({
         showToast('Ligne supprimée', 'success')
       },
     })
-  }, [onRowsDelete, recordGridHistory, replaceRows, showToast])
+  }, [onRowsDelete, pushUndoSnapshot, recordGridHistory, replaceRows, showToast])
+
+  const [reanalyzing, setReanalyzing] = useState(false)
+
+  const reanalyzeRowAtIndex = useCallback(async (i, { preserveOverrides = true, recordUndo = true } = {}) => {
+    const cur = rowsRef.current[i]
+    if (!cur || sectionOf(cur) !== 'products') return cur
+    if (!hasAuthToken()) {
+      showToast('Session expirée : reconnectez-vous pour réanalyser', 'error')
+      return cur
+    }
+    if (recordUndo) pushUndoSnapshot()
+    replaceRows(rowsRef.current.map((r, idx) => idx === i ? { ...r, _recomputing: true } : r))
+    try {
+      const recomputed = await recomputeRowFromApi(cur, { preserveOverrides })
+      const nextRows = normalizeCalculationRows(splitCalculationOptions(rowsRef.current.map((r, idx) => idx === i ? recomputed : r)))
+      replaceRows(nextRows)
+      onRowsCommit?.(nextRows[i], i, { _reanalyzed: true })
+      onRowsChange?.(nextRows)
+      return nextRows[i]
+    } catch (err) {
+      replaceRows(rowsRef.current.map((r, idx) => idx === i ? { ...r, _recomputing: false } : r))
+      throw err
+    }
+  }, [onRowsChange, onRowsCommit, pushUndoSnapshot, replaceRows, showToast])
+
+  const reanalyzeAllRows = useCallback(async () => {
+    const indices = rowsRef.current
+      .map((row, index) => (sectionOf(row) === 'products' ? index : null))
+      .filter(index => index != null)
+    if (!indices.length) {
+      showToast('Aucune ligne produit à réanalyser', 'error')
+      return
+    }
+    if (!hasAuthToken()) {
+      showToast('Session expirée : reconnectez-vous pour réanalyser', 'error')
+      return
+    }
+    pushUndoSnapshot()
+    setReanalyzing(true)
+    try {
+      for (const i of indices) {
+        await reanalyzeRowAtIndex(i, { preserveOverrides: true, recordUndo: false })
+      }
+      recordGridHistory(`Réanalyse grille (${indices.length} ligne${indices.length > 1 ? 's' : ''})`)
+      showToast(`${indices.length} ligne(s) réanalysée(s)`, 'success')
+    } catch {
+      showToast('Réanalyse interrompue', 'error')
+    } finally {
+      setReanalyzing(false)
+    }
+  }, [pushUndoSnapshot, reanalyzeRowAtIndex, recordGridHistory, showToast])
+
+  const resetRowOverrides = useCallback(async (i) => {
+    const cur = rowsRef.current[i]
+    if (!cur || sectionOf(cur) !== 'products') return
+    if (!hasAuthToken()) {
+      showToast('Session expirée : reconnectez-vous', 'error')
+      return
+    }
+    pushUndoSnapshot()
+    replaceRows(rowsRef.current.map((r, idx) => idx === i ? { ...r, _recomputing: true } : r))
+    try {
+      const cleared = clearRowOverrideArtifacts(cur)
+      const recomputed = await recomputeRowFromApi(cleared, { preserveOverrides: false })
+      const nextRows = normalizeCalculationRows(splitCalculationOptions(rowsRef.current.map((r, idx) => idx === i ? recomputed : r)))
+      replaceRows(nextRows)
+      onRowsCommit?.(nextRows[i], i, { _resetOverrides: true })
+      onRowsChange?.(nextRows)
+      recordGridHistory(`Ligne ${rowLetterLabel(i)} réinitialisée`)
+      showToast(`Ligne ${rowLetterLabel(i)} réinitialisée`, 'success')
+    } catch {
+      replaceRows(rowsRef.current.map((r, idx) => idx === i ? { ...r, _recomputing: false } : r))
+      showToast('Réinitialisation impossible', 'error')
+    }
+  }, [onRowsChange, onRowsCommit, pushUndoSnapshot, recordGridHistory, replaceRows, showToast])
 
   const recomputeRow = useCallback((i, patch) => {
     // Lire les rows via ref (pas d'updater) pour éviter le double-appel Strict Mode
@@ -4230,6 +4820,7 @@ export function DevisGridWorkspace({
       showToast('Session expirée : reconnectez-vous pour recalculer', 'error')
       return
     }
+    pushUndoSnapshot()
     const raw = patch._raw_override
       ? [...patch._raw_override]
       : Array.isArray(cur._raw) ? [...cur._raw] : new Array(17).fill(null)
@@ -4292,6 +4883,19 @@ export function DevisGridWorkspace({
         } : r)))
         replaceRows(nextRows)
         onRowsCommit?.(recomputedRow, i, { _recomputed: true })
+        const compact = compactRowsForWeight(nextRows)
+        const compactIdx = compact.findIndex(entry => entry.gridIndex === i)
+        if (compactIdx >= 0) {
+          api.post('/weight-profiles/calculate', { rows: compact })
+            .then(weightResult => {
+              const weightKg = weightResult?.lines?.[compactIdx]?.weight_kg
+              if (weightKg == null) return
+              const weightedRows = rowsRef.current.map((row, idx) => idx === i ? { ...row, weight_kg: weightKg } : row)
+              replaceRows(weightedRows)
+              onRowsCommit?.(weightedRows[i], i, { weight_kg: weightKg })
+            })
+            .catch(() => {})
+        }
         showToast('Recalculé et enregistré', 'success')
       })
       .catch(err => {
@@ -4299,7 +4903,7 @@ export function DevisGridWorkspace({
         replaceRows(rowsRef.current.map((r, idx) => idx === i ? { ...r, _recomputing: false, _recomputeError: String(err?.error || err?.message || err) } : r))
         showToast('Erreur recalcul', 'error')
       })
-  }, [onRowsCommit, replaceRows, showToast, updateRow])
+  }, [onRowsCommit, pushUndoSnapshot, replaceRows, showToast, updateRow])
 
   // 0=serrure, 1=garnInt, 2=garnExt, 3=vitrage, 4=fp, 5=crémone, 6=autres
   const handleRefCommit = useCallback(async (rowIdx, colIdx, refVal) => {
@@ -4327,10 +4931,77 @@ export function DevisGridWorkspace({
     }
   }, [recomputeRow, updateRow, showToast])
 
-  const persistValidationReport = useCallback(async (report) => {
-    if (!devisId || !versionId || !report?.total_lines) return
+  const exportGridCsv = useCallback(() => {
+    if (!rows.length) return
+    const base = fileName?.replace(/\.xlsx?$/i, '') || (devisId ? `devis-${devisId}` : 'devis-grid')
+    downloadGridCsv(rows, { change, tva, multGlobal, fileName: `${base}.csv` })
+    showToast('Export CSV téléchargé', 'success')
+  }, [change, devisId, fileName, multGlobal, rows, showToast, tva])
+
+  const [exportingXlsx, setExportingXlsx] = useState(false)
+
+  const exportGridXlsx = useCallback(async () => {
+    if (!rows.length) return
+    if (!hasAuthToken()) {
+      showToast('Session expirée : reconnectez-vous pour exporter', 'error')
+      return
+    }
+    const base = fileName?.replace(/\.xlsx?$/i, '') || (devisId ? `devis-${devisId}` : 'devis-grid')
+    const payload = buildGridXlsxPayload(rows, {
+      change,
+      tva,
+      multGlobal,
+      gesteCommercial,
+      currency,
+      fileName: `${base}.xlsx`,
+    })
+    setExportingXlsx(true)
     try {
-      await api.post(`/devis/${devisId}/rule-checks`, { version_id: versionId, report })
+      const token = localStorage.getItem('token') || sessionStorage.getItem('token') || ''
+      const res = await fetch(`${import.meta.env.VITE_API_URL || '/api'}/devis/export-xlsx`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token.replace(/^"|"$/g, '')}` } : {}),
+        },
+        body: JSON.stringify(payload),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.error || 'Export XLSX impossible')
+      }
+      const blob = await res.blob()
+      const cd = res.headers.get('Content-Disposition') || ''
+      const match = /filename="([^"]+)"/i.exec(cd)
+      const filename = match?.[1] || payload.filename
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = filename
+      anchor.click()
+      URL.revokeObjectURL(url)
+      showToast('Export XLSX téléchargé', 'success')
+    } catch (err) {
+      showToast(err?.message || 'Export XLSX impossible', 'error')
+    } finally {
+      setExportingXlsx(false)
+    }
+  }, [change, currency, devisId, fileName, gesteCommercial, multGlobal, rows, showToast, tva])
+
+  const persistValidationReport = useCallback(async (report) => {
+    if (!devisId || !report?.total_lines) return
+    let effectiveVersionId = versionId
+    if (!effectiveVersionId) {
+      try {
+        const devis = await api.get(`/devis/${devisId}`)
+        effectiveVersionId = devis?.current_version_id || null
+      } catch {
+        return
+      }
+    }
+    if (!effectiveVersionId) return
+    try {
+      await api.post(`/devis/${devisId}/rule-checks`, { version_id: effectiveVersionId, report })
     } catch (err) {
       console.error('rule-check report persist error', err)
     }
@@ -4371,7 +5042,21 @@ export function DevisGridWorkspace({
       setValidationProgress({ active: completed < total, mode, done: completed, total, issueRows: partialReport.issue_rows, technicalRows: partialReport.technical_rows })
     })
 
-    const finalReport = buildValidationReport(workingRows, { mode, rulesCount, knowledge: latestKnowledge })
+    let staticChecks = null
+    try {
+      const staticLines = workingRows
+        .map((row, index) => ({ row, index }))
+        .filter(({ row }) => sectionOf(row) === 'products')
+        .map(({ row, index }) => lineLikeForRuleValidation(row, index))
+      if (staticLines.length) {
+        const staticRes = await api.post('/devis/validate-lines', { lines: staticLines, static_only: true }, { timeout: 30000 })
+        staticChecks = staticRes?.static_checks || null
+      }
+    } catch (staticError) {
+      console.error('static checks error', staticError)
+    }
+
+    const finalReport = buildValidationReport(workingRows, { mode, rulesCount, knowledge: latestKnowledge, static_checks: staticChecks })
     setValidationProgress(null)
     setImportValidationSummary({ ...(finalReport.summary || {}), issueRows: finalReport.issue_rows, technicalRows: finalReport.technical_rows, rules_count: finalReport.rules_count || 0 })
     setLastValidationReport(finalReport)
@@ -4575,6 +5260,9 @@ export function DevisGridWorkspace({
   }, [onRowsChange, refreshValidationKnowledge, showToast, validateEntriesProgressively, validationKnowledge])
   const totalPU  = rows.reduce((s, r) => s + (resolveRow(r, change, tva, multGlobal)._pu), 0)
   const totalHT = rows.reduce((s, r) => s + (resolveRow(r, change, tva, multGlobal)._totalHt || 0), 0)
+  const totalAfterGeste = totalHT + (Number(gesteCommercial) || 0)
+  const tvaAmount = Math.round(totalAfterGeste * tva)
+  const totalTTC = totalAfterGeste + tvaAmount
 
   // Colonnes masquables : calculer lesquelles ont des données sur les lignes produits
   const productRows = rows.filter(r => sectionOf(r) === 'products')
@@ -4615,19 +5303,11 @@ export function DevisGridWorkspace({
 
   // ─── Layout ───────────────────────────────────────────────────────────────
   return (
-    <div style={{ display: 'flex', height: embedded ? '100%' : '100vh', background: 'var(--color-bg)', color: 'var(--color-text)', fontFamily: 'var(--font-body)', overflow: 'hidden' }}>
+    <div style={{ display: 'flex', height: '100%', background: 'var(--color-bg)', color: 'var(--color-text)', fontFamily: 'var(--font-body)', overflow: 'hidden' }}>
 
       {/* ── Colonne gauche — import (rétractable) ── */}
       {sidebarCollapsed ? (
         <div style={{ width: 36, flexShrink: 0, borderRight: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '8px 0', gap: 8 }}>
-          <button
-            type="button"
-            onClick={() => navigate('/')}
-            title="Retour à l'accueil"
-            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-2)', padding: 4, display: 'flex' }}
-          >
-            <ArrowLeft size={16} />
-          </button>
           <button
             onClick={() => setSidebarCollapsed(false)}
             title="Afficher la barre latérale"
@@ -4646,21 +5326,9 @@ export function DevisGridWorkspace({
       ) : (
       <div style={{ width: 240, flexShrink: 0, borderRight: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 8 }}>
-          <button
-            onClick={() => navigate('/')}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-3)', padding: 2, display: 'flex' }}
-            title="Retour à l'accueil"
-          >
-              <ArrowLeft size={14} />
-          </button>
-          <button
-            type="button"
-            onClick={() => navigate('/')}
-            title="Retour à l'accueil"
-            style={{ background: 'none', border: 'none', padding: 0, color: 'var(--color-text)', cursor: 'pointer', fontSize: 12, fontWeight: 700, font: 'inherit', textAlign: 'left' }}
-          >
+          <div style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 700, color: 'var(--color-text)' }}>
             {title}
-          </button>
+          </div>
           <button
             onClick={() => setSidebarCollapsed(true)}
             title="Réduire la barre latérale"
@@ -4796,6 +5464,14 @@ export function DevisGridWorkspace({
             <span style={{ fontSize: 13, fontWeight: 700 }}>
               {subtitle || (rows.length > 0 ? `${rows.length} lignes analysées` : 'Importer un xlsx pour démarrer')}
             </span>
+            {editMode && (
+              <span style={{ fontSize: 10, color: 'var(--color-text-3)' }}>Ctrl+Z annuler · Ctrl+Y rétablir</span>
+            )}
+            {reanalyzing && (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, color: 'var(--color-primary)', fontWeight: 800 }}>
+                <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> Réanalyse en cours…
+              </span>
+            )}
             {validationProgress && (
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 10, color: 'var(--color-primary)', fontWeight: 900 }}>
                 <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} />
@@ -4878,6 +5554,60 @@ export function DevisGridWorkspace({
             </button>}
             {rows.length > 0 && (
               <button
+                type="button"
+                onClick={exportGridCsv}
+                title="Exporter la grille en CSV (séparateur ;)"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, padding: '3px 8px', background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 4, cursor: 'pointer', color: 'var(--color-text-2)', fontWeight: 700 }}
+              >
+                <Download size={12} /> Export CSV
+              </button>
+            )}
+            {rows.length > 0 && (
+              <button
+                type="button"
+                onClick={exportGridXlsx}
+                disabled={exportingXlsx}
+                title="Exporter la grille en XLSX (couleurs Armand + sous-lignes Références/Prix)"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, padding: '3px 8px', background: 'color-mix(in srgb, var(--color-primary) 10%, var(--color-surface))', border: '1px solid var(--color-primary)', borderRadius: 4, cursor: exportingXlsx ? 'default' : 'pointer', color: 'var(--color-primary)', fontWeight: 700, opacity: exportingXlsx ? 0.6 : 1 }}
+              >
+                {exportingXlsx ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <FileSpreadsheet size={12} />}
+                Export XLSX
+              </button>
+            )}
+            {rows.length > 0 && (
+              <button
+                type="button"
+                onClick={reanalyzeAllRows}
+                disabled={reanalyzing || validatingImport || Boolean(validationProgress?.active)}
+                title="Relancer detect_nexus sur toutes les lignes produits (conserve les saisies manuelles)"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, padding: '3px 8px', background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 4, cursor: reanalyzing ? 'default' : 'pointer', color: 'var(--color-text-2)', fontWeight: 700, opacity: reanalyzing ? 0.6 : 1 }}
+              >
+                {reanalyzing ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <RefreshCw size={12} />}
+                Réanalyser
+              </button>
+            )}
+            {rows.length > 0 && editMode && (
+              <>
+                <button
+                  type="button"
+                  onClick={undoLastEdit}
+                  title="Annuler (Ctrl+Z)"
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10, padding: '3px 8px', background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 4, cursor: 'pointer', color: 'var(--color-text-2)' }}
+                >
+                  <Undo2 size={12} /> Annuler
+                </button>
+                <button
+                  type="button"
+                  onClick={redoLastEdit}
+                  title="Rétablir (Ctrl+Y)"
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10, padding: '3px 8px', background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 4, cursor: 'pointer', color: 'var(--color-text-2)' }}
+                >
+                  <Redo2 size={12} /> Rétablir
+                </button>
+              </>
+            )}
+            {rows.length > 0 && (
+              <button
                 onClick={() => setExpandedRows(prev => prev.size === rows.length ? new Set() : new Set(rows.map((_, i) => i)))}
                 style={{ fontSize: 10, padding: '3px 8px', background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 4, cursor: 'pointer', color: 'var(--color-text-2)' }}
               >
@@ -4898,6 +5628,7 @@ export function DevisGridWorkspace({
               </button>
             )}
             <ModeSwitch value={editMode} onChange={setEditMode} />
+            <Legend />
           </div>
         </div>
 
@@ -4922,8 +5653,8 @@ export function DevisGridWorkspace({
               <thead>
                 <tr>
                   <Th style={stickyRowMarkerHeaderStyle}>#</Th>
-                  <Th style={{ minWidth: 140 }}>Désignation</Th>
-                  <Th style={{ minWidth: 90, width: 110 }}>Localisation</Th>
+                  <Th style={stickyDesignationHeaderStyle}>Désignation</Th>
+                  <Th style={stickyLocalisationHeaderStyle}>Localisation</Th>
                   <Th style={{ minWidth: PERF_CELL_COMPACT_WIDTH, width: PERF_CELL_COMPACT_WIDTH }}>Perfs</Th>
                   {!hiddenDimensionCols.has('haut_ht') && dimensionHeader('haut_ht', 'H (HT)')}
                   {!hiddenDimensionCols.has('larg_ht') && dimensionHeader('larg_ht', 'L (HT)')}
@@ -4982,12 +5713,13 @@ export function DevisGridWorkspace({
                         onDelete={() => deleteRow(i)}
                         assistantHighlight={(assistantHighlightIds.has(String(row._lineId)) || assistantHighlightIndexes.has(i)) ? effectiveAssistantHighlights : null}
                         gridTotalCols={gridTotalCols}
+                        formatMoney={formatGridMoney}
                       />
                     )
                   }
                   return (
                   <Fragment key={`row-${i}-${entryIndex}`}>
-                    <MainRow row={row} index={i} displayIndex={entry.displayIndex} expanded={expandedRows.has(i)} onToggle={() => toggleRow(i)} change={change} tva={tva} multGlobal={multGlobal} editMode={editMode} onUpdate={(patch) => updateRow(i, patch)} onRecompute={(patch) => recomputeRow(i, patch)} onDelete={() => deleteRow(i)} onSaveAsRule={() => handleSaveAsRule(i)} onVerifyRules={() => handleVerifyRules(i)} assistantHighlight={(assistantHighlightIds.has(String(row._lineId)) || assistantHighlightIndexes.has(i)) ? effectiveAssistantHighlights : null} validationKnowledge={validationKnowledge} hiddenCols={hiddenCols} hiddenDimensionCols={hiddenDimensionCols} visibleEquipmentColumns={visibleEquipmentColumns} showOtherEquipmentColumn={showOtherEquipmentColumn} />
+                    <MainRow row={row} index={i} displayIndex={entry.displayIndex} expanded={expandedRows.has(i)} onToggle={() => toggleRow(i)} change={change} tva={tva} multGlobal={multGlobal} editMode={editMode} onUpdate={(patch) => updateRow(i, patch)} onRecompute={(patch) => recomputeRow(i, patch)} onDelete={() => deleteRow(i)} onSaveAsRule={() => handleSaveAsRule(i)} onVerifyRules={() => handleVerifyRules(i)} onReanalyze={() => reanalyzeRowAtIndex(i)} onResetOverrides={() => resetRowOverrides(i)} assistantHighlight={(assistantHighlightIds.has(String(row._lineId)) || assistantHighlightIndexes.has(i)) ? effectiveAssistantHighlights : null} validationKnowledge={validationKnowledge} hiddenCols={hiddenCols} hiddenDimensionCols={hiddenDimensionCols} visibleEquipmentColumns={visibleEquipmentColumns} showOtherEquipmentColumn={showOtherEquipmentColumn} formatMoney={formatGridMoney} />
                     {expandedRows.has(i) && (
                       <Fragment>
                         <SubRowRefs row={row} editMode={editMode} onRefCommit={(colIdx, ref) => handleRefCommit(i, colIdx, ref)} hiddenCols={hiddenCols} visibleDimensionCount={visibleDimensionCount} visibleEquipmentColumns={visibleEquipmentColumns} showOtherEquipmentColumn={showOtherEquipmentColumn} />
@@ -5032,17 +5764,40 @@ export function DevisGridWorkspace({
                   </td>
                 </tr>
                 <tr style={{ background: 'var(--color-surface)' }}>
-                  <td colSpan={gridTotalCols - 5} style={{ padding: '8px 16px', fontWeight: 700, fontSize: 12, borderTop: '2px solid var(--color-border)' }}>
-                    💶 Total général estimé
+                  <td colSpan={gridTotalCols - 5} style={{ padding: '6px 16px', fontWeight: 700, fontSize: 12, borderTop: '2px solid var(--color-border)' }}>
+                    Total général HT
                   </td>
-                  <td style={{ padding: '8px 8px', fontWeight: 700, fontSize: 12, textAlign: 'right', borderTop: '2px solid var(--color-border)', background: CELL.gray.background, whiteSpace: 'nowrap', ...FINAL_AMOUNT_COLUMNS.pu }}>
-                    {totalPU.toLocaleString('fr-FR')} €
+                  <td colSpan={4} style={{ padding: '6px 12px', fontWeight: 800, fontSize: 13, textAlign: 'right', borderTop: '2px solid var(--color-border)', background: CELL.blue.background, whiteSpace: 'nowrap' }}>
+                    {formatGridMoney(totalHT)}
                   </td>
                   <td style={{ borderTop: '2px solid var(--color-border)' }}></td>
-                  <td style={{ borderTop: '2px solid var(--color-border)' }}></td>
-                  <td colSpan={2} style={{ padding: '8px 12px', fontWeight: 800, fontSize: 14, textAlign: 'right', borderTop: '2px solid var(--color-border)', background: CELL.blue.background, whiteSpace: 'nowrap', minWidth: FINAL_AMOUNT_COLUMNS.total.minWidth + FINAL_AMOUNT_COLUMNS.actions.minWidth }}>
-                    {totalHT.toLocaleString('fr-FR')} €
+                </tr>
+                <tr style={{ background: 'var(--color-surface)' }}>
+                  <td colSpan={gridTotalCols - 5} style={{ padding: '6px 16px', fontWeight: 600, fontSize: 11, color: 'var(--color-text-2)' }}>
+                    Geste commercial
                   </td>
+                  <td colSpan={4} style={{ padding: '4px 12px', textAlign: 'right', background: CELL.yellow.background }}>
+                    <EditableNumber value={gesteCommercial} onCommit={setGesteCommercial} step={50} min={-999999} max={999999} width="100%" textAlign="right" />
+                  </td>
+                  <td style={{ fontSize: 11, textAlign: 'right', padding: '6px 8px', fontWeight: 700, whiteSpace: 'nowrap' }}>{formatGridMoney(gesteCommercial)}</td>
+                </tr>
+                <tr style={{ background: 'var(--color-surface)' }}>
+                  <td colSpan={gridTotalCols - 5} style={{ padding: '6px 16px', fontWeight: 600, fontSize: 11, color: 'var(--color-text-2)' }}>
+                    TVA ({(tva * 100).toFixed(1)} %)
+                  </td>
+                  <td colSpan={4} style={{ padding: '6px 12px', fontWeight: 700, fontSize: 12, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    {formatGridMoney(tvaAmount)}
+                  </td>
+                  <td></td>
+                </tr>
+                <tr style={{ background: 'color-mix(in srgb, var(--color-primary) 8%, var(--color-surface))' }}>
+                  <td colSpan={gridTotalCols - 5} style={{ padding: '8px 16px', fontWeight: 800, fontSize: 13, borderTop: '1px solid var(--color-border)' }}>
+                    Total TTC
+                  </td>
+                  <td colSpan={4} style={{ padding: '8px 12px', fontWeight: 900, fontSize: 15, textAlign: 'right', borderTop: '1px solid var(--color-border)', color: 'var(--color-primary)', whiteSpace: 'nowrap' }}>
+                    {formatGridMoney(totalTTC)}
+                  </td>
+                  <td style={{ borderTop: '1px solid var(--color-border)' }}></td>
                 </tr>
               </tfoot>
             </table>
@@ -5084,8 +5839,19 @@ export function DevisGridWorkspace({
           change={change}
           multGlobal={multGlobal}
           tva={tva}
+          currency={currency}
+          gesteCommercial={gesteCommercial}
+          changeLocked={changeLocked}
           onClose={() => setShowSettings(false)}
-          onApply={(v) => { setChange(v.change); setMultGlobal(v.multGlobal); setTva(v.tva); showToast('Paramètres mis à jour', 'success') }}
+          onApply={(v) => {
+            setChange(v.change)
+            setMultGlobal(v.multGlobal)
+            setTva(v.tva)
+            if (v.currency) setCurrency(v.currency)
+            if (v.gesteCommercial != null) setGesteCommercial(v.gesteCommercial)
+            if (v.changeLocked != null) setChangeLocked(Boolean(v.changeLocked))
+            showToast('Paramètres mis à jour', 'success')
+          }}
         />
       )}
 
@@ -5158,5 +5924,113 @@ export function DevisGridWorkspace({
 }
 
 export default function DevisGrid() {
-  return <DevisGridWorkspace />
+  const [searchParams] = useSearchParams()
+  const linkedDevisId = Number(searchParams.get('devisId')) || null
+  const [linkedRows, setLinkedRows] = useState(null)
+  const [linkedMeta, setLinkedMeta] = useState(null)
+  const [linkedLoading, setLinkedLoading] = useState(Boolean(linkedDevisId))
+  const [linkedError, setLinkedError] = useState('')
+  const syncTimerRef = useRef(null)
+  const gridMetaRef = useRef({})
+
+  useEffect(() => {
+    if (!linkedDevisId) return undefined
+    let cancelled = false
+    setLinkedLoading(true)
+    setLinkedError('')
+    Promise.all([
+      api.get(`/devis/${linkedDevisId}`),
+      api.get(`/devis/${linkedDevisId}/lines`),
+    ])
+      .then(([devis, lines]) => {
+        if (cancelled) return
+        setLinkedMeta(devis)
+        setLinkedRows((lines || []).map(dbLineToGridRow))
+      })
+      .catch(err => {
+        if (cancelled) return
+        setLinkedError(err?.error || err?.message || 'Chargement devis impossible')
+      })
+      .finally(() => {
+        if (!cancelled) setLinkedLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [linkedDevisId])
+
+  const commitLinkedRow = useCallback(async (row, index) => {
+    if (!linkedDevisId) return
+    const payload = gridRowToLinePayload(row, index, resolveRow)
+    if (row?._lineId) {
+      await api.put(`/devis/${linkedDevisId}/lines/${row._lineId}`, payload)
+    } else {
+      const created = await api.post(`/devis/${linkedDevisId}/lines`, payload)
+      setLinkedRows(current => (current || []).map((item, idx) => idx === index ? { ...item, _lineId: created.id } : item))
+    }
+  }, [linkedDevisId])
+
+  const syncLinkedGrid = useCallback((rows) => {
+    if (!linkedDevisId || !Array.isArray(rows)) return
+    clearTimeout(syncTimerRef.current)
+    syncTimerRef.current = setTimeout(() => {
+      api.post(`/devis/${linkedDevisId}/sync-grid`, { rows, meta: gridMetaRef.current })
+        .then(saved => setLinkedRows((saved || []).map(dbLineToGridRow)))
+        .catch(() => {})
+    }, 1200)
+  }, [linkedDevisId])
+
+  const devisCrumbLabel = linkedMeta?.quote_number || linkedMeta?.name || (linkedDevisId ? `D${linkedDevisId}` : '')
+  useBreadcrumbOverrideEffect({
+    devisLabel: devisCrumbLabel ? `Grille — ${devisCrumbLabel}` : undefined,
+  })
+  const breadcrumbs = useAppBreadcrumbs()
+
+  if (linkedDevisId && linkedLoading) {
+    return (
+      <div className="app-shell home-shell devis-grid-shell">
+        <AppSidebar />
+        <div className="devis-grid-shell-main" style={{ padding: 24 }}>Chargement du devis #{linkedDevisId}…</div>
+      </div>
+    )
+  }
+  if (linkedDevisId && linkedError) {
+    return (
+      <div className="app-shell home-shell devis-grid-shell">
+        <AppSidebar />
+        <div className="devis-grid-shell-main" style={{ padding: 24, color: '#b91c1c' }}>{linkedError}</div>
+      </div>
+    )
+  }
+
+  const workspace = (
+    <DevisGridWorkspace
+      devisId={linkedDevisId || null}
+      versionId={linkedMeta?.current_version_id || null}
+      initialRows={linkedDevisId ? linkedRows : null}
+      embedded={Boolean(linkedDevisId)}
+      title={linkedDevisId
+        ? `Grille — ${linkedMeta?.quote_number || linkedMeta?.name || `D${linkedDevisId}`}`
+        : 'Devis Grid'}
+      subtitle={linkedDevisId ? 'Synchronisation serveur active (auto-save)' : null}
+      onRowsCommit={linkedDevisId ? commitLinkedRow : null}
+      onRowsChange={linkedDevisId ? syncLinkedGrid : null}
+      onMetaChange={(meta) => { gridMetaRef.current = meta }}
+      onRowsDelete={linkedDevisId ? async (row) => {
+        if (!row?._lineId) return
+        await api.delete(`/devis/${linkedDevisId}/lines/${row._lineId}`)
+      } : null}
+    />
+  )
+
+  return (
+    <div className="app-shell home-shell devis-grid-shell">
+      <AppSidebar />
+      <div className="devis-grid-shell-main">
+        <div className="devis-grid-crumb-bar">
+          <AppBreadcrumbs items={breadcrumbs} compact />
+          <span className="chat-crumb-hint">Alt+← retour</span>
+        </div>
+        {workspace}
+      </div>
+    </div>
+  )
 }

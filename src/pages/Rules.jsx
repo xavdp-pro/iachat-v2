@@ -5,6 +5,9 @@ import {
   Loader2, Plus, Save, Search, Shield, Tag, Trash2, X,
 } from 'lucide-react'
 import api from '../api/index.js'
+import AppSidebar from '../components/AppSidebar.jsx'
+import AppBreadcrumbs from '../components/AppBreadcrumbs.jsx'
+import { useAppBreadcrumbs } from '../hooks/useAppBreadcrumbs.js'
 import { useAuthStore } from '../store/useAuthStore.js'
 
 const CATEGORIES = [
@@ -237,6 +240,7 @@ function buttonStyle(kind = 'ghost') {
 }
 
 export default function Rules() {
+  const breadcrumbs = useAppBreadcrumbs()
   const navigate = useNavigate()
   const location = useLocation()
   const returnTo = location.state?.returnTo || '/devis'
@@ -313,7 +317,9 @@ export default function Rules() {
   }
 
   return (
-    <div style={{ height: '100vh', background: 'var(--color-bg)', color: 'var(--color-text)', display: 'grid', gridTemplateRows: 'auto auto minmax(0, 1fr)', overflow: 'hidden' }}>
+    <div className="app-shell home-shell rules-shell">
+      <AppSidebar />
+      <div className="rules-workspace">
       <style>{`
         .rules-scrollbar {
           scrollbar-width: thin;
@@ -337,9 +343,9 @@ export default function Rules() {
         }
       `}</style>
       <div style={{ height: 52, borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 10, padding: '0 16px', background: 'var(--color-surface)' }}>
-        <button type="button" onClick={() => navigate(returnTo)} style={{ ...buttonStyle('ghost'), width: 34, padding: 0 }} title={returnLabel}><ArrowLeft size={15} /></button>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontWeight: 900, fontSize: 16 }}>Règles</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <AppBreadcrumbs items={breadcrumbs} compact />
+          <div style={{ fontWeight: 900, fontSize: 16, marginTop: 2 }}>Règles</div>
           <div style={{ color: 'var(--color-text-3)', fontSize: 11 }}>Règles atomiques utilisées par les checks devis</div>
         </div>
         <button type="button" onClick={() => { setEditing(null); setShowNew(true) }} style={buttonStyle('primary')}><Plus size={14} /> Nouvelle règle</button>
@@ -415,6 +421,7 @@ export default function Rules() {
             )
           })}
         </div>
+      </div>
       </div>
     </div>
   )

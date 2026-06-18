@@ -7,6 +7,13 @@ import {
   Building2, Database, FileSpreadsheet, LayoutGrid, Shield, Truck, AlertTriangle, Scale,
 } from 'lucide-react'
 import DataWeightProfiles from './admin/DataWeightProfiles.jsx'
+import DataEquipmentCatalog from './admin/DataEquipmentCatalog.jsx'
+import DataExchangeRates from './admin/DataExchangeRates.jsx'
+import DataQuoteNumbers from './admin/DataQuoteNumbers.jsx'
+import DataTariffKnowledge from './admin/DataTariffKnowledge.jsx'
+import AppSidebar from '../components/AppSidebar.jsx'
+import AppBreadcrumbs from '../components/AppBreadcrumbs.jsx'
+import { useAppBreadcrumbs } from '../hooks/useAppBreadcrumbs.js'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useAuthStore } from '../store/useAuthStore.js'
 import { useThemeStore } from '../store/useThemeStore.js'
@@ -16,27 +23,11 @@ const TAB_USERS = 'users'
 const TAB_STT = 'stt'
 const TAB_TTS = 'tts'
 const TAB_EXPERIENCES = 'experiences'
-const TAB_MODULES = 'modules'
 const TAB_DATA = 'data'
 const TAB_MAINTENANCE = 'maintenance'
 const DATA_SUB_WEIGHT = 'weight'
-const DATA_SUB_MENUS = [
-  { id: DATA_SUB_WEIGHT, label: 'Calcul poids', description: 'Coefficients kg/m² et kg/m (Calcul poids.xlsx)', icon: Scale, ready: true },
-  { id: 'tarif-nexus', label: 'Tarif NEXUS', description: 'Grilles CR, EI, FB… (ressources/XLSX/*.md)', icon: FileSpreadsheet, ready: false },
-  { id: 'equipements', label: 'Équipements', description: 'Serrures, garnitures, équipements communs', icon: Shield, ready: false },
-  { id: 'thermolaquage', label: 'Thermolaquage', description: 'Références TL / RAL châssis et BP', icon: LayoutGrid, ready: false },
-]
-const VALID_TABS = new Set([TAB_USERS, TAB_STT, TAB_TTS, TAB_EXPERIENCES, TAB_MODULES, TAB_DATA, TAB_MAINTENANCE])
-
-const ADMIN_MODULE_LINKS = [
-  { label: 'Connaissance IA', description: 'Documentation et base consultable par Zerux IA.', to: '/knowledge', icon: Database },
-  { label: 'Expériences', description: 'Expériences terrain et validations commerciales.', to: '/experiences', icon: BookOpen },
-  { label: 'Devis NEXUS', description: 'Workflow complet de devis versionné.', to: '/devis', icon: FileSpreadsheet },
-  { label: 'Grid devis', description: 'Chiffrage rapide en grille.', to: '/devis/grid', icon: LayoutGrid },
-  { label: 'Tarifs transport', description: 'Gestion et vérification des frais de port.', to: '/devis/transport', icon: Truck },
-  { label: 'Prospects', description: 'Recherche client et affaires HubSpot.', to: '/prospects', icon: Building2 },
-  { label: 'Règles', description: 'Règles opérationnelles R001, R002, etc.', to: '/rules', icon: Shield },
-]
+const DATA_SUB_EQUIPMENT = 'equipements'
+const VALID_TABS = new Set([TAB_USERS, TAB_STT, TAB_TTS, TAB_EXPERIENCES, TAB_DATA, TAB_MAINTENANCE])
 
 export default function Admin() {
   const { t } = useTranslation()
@@ -96,9 +87,10 @@ export default function Admin() {
   const tabParam = searchParams.get('tab')
   const dataSubParam = searchParams.get('sub')
   const activeTab = VALID_TABS.has(tabParam) ? tabParam : TAB_USERS
-  const activeDataSub = DATA_SUB_MENUS.some(item => item.id === dataSubParam && item.ready)
+  const activeDataSub = ['weight', 'equipements', 'taux-change', 'numerotation', 'tarif-nexus', 'thermolaquage'].includes(dataSubParam)
     ? dataSubParam
     : DATA_SUB_WEIGHT
+  const breadcrumbs = useAppBreadcrumbs()
 
   const setActiveTab = (next) => {
     if (next === TAB_USERS) {
@@ -197,6 +189,10 @@ export default function Admin() {
   }
 
   useEffect(() => {
+    if (tabParam === 'modules') {
+      setSearchParams({ tab: TAB_USERS }, { replace: true })
+      return
+    }
     if (tabParam != null && tabParam !== '' && !VALID_TABS.has(tabParam)) {
       setSearchParams({}, { replace: true })
     }
@@ -392,118 +388,24 @@ export default function Admin() {
   
 
   return (
-    <div className="admin-shell">
-      <header className="admin-topbar">
-        <div className="admin-topbar-brand">
-          <div className="admin-topbar-mark">
-            <ShieldCheck size={18} strokeWidth={2} />
-          </div>
-          <div className="admin-topbar-text">
-            <h1>{t('admin.title')}</h1>
-            <p>{t('common.appName')}</p>
-          </div>
+    <div className="app-shell home-shell">
+      <AppSidebar />
+      <div className="admin-workspace">
+      <header className="app-page-topbar admin-page-topbar">
+        <div className="app-page-topbar-text">
+          <AppBreadcrumbs items={breadcrumbs} />
+          <h1>{t('admin.title')}</h1>
+          <p>Configuration plateforme, données métier et validation — utilisez le menu latéral.</p>
         </div>
-        <div className="admin-topbar-actions">
-          <button type="button" className="admin-btn-ghost" onClick={() => navigate('/chat')}>
+        <div className="app-page-topbar-actions">
+          <button type="button" className="admin-btn-ghost" onClick={() => navigate('/')}>
             <MessageCircleReply size={16} />
-            <span>{t('admin.backToChat')}</span>
+            <span>Tableau de bord</span>
           </button>
         </div>
       </header>
 
-      <main className="admin-main">
-        <div className="admin-tabs" role="tablist" aria-label={t('admin.tabsLabel')}>
-          <button
-            type="button"
-            role="tab"
-            id="admin-tab-users"
-            aria-selected={activeTab === TAB_USERS}
-            aria-controls="admin-panel-users"
-            className={`admin-tab ${activeTab === TAB_USERS ? 'admin-tab--active' : ''}`}
-            onClick={() => setActiveTab(TAB_USERS)}
-          >
-            <User size={17} strokeWidth={2} aria-hidden />
-            {t('admin.tabUsers')}
-          </button>
-          <button
-            type="button"
-            role="tab"
-            id="admin-tab-stt"
-            aria-selected={activeTab === TAB_STT}
-            aria-controls="admin-panel-stt"
-            className={`admin-tab ${activeTab === TAB_STT ? 'admin-tab--active' : ''}`}
-            onClick={() => setActiveTab(TAB_STT)}
-          >
-            <Mic size={17} strokeWidth={2} aria-hidden />
-            Test STT
-          </button>
-          <button
-            type="button"
-            role="tab"
-            id="admin-tab-tts"
-            aria-selected={activeTab === TAB_TTS}
-            aria-controls="admin-panel-tts"
-            className={`admin-tab ${activeTab === TAB_TTS ? 'admin-tab--active' : ''}`}
-            onClick={() => setActiveTab(TAB_TTS)}
-          >
-            <Headphones size={17} strokeWidth={2} aria-hidden />
-            {t('admin.tabTts')}
-          </button>
-          <button
-            type="button"
-            role="tab"
-            id="admin-tab-experiences"
-            aria-selected={activeTab === TAB_EXPERIENCES}
-            aria-controls="admin-panel-experiences"
-            className={`admin-tab ${activeTab === TAB_EXPERIENCES ? 'admin-tab--active' : ''}`}
-            onClick={() => setActiveTab(TAB_EXPERIENCES)}
-          >
-            <BookOpen size={17} strokeWidth={2} aria-hidden />
-            Expériences
-            {allExperiences.filter(e => e.status === 'pending').length > 0 && (
-              <span style={{ background: 'var(--color-primary)', color: '#fff', borderRadius: 99, fontSize: 10, fontWeight: 700, padding: '0 6px', marginLeft: 4 }}>
-                {allExperiences.filter(e => e.status === 'pending').length}
-              </span>
-            )}
-          </button>
-          <button
-            type="button"
-            role="tab"
-            id="admin-tab-data"
-            aria-selected={activeTab === TAB_DATA}
-            aria-controls="admin-panel-data"
-            className={`admin-tab ${activeTab === TAB_DATA ? 'admin-tab--active' : ''}`}
-            onClick={() => setActiveTab(TAB_DATA)}
-          >
-            <Database size={17} strokeWidth={2} aria-hidden />
-            Données métier
-          </button>
-          <button
-            type="button"
-            role="tab"
-            id="admin-tab-modules"
-            aria-selected={activeTab === TAB_MODULES}
-            aria-controls="admin-panel-modules"
-            className={`admin-tab ${activeTab === TAB_MODULES ? 'admin-tab--active' : ''}`}
-            onClick={() => setActiveTab(TAB_MODULES)}
-          >
-            <LayoutGrid size={17} strokeWidth={2} aria-hidden />
-            Modules
-          </button>
-          <button
-            type="button"
-            role="tab"
-            id="admin-tab-maintenance"
-            aria-selected={activeTab === TAB_MAINTENANCE}
-            aria-controls="admin-panel-maintenance"
-            className={`admin-tab ${activeTab === TAB_MAINTENANCE ? 'admin-tab--active' : ''}`}
-            onClick={() => setActiveTab(TAB_MAINTENANCE)}
-          >
-            <AlertTriangle size={17} strokeWidth={2} aria-hidden />
-            Maintenance
-          </button>
-        </div>
-
+      <main className="admin-main admin-main--navless">
         {activeTab === TAB_MAINTENANCE && (
           <section id="admin-panel-maintenance" role="tabpanel" aria-labelledby="admin-tab-maintenance" className="admin-ollama-panel">
             <div className="admin-ollama-head">
@@ -615,73 +517,13 @@ export default function Admin() {
 
         {activeTab === TAB_DATA && (
           <section id="admin-panel-data" role="tabpanel" aria-labelledby="admin-tab-data" className="admin-ollama-panel">
-            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(200px, 240px) minmax(0, 1fr)', gap: 18, alignItems: 'start' }}>
-              <nav aria-label="Sous-menu données métier" style={{ display: 'grid', gap: 8 }}>
-                {DATA_SUB_MENUS.map((item) => {
-                  const Icon = item.icon
-                  const isActive = activeDataSub === item.id
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      disabled={!item.ready}
-                      onClick={() => item.ready && setActiveDataSub(item.id)}
-                      style={{
-                        display: 'grid',
-                        gridTemplateColumns: 'auto 1fr',
-                        gap: 10,
-                        alignItems: 'start',
-                        textAlign: 'left',
-                        padding: '10px 12px',
-                        borderRadius: 10,
-                        border: `1px solid ${isActive ? 'var(--color-primary)' : 'var(--color-border)'}`,
-                        background: isActive ? 'rgba(99,102,241,0.10)' : 'var(--color-input-bg)',
-                        color: item.ready ? 'var(--color-text)' : 'var(--color-text-2)',
-                        opacity: item.ready ? 1 : 0.55,
-                        cursor: item.ready ? 'pointer' : 'not-allowed',
-                      }}
-                    >
-                      <Icon size={16} style={{ marginTop: 2 }} />
-                      <span>
-                        <strong style={{ display: 'block', fontSize: 13 }}>{item.label}</strong>
-                        <small style={{ display: 'block', fontSize: 11, color: 'var(--color-text-2)', lineHeight: 1.35 }}>
-                          {item.description}
-                          {!item.ready ? ' — bientôt' : ''}
-                        </small>
-                      </span>
-                    </button>
-                  )
-                })}
-              </nav>
-              <div>
+            <div>
                 {activeDataSub === DATA_SUB_WEIGHT && <DataWeightProfiles />}
-              </div>
-            </div>
-          </section>
-        )}
-
-        {activeTab === TAB_MODULES && (
-          <section id="admin-panel-modules" role="tabpanel" aria-labelledby="admin-tab-modules" className="admin-ollama-panel">
-            <div className="admin-ollama-head">
-              <div className="admin-ollama-icon"><LayoutGrid size={22} strokeWidth={2} /></div>
-              <div>
-                <h2>Modules internes</h2>
-                <p className="admin-ollama-desc">Les accès techniques qui étaient dans la barre latérale sont regroupés ici en onglets d'administration.</p>
-              </div>
-            </div>
-            <div className="admin-module-grid">
-              {ADMIN_MODULE_LINKS.map((item) => {
-                const Icon = item.icon
-                return (
-                  <button key={item.to} type="button" className="admin-module-card" onClick={() => navigate(item.to)}>
-                    <Icon size={18} />
-                    <span>
-                      <strong>{item.label}</strong>
-                      <small>{item.description}</small>
-                    </span>
-                  </button>
-                )
-              })}
+                {activeDataSub === DATA_SUB_EQUIPMENT && <DataEquipmentCatalog />}
+                {activeDataSub === 'taux-change' && <DataExchangeRates />}
+                {activeDataSub === 'numerotation' && <DataQuoteNumbers />}
+                {activeDataSub === 'tarif-nexus' && <DataTariffKnowledge mode="tarif" />}
+                {activeDataSub === 'thermolaquage' && <DataTariffKnowledge mode="thermo" />}
             </div>
           </section>
         )}
@@ -1034,6 +876,7 @@ export default function Admin() {
           />
         )}
       </AnimatePresence>
+      </div>
     </div>
   )
 }

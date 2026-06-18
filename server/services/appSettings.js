@@ -6,6 +6,7 @@ export const KEY_ENABLED = 'ollama_enabled'
 export const KEY_MAINTENANCE_ENABLED = 'maintenance_enabled'
 export const KEY_MAINTENANCE_MESSAGE = 'maintenance_message'
 export const KEY_MAINTENANCE_BYPASS_IPS = 'maintenance_bypass_ips'
+export const KEY_WEIGHT_VITRAGE_KG_M2 = 'weight_default_vitrage_kg_m2'
 
 export async function getSetting(key) {
   const [rows] = await db.query(

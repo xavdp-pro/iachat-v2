@@ -13,6 +13,9 @@ import {
   Loader2,
 } from 'lucide-react'
 import { MarkdownRenderer } from '../components/MarkdownRenderer.jsx'
+import AppSidebar from '../components/AppSidebar.jsx'
+import AppBreadcrumbs from '../components/AppBreadcrumbs.jsx'
+import { useAppBreadcrumbs } from '../hooks/useAppBreadcrumbs.js'
 import api from '../api/index.js'
 
 const CATEGORY_META = {
@@ -34,6 +37,7 @@ const SECTION_LABELS = {
 
 export default function Knowledge() {
   const nav = useNavigate()
+  const breadcrumbs = useAppBreadcrumbs()
   const [inventory, setInventory] = useState(null)
   const [tables, setTables] = useState(null)
   const [activeSection, setActiveSection] = useState('overview')
@@ -98,7 +102,9 @@ export default function Knowledge() {
 
   // ───────────────────────────────────────────────────────────────────
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--color-bg)', color: 'var(--color-text)', display: 'flex' }}>
+    <div className="app-shell home-shell knowledge-shell">
+      <AppSidebar />
+      <div className="knowledge-workspace">
       {/* ── SIDEBAR NAV ── */}
       <aside style={{
         width: 280, flexShrink: 0, background: 'var(--color-surface)',
@@ -106,13 +112,8 @@ export default function Knowledge() {
         display: 'flex', flexDirection: 'column', height: '100vh', position: 'sticky', top: 0,
       }}>
         <div style={{ padding: '16px', borderBottom: '1px solid var(--color-border)' }}>
-          <button onClick={() => nav('/chat')} style={{
-            display: 'inline-flex', alignItems: 'center', gap: 6, background: 'transparent',
-            border: 'none', color: 'var(--color-text-3)', cursor: 'pointer', fontSize: 12, padding: 0,
-          }}>
-            <ArrowLeft size={14} /> Retour
-          </button>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
+          <AppBreadcrumbs items={breadcrumbs} compact />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
             <BookOpen size={20} color="var(--color-primary)" />
             <div>
               <div style={{ fontWeight: 700, fontSize: 15 }}>Connaissance IA</div>
@@ -250,6 +251,7 @@ export default function Knowledge() {
           <OptionsView tables={tables} />
         ) : null}
       </main>
+      </div>
     </div>
   )
 }

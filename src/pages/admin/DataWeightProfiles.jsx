@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Loader2, Plus, RefreshCw, Save, Scale, Trash2 } from 'lucide-react'
-import api from '../api/index.js'
+import api from '../../api/index.js'
 
 const emptyProfile = {
   type_label: '',
@@ -46,6 +46,7 @@ export default function DataWeightProfiles() {
   const [savingId, setSavingId] = useState(null)
   const [error, setError] = useState('')
   const [saved, setSaved] = useState(false)
+  const [vitrageKgM2, setVitrageKgM2] = useState('')
   const [previewForm, setPreviewForm] = useState({
     designation: 'BP 1V CR4 EI60 2100 x 1000',
     gamme: 'CR4 EI60',
@@ -79,7 +80,28 @@ export default function DataWeightProfiles() {
     }
   }, [])
 
-  useEffect(() => { loadProfiles() }, [loadProfiles])
+  useEffect(() => {
+    loadProfiles()
+    api.get('/weight-profiles/settings').then(data => {
+      if (data?.vitrage_kg_m2 != null) setVitrageKgM2(String(data.vitrage_kg_m2))
+    }).catch(() => {})
+  }, [loadProfiles])
+
+  const saveVitrageSetting = async () => {
+    setSavingId('vitrage')
+    setError('')
+    try {
+      const data = await api.put('/weight-profiles/settings', {
+        vitrage_kg_m2: vitrageKgM2.trim() === '' ? null : Number(vitrageKgM2.replace(',', '.')),
+      })
+      setVitrageKgM2(data?.vitrage_kg_m2 != null ? String(data.vitrage_kg_m2) : '')
+      flashSaved()
+    } catch (err) {
+      setError(err.error || err.message || 'Enregistrement vitrage impossible')
+    } finally {
+      setSavingId(null)
+    }
+  }
 
   const seedDefaults = async () => {
     setSavingId('seed')
@@ -166,7 +188,7 @@ export default function DataWeightProfiles() {
       }
       const result = await api.post('/weight-profiles/preview-line', {
         row,
-        vitrage_kg_m2: previewForm.vitrage_kg_m2 || null,
+        vitrage_kg_m2: previewForm.vitrage_kg_m2 || vitrageKgM2 || null,
       })
       setPreviewResult(result)
     } catch (err) {
@@ -217,7 +239,18 @@ export default function DataWeightProfiles() {
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 13, color: 'var(--color-text-2)' }}>
         <span><strong>{profiles.length}</strong> profils</span>
         <span><strong>{activeCount}</strong> actifs</span>
-        <span>Formule BP : kg/m² × surface + kg/m × périmètre bâti</span>
+        <span>Formule CF : vitrage kg/m² × surface (−100 mm) + kg/m bâti</span>
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, alignItems: 'end', flexWrap: 'wrap', padding: '12px 14px', borderRadius: 10, border: '1px solid var(--color-border)', background: 'var(--color-input-bg)' }}>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
+          <span style={{ fontWeight: 700 }}>Vitrage défaut (kg/m²) — formule châssis CF</span>
+          <input value={vitrageKgM2} onChange={e => setVitrageKgM2(e.target.value.replace(',', '.'))} placeholder="ex. 103" style={{ width: 120, padding: '7px 9px', borderRadius: 6, border: '1px solid var(--color-border)' }} />
+        </label>
+        <button type="button" className="admin-btn-primary" onClick={saveVitrageSetting} disabled={savingId === 'vitrage'}>
+          {savingId === 'vitrage' ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+          Enregistrer vitrage
+        </button>
       </div>
 
       <div style={{ padding: 14, borderRadius: 10, border: '1px solid var(--color-border)', background: 'var(--color-input-bg)', display: 'grid', gap: 10 }}>

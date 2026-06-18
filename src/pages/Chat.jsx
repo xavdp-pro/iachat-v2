@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useCallback } from 'react'
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import {
   Moon, Sun, LogOut, FolderOpen,
   Plus, User, Trash2, Edit2,
@@ -14,6 +14,9 @@ import { useProjectStore } from '../store/useProjectStore.js'
 import { useTranslation } from 'react-i18next'
 import { motion, AnimatePresence } from 'framer-motion'
 import { MarkdownRenderer } from '../components/MarkdownRenderer.jsx'
+import AppNavLinks from '../components/AppNavLinks.jsx'
+import AppBreadcrumbs from '../components/AppBreadcrumbs.jsx'
+import { useBreadcrumbOverrideEffect, useBreadcrumbBackHandler } from '../context/BreadcrumbOverrideContext.jsx'
 import { getAuthToken } from '../api/index.js'
 
 export default function Chat() {
@@ -463,6 +466,46 @@ export default function Chat() {
   const visibleDiscussions = activeProject ? discussions : unfiledDiscussions
   const canSend = !loading && (!!inputMessage.trim() || pendingAttachments.length > 0)
 
+  useBreadcrumbOverrideEffect({
+    chatProjectName: activeProject?.name,
+    chatDiscussionTitle: activeDiscussion?.title,
+  })
+
+  const chatBreadcrumbs = useMemo(() => {
+    const crumbs = [
+      { label: 'IA & savoir', to: '/' },
+      {
+        label: 'Chatbot',
+        onActivate: () => {
+          setActiveDiscussion(null)
+          setActiveProject(null)
+        },
+      },
+    ]
+    if (activeProject) {
+      crumbs.push({
+        label: activeProject.name,
+        onActivate: () => setActiveDiscussion(null),
+      })
+    }
+    if (activeDiscussion) {
+      crumbs.push({ label: activeDiscussion.title })
+    }
+    return crumbs
+  }, [activeProject, activeDiscussion, setActiveDiscussion, setActiveProject])
+
+  useBreadcrumbBackHandler(useCallback(() => {
+    if (activeDiscussion) {
+      setActiveDiscussion(null)
+      return true
+    }
+    if (activeProject) {
+      setActiveProject(null)
+      return true
+    }
+    return false
+  }, [activeDiscussion, activeProject, setActiveDiscussion, setActiveProject]))
+
   const landingActions = [
     {
       icon: FileText,
@@ -552,6 +595,8 @@ export default function Chat() {
             {t('chat.newDiscussion')}
           </button>
         </div>
+
+        <AppNavLinks onNavigate={closeMobileSidebar} className="chat-sidebar-apps" />
 
         <nav className="chat-sidebar-scroll custom-scrollbar">
           <h3 className="chat-sidebar-heading">Conversations</h3>
@@ -832,6 +877,10 @@ export default function Chat() {
             </button>
           </div>
         )}
+        <div className="chat-crumb-bar">
+          <AppBreadcrumbs items={chatBreadcrumbs} compact />
+          <span className="chat-crumb-hint" title="Raccourci clavier">Alt+← retour</span>
+        </div>
         <header className="chat-top-navbar">
           <button
             type="button"

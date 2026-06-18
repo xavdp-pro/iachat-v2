@@ -1,0 +1,12 @@
+services:
+  dovecot-test:
+    build: .
+    container_name: zerux-imap-test
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:1143:143"
+    healthcheck:
+      test: ["CMD-SHELL", "doveadm who 2>/dev/null || exit 0"]
+      interval: 15s
+      timeout: 5s
+      retries: 3

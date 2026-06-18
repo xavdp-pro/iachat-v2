@@ -441,20 +441,7 @@ export function isHubspotConfigured() {
   return Boolean(getToken())
 }
 
-/**
- * Upload a PDF buffer to HubSpot Files API, then create a Note on the deal
- * with the file attached.
- * Required scopes: files, crm.objects.notes.write
- */
-export async function uploadPdfToDeal({ buffer, filename, dealId, noteBody }) {
-  const token = getToken()
-  if (!token) {
-    const err = new Error('HUBSPOT_PRIVATE_APP_TOKEN is not configured')
-    err.code = 'NO_TOKEN'
-    throw err
-  }
-
-  // 1. Upload file to HubSpot Files API (multipart/form-data)
+async function uploadHubspotPdf({ token, buffer, filename }) {
   const formData = new FormData()
   formData.append('file', new Blob([buffer], { type: 'application/pdf' }), filename)
   formData.append('options', JSON.stringify({ access: 'PUBLIC_INDEXABLE', overwrite: false }))
@@ -475,17 +462,40 @@ export async function uploadPdfToDeal({ buffer, filename, dealId, noteBody }) {
     err.body = fileData
     throw err
   }
+  return {
+    fileId: String(fileData.id),
+    fileUrl: fileData.url || null,
+    filename,
+  }
+}
 
-  const fileId = String(fileData.id)
-  const fileUrl = fileData.url || null
+/**
+ * Upload one or more PDF buffers to HubSpot Files API, then create a Note on the deal.
+ * Required scopes: files, crm.objects.notes.write
+ */
+export async function uploadPdfToDeal({ buffer, filename, files, dealId, noteBody }) {
+  const token = getToken()
+  if (!token) {
+    const err = new Error('HUBSPOT_PRIVATE_APP_TOKEN is not configured')
+    err.code = 'NO_TOKEN'
+    throw err
+  }
 
-  // 2. Create a Note on the deal with the attachment
+  const inputFiles = Array.isArray(files)
+    ? files.filter(file => file?.buffer && file?.filename)
+    : (buffer && filename ? [{ buffer, filename }] : [])
+  const uploadedFiles = []
+  for (const file of inputFiles) {
+    uploadedFiles.push(await uploadHubspotPdf({ token, buffer: file.buffer, filename: file.filename }))
+  }
+
+  // HubSpot accepts multiple note attachments as a semicolon-separated list.
   const note = await hubspotFetch('/crm/v3/objects/notes', {
     method: 'POST',
     body: {
       properties: {
-        hs_note_body: noteBody || filename,
-        hs_attachment_ids: fileId,
+        hs_note_body: noteBody || uploadedFiles.map(file => file.filename).join('\n') || 'Devis NEXUS',
+        ...(uploadedFiles.length ? { hs_attachment_ids: uploadedFiles.map(file => file.fileId).join(';') } : {}),
         hs_timestamp: new Date().toISOString(),
       },
       associations: [
@@ -497,5 +507,10 @@ export async function uploadPdfToDeal({ buffer, filename, dealId, noteBody }) {
     },
   })
 
-  return { fileId, fileUrl, noteId: note.id }
+  return {
+    fileId: uploadedFiles[0]?.fileId || null,
+    fileUrl: uploadedFiles[0]?.fileUrl || null,
+    noteId: note.id,
+    files: uploadedFiles,
+  }
 }

@@ -21,6 +21,11 @@ import prospectsRoutes from './routes/prospects.js'
 import knowledgeRoutes from './routes/knowledge.js'
 import rulesRoutes from './routes/rules.js'
 import weightProfilesRoutes from './routes/weightProfiles.js'
+import equipmentCatalogRoutes from './routes/equipmentCatalog.js'
+import exchangeRatesRoutes from './routes/exchangeRates.js'
+import quoteAdminRoutes from './routes/quoteAdmin.js'
+import imapRoutes from './routes/imap.js'
+import outlookRoutes from './routes/outlook.js'
 import { ensureDbSchema } from './db/ensureSchema.js'
 import { warmupMemory } from './services/memory.js'
 import { getMaintenanceSettings } from './services/appSettings.js'
@@ -76,6 +81,11 @@ app.use('/api/prospects', prospectsRoutes)
 app.use('/api/knowledge', knowledgeRoutes)
 app.use('/api/rules', rulesRoutes)
 app.use('/api/weight-profiles', weightProfilesRoutes)
+app.use('/api/equipment-catalog', equipmentCatalogRoutes)
+app.use('/api/exchange-rates', exchangeRatesRoutes)
+app.use('/api/quote-admin', quoteAdminRoutes)
+app.use('/api/imap', imapRoutes)
+app.use('/api/outlook', outlookRoutes)
 app.use('/api/tts', ttsRoutes)
 
 // Health check (capabilities help verify deploy: admin Ollama UI needs GET/PUT /api/admin/ollama-settings)

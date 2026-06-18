@@ -1,5 +1,6 @@
 import db from './index.js'
 import { DEFAULT_WEIGHT_PROFILES } from '../services/weight-calculator.js'
+import { seedDefaultEquipmentImports } from '../services/equipment-catalog.js'
 
 /**
  * Idempotent schema patches (add columns / tables if missing).
@@ -288,6 +289,23 @@ export async function ensureDbSchema() {
       console.log('✅ DB: devis_lines.raw_json column added')
     }
 
+    const devisLineExtraCols = [
+      ['qty', 'INT NOT NULL DEFAULT 1 AFTER total_ligne_ht'],
+      ['multiple', 'DECIMAL(8,4) NOT NULL DEFAULT 1 AFTER qty'],
+      ['weight_kg', 'DECIMAL(10,2) DEFAULT NULL AFTER multiple'],
+    ]
+    for (const [columnName, definition] of devisLineExtraCols) {
+      const [lineCols] = await db.query(
+        `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'devis_lines' AND COLUMN_NAME = ?`,
+        [columnName]
+      )
+      if (!lineCols.length) {
+        await db.query(`ALTER TABLE devis_lines ADD COLUMN ${columnName} ${definition}`)
+        console.log(`✅ DB: devis_lines.${columnName} column added`)
+      }
+    }
+
     // ── devis_versions (tree-based quote versions) ───────────────────────
     await db.query(`
       CREATE TABLE IF NOT EXISTS devis_versions (
@@ -547,6 +565,93 @@ export async function ensureDbSchema() {
         )
       }
       console.log('✅ DB: door_weight_profiles seeded from Calcul poids.xlsx')
+    }
+
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS door_equipment_items (
+        id             INT AUTO_INCREMENT PRIMARY KEY,
+        performance    VARCHAR(20) NOT NULL,
+        grid_column    VARCHAR(32) NOT NULL,
+        ref            VARCHAR(20) DEFAULT NULL,
+        label          TEXT NOT NULL,
+        section_label  VARCHAR(255) DEFAULT NULL,
+        row_kind       ENUM('item','section') NOT NULL DEFAULT 'item',
+        sort_order     INT NOT NULL DEFAULT 0,
+        price_ht       DECIMAL(12,2) DEFAULT NULL,
+        active         TINYINT(1) NOT NULL DEFAULT 1,
+        source_file    VARCHAR(500) DEFAULT NULL,
+        notes          TEXT DEFAULT NULL,
+        created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_dei_perf_col (performance, grid_column, active, sort_order),
+        INDEX idx_dei_ref (ref)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `)
+    console.log('✅ DB: door_equipment_items table ready')
+
+    try {
+      const seedEquip = await seedDefaultEquipmentImports()
+      if (!seedEquip.skipped) {
+        console.log('✅ DB: door_equipment_items seeded from Equipements CR3/CR4.xlsx')
+      }
+    } catch (err) {
+      console.error('door_equipment_items seed:', err.message)
+    }
+
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS exchange_rates (
+        currency          VARCHAR(3) PRIMARY KEY,
+        rate_to_eur       DECIMAL(8,4) NOT NULL,
+        tva_rate          DECIMAL(6,4) NOT NULL DEFAULT 0.2000,
+        last_validated_at DATETIME DEFAULT NULL,
+        validated_by      INT DEFAULT NULL,
+        updated_at        DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `)
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS exchange_rate_validations (
+        semester_key  VARCHAR(10) PRIMARY KEY,
+        validated_at  DATETIME NOT NULL,
+        validated_by  INT DEFAULT NULL,
+        unchanged     TINYINT(1) NOT NULL DEFAULT 0
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `)
+    const defaultFx = [
+      ['EUR', 1.0, 0.2],
+      ['CHF', 0.9, 0.081],
+      ['GBP', 0.9, 0.2],
+      ['USD', 1.2, 0],
+    ]
+    for (const [currency, rate, tva] of defaultFx) {
+      await db.query(
+        'INSERT IGNORE INTO exchange_rates (currency, rate_to_eur, tva_rate) VALUES (?, ?, ?)',
+        [currency, rate, tva]
+      )
+    }
+    console.log('✅ DB: exchange_rates ready')
+
+    const devisExtraCols = [
+      ['currency', "VARCHAR(3) NOT NULL DEFAULT 'EUR' AFTER client_name"],
+      ['tva_rate', 'DECIMAL(6,4) DEFAULT NULL AFTER currency'],
+      ['commercial_discount_ht', 'DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER tva_rate'],
+      ['exchange_rate', 'DECIMAL(12,6) DEFAULT NULL AFTER commercial_discount_ht'],
+      ['exchange_locked', 'TINYINT(1) NOT NULL DEFAULT 0 AFTER exchange_rate'],
+      ['requester_contact_id', 'VARCHAR(50) DEFAULT NULL AFTER company_id'],
+      ['requester_contact_name', 'VARCHAR(255) DEFAULT NULL AFTER requester_contact_id'],
+      ['source_email_json', 'JSON DEFAULT NULL AFTER hubspot_note_id'],
+      ['no_email_source', 'TINYINT(1) NOT NULL DEFAULT 0 AFTER source_email_json'],
+      ['email_draft_body', 'TEXT DEFAULT NULL AFTER no_email_source'],
+    ]
+    for (const [col, ddl] of devisExtraCols) {
+      const [exists] = await db.query(
+        `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'devis' AND COLUMN_NAME = ?`,
+        [col]
+      )
+      if (!exists.length) {
+        await db.query(`ALTER TABLE devis ADD COLUMN ${col} ${ddl}`)
+        console.log(`✅ DB: devis.${col} added`)
+      }
     }
 
     const [transportCount] = await db.query('SELECT COUNT(*) AS count FROM transport_tariffs')

@@ -3,6 +3,9 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { MotionConfig } from 'framer-motion'
 import { useAuthStore } from './store/useAuthStore.js'
 import { useThemeStore } from './store/useThemeStore.js'
+import PrivateOutlet from './components/PrivateOutlet.jsx'
+import { BreadcrumbOverrideProvider } from './context/BreadcrumbOverrideContext.jsx'
+import AppRouteHead from './components/AppRouteHead.jsx'
 
 // Lazy loading the pages to reduce initial bundle size
 const Login = lazy(() => import('./pages/Login.jsx'))
@@ -12,6 +15,7 @@ const Chat = lazy(() => import('./pages/Chat.jsx'))
 const Experiences = lazy(() => import('./pages/Experiences.jsx'))
 const Prospects = lazy(() => import('./pages/Prospects.jsx'))
 const ProspectQuotes = lazy(() => import('./pages/ProspectQuotes.jsx'))
+const ImapConversationsLab = lazy(() => import('./pages/ImapConversationsLab.jsx'))
 const DevisStepper = lazy(() => import('./pages/DevisStepper.jsx'))
 const DevisSearch = lazy(() => import('./pages/DevisSearch.jsx'))
 const Knowledge = lazy(() => import('./pages/Knowledge.jsx'))
@@ -19,15 +23,6 @@ const Rules = lazy(() => import('./pages/Rules.jsx'))
 const DevisGrid = lazy(() => import('./pages/DevisGrid.jsx'))
 const DevisGridPdfDraft = lazy(() => import('./pages/DevisGridPdfDraft.jsx'))
 const TransportTariffs = lazy(() => import('./pages/TransportTariffs.jsx'))
-
-// Route guard — redirect to login if not authenticated
-function PrivateRoute({ children, adminOnly = false }) {
-  const { user, loading } = useAuthStore()
-  if (loading) return null
-  if (!user) return <Navigate to="/login" replace />
-  if (adminOnly && user.role !== 'admin') return <Navigate to="/" replace />
-  return children
-}
 
 // Fallback for lazy routes
 const PageLoader = () => (
@@ -137,82 +132,40 @@ export default function App() {
     <MotionConfig transition={{ duration: 0 }}>
       <ModalDismissController />
       <BrowserRouter>
-        <Suspense fallback={<PageLoader />}>
+        <BreadcrumbOverrideProvider>
+          <AppRouteHead />
+          <Suspense fallback={<PageLoader />}>
           <Routes>
             <Route path="/login" element={<Login />} />
-            <Route path="/admin" element={
-              <PrivateRoute adminOnly>
-                <Admin />
-              </PrivateRoute>
-            } />
-            <Route path="/" element={
-              <PrivateRoute>
-                <Home />
-              </PrivateRoute>
-            } />
-            <Route path="/chat" element={
-              <PrivateRoute>
-                <Chat />
-              </PrivateRoute>
-            } />
-            <Route path="/experiences" element={
-              <PrivateRoute>
-                <Experiences />
-              </PrivateRoute>
-            } />
-            <Route path="/knowledge" element={
-              <PrivateRoute>
-                <Knowledge />
-              </PrivateRoute>
-            } />
-            <Route path="/rules" element={
-              <PrivateRoute>
-                <Rules />
-              </PrivateRoute>
-            } />
-            <Route path="/devis" element={
-              <PrivateRoute>
-                <DevisStepper />
-              </PrivateRoute>
-            } />
-            <Route path="/devis/search" element={
-              <PrivateRoute>
-                <DevisSearch />
-              </PrivateRoute>
-            } />
-            <Route path="/devis/legacy" element={
-              <PrivateRoute>
-                <Navigate to="/" replace />
-              </PrivateRoute>
-            } />
-            <Route path="/devis/grid" element={
-              <PrivateRoute>
-                <DevisGrid />
-              </PrivateRoute>
-            } />
-            <Route path="/devis/grid/pdf-draft" element={
-              <PrivateRoute>
-                <DevisGridPdfDraft />
-              </PrivateRoute>
-            } />
-            <Route path="/devis/transport" element={
-              <PrivateRoute>
-                <TransportTariffs />
-              </PrivateRoute>
-            } />
-            <Route path="/prospects" element={
-              <PrivateRoute>
-                <Prospects />
-              </PrivateRoute>
-            } />
-            <Route path="/prospects/:id/quotes" element={
-              <PrivateRoute>
-                <ProspectQuotes />
-              </PrivateRoute>
-            } />
+
+            <Route element={<PrivateOutlet />}>
+              <Route path="/" element={<Home />} />
+              <Route path="/chat" element={<Chat />} />
+              <Route path="/experiences" element={<Experiences />} />
+              <Route path="/knowledge" element={<Knowledge />} />
+              <Route path="/rules" element={<Rules />} />
+              <Route path="/prospects" element={<Prospects />} />
+              <Route path="/prospects/:id/quotes" element={<ProspectQuotes />} />
+
+              <Route path="/devis">
+                <Route index element={<DevisStepper />} />
+                <Route path="search" element={<DevisSearch />} />
+                <Route path="imap-lab" element={<ImapConversationsLab />} />
+                <Route path="grid" element={<DevisGrid />} />
+                <Route path="grid/pdf-draft" element={<DevisGridPdfDraft />} />
+                <Route path="transport" element={<TransportTariffs />} />
+                <Route path="legacy" element={<Navigate to="/" replace />} />
+              </Route>
+            </Route>
+
+            <Route element={<PrivateOutlet adminOnly />}>
+              <Route path="/admin" element={<Admin />} />
+            </Route>
+
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
-        </Suspense>
+          </Suspense>
+        </BreadcrumbOverrideProvider>
       </BrowserRouter>
     </MotionConfig>
   )

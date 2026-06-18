@@ -10,6 +10,7 @@ import {
 import { motion, AnimatePresence } from 'framer-motion'
 import { useAuthStore } from '../store/useAuthStore.js'
 import api from '../api/index.js'
+import AppPageShell from '../components/AppPageShell.jsx'
 
 const CATEGORIES = [
   'Chiffrage', 'Validations individuelles R&D', 'Attention client', 'Règle métier', 'Piège à éviter',
@@ -238,28 +239,11 @@ export default function Experiences() {
   }
 
   return (
-    <div className="admin-shell">
-      {/* ── Topbar ── */}
-      <header className="admin-topbar">
-        <div className="admin-topbar-brand">
-          <div className="admin-topbar-mark">
-            <BookOpen size={18} strokeWidth={2} />
-          </div>
-          <div className="admin-topbar-text">
-            <h1>Base d'expériences</h1>
-            <p>{counts.approved} approuvée{counts.approved !== 1 ? 's' : ''} · {counts.pending} en attente</p>
-          </div>
-        </div>
-        <div className="admin-topbar-actions">
-          <button type="button" className="admin-btn-ghost" onClick={() => navigate(returnTo)}>
-            {location.state?.returnTo ? <ArrowLeft size={16} /> : <MessageCircleReply size={16} />}
-            <span>{returnLabel}</span>
-          </button>
-        </div>
-      </header>
-
-      {/* ── Main ── */}
-      <main className="admin-main">
+    <AppPageShell
+      title="Base d'expériences"
+      subtitle={`${counts.approved} approuvée${counts.approved !== 1 ? 's' : ''} · ${counts.pending} en attente`}
+      contentClassName="admin-main"
+    >
         {/* Intro banner */}
         <div style={{
           padding: '1rem 1.25rem',
@@ -385,9 +369,7 @@ export default function Experiences() {
             </div>
           )}
         </div>
-      </main>
 
-      {/* ── Modals ── */}
       <AnimatePresence>
         {modal && (
           <ExperienceModal
@@ -418,6 +400,6 @@ export default function Experiences() {
           </div>
         )}
       </AnimatePresence>
-    </div>
+    </AppPageShell>
   )
 }

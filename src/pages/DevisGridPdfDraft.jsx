@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowLeft, Check, Loader2, Sparkles } from 'lucide-react'
+import { Check, Loader2, Sparkles } from 'lucide-react'
 import api from '../api/index.js'
+import AppSidebar from '../components/AppSidebar.jsx'
+import AppBreadcrumbs from '../components/AppBreadcrumbs.jsx'
+import { useAppBreadcrumbs } from '../hooks/useAppBreadcrumbs.js'
 import { resolveRow } from './DevisGrid.jsx'
 
 const SECTION_LABEL = {
@@ -65,6 +68,7 @@ function loadRows() {
 
 export default function DevisGridPdfDraft() {
   const navigate = useNavigate()
+  const breadcrumbs = useAppBreadcrumbs()
   const [rows, setRows] = useState(() => loadRows())
   const [saving, setSaving] = useState(false)
   const [status, setStatus] = useState('')
@@ -169,15 +173,21 @@ export default function DevisGridPdfDraft() {
   }
 
   return (
-    <div style={{ height: '100vh', display: 'grid', gridTemplateRows: 'auto 1fr', background: 'var(--color-bg)', color: 'var(--color-text)' }}>
+    <div className="app-shell home-shell devis-grid-shell">
+      <AppSidebar />
+      <div className="devis-grid-shell-main">
+    <div style={{ height: '100%', display: 'grid', gridTemplateRows: 'auto auto 1fr', background: 'var(--color-bg)', color: 'var(--color-text)' }}>
+      <div className="devis-grid-crumb-bar" style={{ borderBottom: 'none', paddingBottom: 0 }}>
+        <AppBreadcrumbs items={breadcrumbs} compact />
+      </div>
       <div style={{ borderBottom: '1px solid var(--color-border)', padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 8 }}>
         <button
           type="button"
           onClick={() => navigate('/devis/grid')}
           style={{ border: '1px solid var(--color-border)', background: 'var(--color-surface)', color: 'var(--color-text)', borderRadius: 6, width: 30, height: 30, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
-          title="Retour au gros tableau"
+          title="Retour à la grille"
         >
-          <ArrowLeft size={14} />
+          ←
         </button>
         <div style={{ flex: 1 }}>
           <div style={{ fontWeight: 800, fontSize: 14 }}>Pré-édition PDF (rendu web)</div>
@@ -283,6 +293,8 @@ export default function DevisGridPdfDraft() {
             </table>
           </div>
         </div>
+      </div>
+    </div>
       </div>
     </div>
   )

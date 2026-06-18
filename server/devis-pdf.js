@@ -73,6 +73,143 @@ export function formatEuro(n) {
   return x.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function formatSwissAmount(n) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return "—";
+  const rounded = Math.round(x * 100) / 100;
+  const [whole, decimals] = rounded.toFixed(2).split(".");
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, "'");
+  if (decimals === "00") return `${grouped} .–`;
+  return `${grouped}.${decimals}`;
+}
+
+function formatPdfAmount(n, currency) {
+  const cur = normalizeCurrency(currency);
+  if (cur === "CHF") return formatSwissAmount(n);
+  return formatCurrency(n, cur);
+}
+
+function pdfAmountSuffix(currency) {
+  const cur = normalizeCurrency(currency);
+  return cur === "CHF" ? " CHF" : "";
+}
+
+function normalizeCurrency(value) {
+  const cur = String(value || "EUR").trim().toUpperCase();
+  return ["EUR", "CHF", "GBP", "USD"].includes(cur) ? cur : "EUR";
+}
+
+function currencyUnitLabel(currency) {
+  return {
+    EUR: "EUROS",
+    CHF: "FRANCS SUISSES",
+    GBP: "LIVRES STERLING",
+    USD: "DOLLARS US",
+  }[normalizeCurrency(currency)] || "EUROS";
+}
+
+function formatCurrency(n, currency) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return "—";
+  return x.toLocaleString("fr-FR", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+    style: "currency",
+    currency: normalizeCurrency(currency),
+  });
+}
+
+function lineWeightKg(line) {
+  try {
+    const raw = typeof line.raw_json === "string" ? JSON.parse(line.raw_json) : line.raw_json;
+    if (raw?.weight_kg != null) return Number(raw.weight_kg);
+  } catch { /* noop */ }
+  return line.weight_kg != null ? Number(line.weight_kg) : null;
+}
+
+function lineQuantity(line) {
+  if (line?.qty != null) {
+    const qty = Number(line.qty);
+    if (Number.isFinite(qty) && qty > 0) return Math.round(qty);
+  }
+  try {
+    const raw = typeof line.raw_json === "string" ? JSON.parse(line.raw_json) : line.raw_json;
+    if (raw && !Array.isArray(raw) && raw.qty != null) {
+      const qty = Number(raw.qty);
+      if (Number.isFinite(qty) && qty > 0) return Math.round(qty);
+    }
+  } catch { /* noop */ }
+  return 1;
+}
+
+function parseJsonValue(value, fallback = null) {
+  if (!value) return fallback;
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function addressLinesFromText(value) {
+  return String(value || "")
+    .split(/\r?\n|[|;]/)
+    .map(part => part.trim())
+    .filter(Boolean);
+}
+
+function extractTransportAddress(lines = []) {
+  for (const line of lines) {
+    if (line.line_section !== "transport") continue;
+    const raw = parseJsonValue(line.raw_json, {});
+    const candidates = [
+      raw?.delivery_address,
+      raw?.transport_address,
+      raw?.notes,
+      line.designation,
+      line.localisation,
+    ];
+    for (const candidate of candidates) {
+      const linesOut = addressLinesFromText(candidate);
+      if (linesOut.length) return linesOut;
+    }
+  }
+  return [];
+}
+
+function extractPdfAddresses(devis, lines = []) {
+  const analysis = parseJsonValue(devis?.analysis_json, {}) || {};
+  const delivery = addressLinesFromText(
+    analysis.delivery_address
+    || analysis.adresse_livraison
+    || analysis.shipping_address
+  );
+  const billing = addressLinesFromText(
+    analysis.billing_address
+    || analysis.adresse_facturation
+    || analysis.invoice_address
+  );
+  const transportAddress = extractTransportAddress(lines);
+  const deliveryLines = delivery.length ? delivery : transportAddress;
+  const billingLines = billing.length
+    ? billing
+    : (devis?.client_name ? [devis.client_name, ...transportAddress.slice(1)] : transportAddress);
+  return { deliveryLines, billingLines };
+}
+
+function affairLabel(devis) {
+  const analysis = parseJsonValue(devis?.analysis_json, {}) || {};
+  return String(
+    analysis.affaire
+    || analysis.project_name
+    || analysis.chantier
+    || devis?.name
+    || devis?.client_name
+    || "—"
+  ).trim() || "—";
+}
+
 function repLetter(i) {
   let n = i + 1;
   let label = "";
@@ -126,8 +263,13 @@ function formatDesignationBodyLine(line) {
   const escaped = escapeHtml(raw);
   if (!raw) return "";
   if (/^Dimensions\s+hors[-\s]tout\s*:/i.test(raw)) return `<div class="line-body-row line-strong">${escaped}</div>`;
+  if (/^Soit dimensions hors[-\s]tout\s*:/i.test(raw)) return `<div class="line-body-row line-strong">${escaped}</div>`;
+  if (/^Réservation gros[-\s]?œuvre/i.test(raw)) return `<div class="line-body-row line-strong">${escaped}</div>`;
+  if (/^Poids approximatif/i.test(raw)) return `<div class="line-body-row">${escaped}</div>`;
+  if (/^Equipement fourni-posé\s*:/i.test(raw)) return `<div class="line-body-row line-equipment-head">${escaped}</div>`;
+  if (/^-\s+/.test(raw)) return `<div class="line-body-row line-bullet">${escaped}</div>`;
   if (/^Localisation\s*:/i.test(raw)) return `<div class="line-body-row line-localisation-inline">${escaped}</div>`;
-  if (/^(?:[0-9]{1,3}\s*DB\s+MAXI|VARIANTE\b|OPTION\b|SP[ÉE]CIFICIT[ÉE]\b|PR[ÉE]CISION\b)/i.test(raw)) return `<div class="line-body-row line-note-strong">${escaped}</div>`;
+  if (/^(?:[0-9]{1,3}\s*DB\s+MAXI|VARIANTE\b|OPTION\b|SP[ÉE]CIFICIT[ÉE]\b|PR[ÉE]CISION\b|NOTA\b)/i.test(raw)) return `<div class="line-body-row line-note-strong">${escaped}</div>`;
   return `<div class="line-body-row">${escaped}</div>`;
 }
 
@@ -188,11 +330,11 @@ export function buildDevisNexusHtml(data) {
     offerNumber,
     offerDateLabel,
     referenceLabel,
-    contactName = process.env.DEVIS_PDF_CONTACT_NAME || "Votre commercial Zerux",
+    contactName = devis.requester_contact_name || process.env.DEVIS_PDF_CONTACT_NAME || "Votre commercial Zerux",
     contactPhone = process.env.DEVIS_PDF_CONTACT_PHONE || "",
     contactEmail = process.env.DEVIS_PDF_CONTACT_EMAIL || "",
-    companyLine1 = process.env.DEVIS_PDF_COMPANY_LINE1 || "",
-    companyLine2 = process.env.DEVIS_PDF_COMPANY_LINE2 || "",
+    companyLine1: inputCompanyLine1 = process.env.DEVIS_PDF_COMPANY_LINE1 || "",
+    companyLine2: inputCompanyLine2 = process.env.DEVIS_PDF_COMPANY_LINE2 || "",
   } = data;
 
   const docLabel = "Devis";
@@ -200,17 +342,14 @@ export function buildDevisNexusHtml(data) {
   const dateLabel = offerDateLabel || formatDate(devis.created_at);
   const refLabel = referenceLabel || devis.deal_id || "—";
   const clientName = devis.client_name || "—";
+  const currency = normalizeCurrency(devis.currency);
+  const isChf = currency === "CHF";
+  const { deliveryLines, billingLines } = extractPdfAddresses(devis, lines);
+  const affair = affairLabel(devis);
 
-  // Build table rows from devis_lines
-  const sectionLabels = { products: "Produits", calculations: "Calculs", transport: "Transport" };
-  let currentSection = null;
+  // Build table rows from devis_lines (Hive layout: no section headers, no délais column)
   let displayIndex = 0;
-  const rowsHtml = lines.map((line) => {
-    const lineSection = sectionLabels[line.line_section] ? line.line_section : "products";
-    const sectionHtml = lineSection !== currentSection
-      ? `<tr><td colspan="6" class="section-row">${escapeHtml(sectionLabels[lineSection])}</td></tr>`
-      : "";
-    currentSection = lineSection;
+  const rowsHtml = lines.filter(line => line.line_section !== "calculations").map((line) => {
     const gamme = line.gamme ? `[${escapeHtml(line.gamme)}]` : "";
     const dims = (line.hauteur_mm && line.largeur_mm)
       ? ` H${line.hauteur_mm}×L${line.largeur_mm} mm` : "";
@@ -245,30 +384,64 @@ export function buildDevisNexusHtml(data) {
         : (Array.isArray(line.options_json) ? line.options_json : []);
       optDesc = opts.map(o => `${escapeHtml(o.label || "")}${o.prix ? ` (${formatEuro(o.prix)} €)` : ""}`).join(", ");
     }
+    const weightKg = lineWeightKg(line);
+    const weightLabel = Number.isFinite(weightKg) && weightKg > 0 ? `Poids approximatif - Vantail : ${weightKg} kg` : "";
     const serrure = (!bodyHtml && line.serrure_ref) ? `Serrure : ${escapeHtml(line.serrure_ref)}` : "";
     const localisationDesc = localisation ? `Localisation : ${escapeHtml(localisation)}` : "";
-    const descParts = [passageDimsLabel, reservationDimsLabel, localisationDesc, optDesc, serrure].filter(Boolean).join(" | ");
+    const descParts = [passageDimsLabel, reservationDimsLabel, weightLabel, localisationDesc, optDesc, serrure].filter(Boolean).join(" | ");
 
     const total = Number(line.total_ligne_ht) || Number(line.prix_base_ht) || 0;
+    const qty = lineQuantity(line);
+    const unitPrice = qty > 0 && total ? total / qty : total;
+    const amountSuffix = pdfAmountSuffix(currency);
+
+    const longRow = desigLines.length > 6 || String(line.designation || '').length > 420
 
     const rowHtml = `
-      <tr>
+      <tr class="${longRow ? 'row-splittable' : ''}">
         <td class="cell-rep">${escapeHtml(repLetter(displayIndex))}</td>
         <td class="cell-desc">
           <div class="line-title">${titleLine}</div>
           ${bodyHtml ? `<div class="line-body">${bodyHtml}</div>` : (descParts ? `<div class="line-desc">${descParts}</div>` : "")}
           ${bodyHtml ? localisationHtml : ""}
         </td>
-        <td class="cell-delais">—</td>
-        <td class="cell-num">1</td>
-        <td class="cell-num">${total ? formatEuro(total) : "—"}</td>
-        <td class="cell-num">${total ? formatEuro(total) : "—"}</td>
+        <td class="cell-num cell-qty">${qty}</td>
+        <td class="cell-num">${total ? `${formatPdfAmount(unitPrice, currency)}` : "—"}</td>
+        <td class="cell-num">${total ? `${formatPdfAmount(total, currency)}` : "—"}</td>
       </tr>`;
     displayIndex += 1;
-    return sectionHtml + rowHtml;
+    return rowHtml;
   }).join("");
 
-  const grandTotal = Number(devis.total_ht) || lines.reduce((s, l) => s + (Number(l.total_ligne_ht) || Number(l.prix_base_ht) || 0), 0);
+  const grandTotal = lines.reduce((sum, line) => sum + (Number(line.total_ligne_ht) || Number(line.prix_base_ht) || 0), 0)
+    || Number(devis.total_ht) || 0;
+  const commercialDiscount = Number(devis.commercial_discount_ht || 0) || 0;
+  const totalAfterDiscount = grandTotal + commercialDiscount;
+  const tvaRate = Number(devis.tva_rate);
+  const effectiveTvaRate = Number.isFinite(tvaRate) ? tvaRate : 0.2;
+  const tvaAmount = totalAfterDiscount * effectiveTvaRate;
+  const totalTtc = totalAfterDiscount + tvaAmount;
+  const totalWeightKg = lines.reduce((sum, line) => {
+    const weight = lineWeightKg(line);
+    return Number.isFinite(weight) && weight > 0 ? sum + weight : sum;
+  }, 0);
+  const amountSuffix = pdfAmountSuffix(currency);
+  const companyLine1 = inputCompanyLine1 || (isChf
+    ? "Zerux International SA – Route de Crassier 7 – CH-1262 Eysins – Tel : +41 (0)26 519 02 99"
+    : "");
+  const companyLine2 = inputCompanyLine2 || (isChf
+    ? "SA au capital de 100'000 CHF – UID : CHE-385.444.080 – TVA : CHE-385.444.080 – RC Vaud : CH-550.1.253.039-2"
+    : "");
+  const tvaLabel = isChf
+    ? `TVA déductible (achat) ${(effectiveTvaRate * 100).toLocaleString("fr-FR", { maximumFractionDigits: 1 })} %`
+    : `TVA ${(effectiveTvaRate * 100).toLocaleString("fr-FR", { maximumFractionDigits: 2 })} %`;
+
+  const addressBlock = (title, rows) => rows.length
+    ? `<div class="address-block">
+        <div class="address-title">${escapeHtml(title)}</div>
+        ${rows.map(line => `<div class="address-line">${escapeHtml(line)}</div>`).join("")}
+      </div>`
+    : "";
 
   return `<!DOCTYPE html>
 <html lang="fr">
@@ -303,53 +476,41 @@ export function buildDevisNexusHtml(data) {
     }
     .page { padding: 0; }
 
-    /* ── HEADER ── */
+    /* ── HEADER (Hive-like) ── */
     .header {
       display: flex;
       justify-content: space-between;
       align-items: flex-start;
-      margin-bottom: 25px;
-      padding: 0 10mm 0 calc(3mm + 38px);
-    }
-    .logo-zone { width: 260px; }
-    .logo-img { width: 100%; display: block; }
-    .main-title-box {
-      display: flex; flex-direction: column; align-items: flex-end;
-      margin-top: 10pt; text-align: right;
-    }
-    .main-title-main {
-      font-size: 20pt; font-weight: 800; color: ${PDF_BRAND_HEX};
-      letter-spacing: 0.05em; text-transform: uppercase;
-    }
-    .main-title-sub {
-      font-size: 10pt; font-weight: 700; color: var(--zr-title);
-      letter-spacing: 0.03em; text-transform: uppercase;
-      margin-top: 8pt; max-width: 380px; line-height: 1.35;
-    }
-
-    /* ── METADATA ── */
-    .metadata {
-      display: flex; gap: 30px; margin-bottom: 30px;
+      gap: 24px;
+      margin-bottom: 18px;
       padding: 0 10mm 0 3mm;
     }
-    .meta-col { flex: 1; }
-    .meta-col.left {
-      border-right: 1.5pt solid var(--zr-border);
-      padding-right: 30px; padding-left: 38px;
+    .logo-zone { width: 220px; flex-shrink: 0; }
+    .logo-img { width: 100%; display: block; }
+    .header-right { flex: 1; display: flex; justify-content: flex-end; gap: 28px; }
+    .address-block { min-width: 180px; max-width: 240px; font-size: 8.5pt; line-height: 1.45; color: var(--zr-title); }
+    .address-title { font-weight: 700; margin-bottom: 4px; text-transform: none; }
+    .address-line { font-weight: 300; }
+
+    .quote-band {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 24px;
+      margin-bottom: 20px;
+      padding: 0 10mm 0 3mm;
     }
-    .meta-box h1 {
-      font-size: 11pt; font-weight: 700; margin: 0 0 12px 0;
-      color: var(--zr-title); text-transform: uppercase;
-      letter-spacing: 0.02em; word-break: break-word;
+    .client-box { min-width: 180px; max-width: 260px; text-align: right; }
+    .quote-meta { flex: 1; padding-left: 38px; }
+    .quote-meta h1 {
+      font-size: 11pt; font-weight: 700; margin: 0 0 10px 0;
+      color: var(--zr-title); letter-spacing: 0.01em;
     }
-    .meta-line { margin-bottom: 4px; display: flex; font-size: 9pt; }
-    .meta-label { width: 80px; color: var(--zr-label); font-weight: 300; }
-    .meta-value { font-weight: 300; flex: 1; color: var(--zr-title); }
-    .contact-info { margin-top: 18px; font-size: 9pt; line-height: 1.6; }
-    .contact-info .contact-name { font-weight: 400; display: block; margin-bottom: 1px; color: var(--zr-title); }
-    .contact-info .contact-line { font-weight: 300; color: var(--zr-label); font-style: italic; display: block; }
+    .meta-line { margin-bottom: 3px; display: flex; font-size: 9pt; }
+    .meta-label { width: 72px; color: var(--zr-label); font-weight: 300; }
+    .meta-value { font-weight: 400; flex: 1; color: var(--zr-title); }
     .client-box h2 {
-      font-size: 12pt; font-weight: 700; margin: 0 0 10px 0; color: var(--zr-title);
+      font-size: 11pt; font-weight: 700; margin: 0; color: var(--zr-title);
     }
 
     /* ── TABLE ── */
@@ -367,6 +528,9 @@ export function buildDevisNexusHtml(data) {
       border-bottom: 0.5pt solid var(--zr-row-border);
       page-break-inside: avoid; break-inside: avoid;
     }
+    table.data-table tbody tr.row-splittable {
+      page-break-inside: auto; break-inside: auto;
+    }
     table.data-table td {
       padding: 10px 8px; vertical-align: top;
       border-left: 1px dashed var(--zr-border-dashed);
@@ -381,14 +545,16 @@ export function buildDevisNexusHtml(data) {
       border-left: none !important;
     }
 
-    .cell-rep { width: 40px; min-width: 40px; text-align: center; font-weight: 700; color: var(--zr-title); }
+    .cell-rep { width: 34px; min-width: 34px; text-align: center; font-weight: 700; color: var(--zr-title); }
     .cell-desc { width: auto; }
-    .cell-delais { width: 65px; text-align: center; color: var(--zr-blue); font-size: 8.5pt; font-weight: 400; }
-    .cell-num { width: 80px; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; font-weight: 300; }
+    .cell-qty { width: 42px; text-align: center; font-weight: 400; }
+    .cell-num { width: 92px; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; font-weight: 400; }
 
-    .line-title { font-weight: 700; font-size: 9.5pt; margin-bottom: 3px; text-transform: uppercase; color: var(--zr-title); }
-    .line-body { font-size: 8pt; color: var(--zr-body); line-height: 1.22; font-weight: 300; margin-top: 1px; }
+    .line-title { font-weight: 700; font-size: 9pt; margin-bottom: 2px; text-transform: uppercase; color: var(--zr-title); line-height: 1.25; }
+    .line-body { font-size: 8pt; color: var(--zr-body); line-height: 1.28; font-weight: 300; margin-top: 1px; padding-left: 10px; }
     .line-body-row { margin: 0; padding: 0; }
+    .line-bullet { padding-left: 4px; }
+    .line-equipment-head { margin-top: 4px; font-weight: 400; }
     .line-strong { font-weight: 700; color: var(--zr-title); }
     .line-note-strong { font-weight: 700; color: var(--zr-title); margin-top: 10px; }
     .line-localisation,
@@ -396,14 +562,35 @@ export function buildDevisNexusHtml(data) {
     .line-desc { font-family: 'Montserrat', sans-serif; font-size: 8.5pt; color: var(--zr-body); line-height: 1.55; font-weight: 300; }
 
     /* ── TOTAL ── */
-    .footer-summary { margin-top: 50px; page-break-inside: avoid; break-inside: avoid; }
-    .eco-contribution { text-align: right; font-size: 8.5pt; font-style: italic; color: var(--zr-label); margin-bottom: 8px; padding-right: 15px; }
+    .footer-summary { margin-top: 28px; page-break-inside: avoid; break-inside: avoid; }
+    .eco-contribution { text-align: right; font-size: 8.5pt; font-style: italic; color: var(--zr-label); margin-bottom: 8px; padding-right: 10mm; }
+    .totals-hive {
+      margin-left: auto;
+      width: 320px;
+      margin-right: 10mm;
+      font-size: 9pt;
+      color: var(--zr-title);
+    }
+    .totals-hive-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 3px 0;
+      border-bottom: 0.5pt solid var(--zr-row-border);
+    }
+    .totals-hive-row strong { font-weight: 700; }
     .total-bar {
       background: var(--zr-table-head); color: #fff;
       display: flex; justify-content: space-between; align-items: center;
       padding: 4px 10mm; font-weight: 700; font-size: 7.5pt;
       text-transform: uppercase; letter-spacing: 0.05em;
     }
+    .total-bar-secondary {
+      background: #eef3f4; color: var(--zr-title);
+      border-left: 1px solid var(--zr-border); border-right: 1px solid var(--zr-border);
+      border-bottom: 1px solid var(--zr-border);
+    }
+    .total-bar-ttc { background: #1f2a2c; color: #fff; }
     .signature-block {
       display: flex; gap: 50px; margin-top: 35px; font-size: 9.5pt;
       page-break-inside: avoid;
@@ -433,61 +620,73 @@ export function buildDevisNexusHtml(data) {
       ? `<img class="logo-img" alt="Zerux" src="${EMBEDDED_LOGO_DATA_URI}" />`
       : `<div style="font-size:22pt;font-weight:800;color:${PDF_BRAND_HEX}">ZERUX</div>`}
       </div>
-      <div class="main-title-box">
-        <div class="main-title-main">${escapeHtml(docLabel)}</div>
-        <div class="main-title-sub">PORTES COUPE-FEU / BLINDÉES / ANTI-EXPLOSION NEXUS</div>
+      <div class="header-right">
+        ${addressBlock("Adresse de livraison", deliveryLines)}
+        ${addressBlock("Adresse de facturation", billingLines)}
       </div>
     </div>
 
-    <div class="metadata">
-      <div class="meta-col left">
-        <div class="meta-box">
-          <h1>${escapeHtml(docLabel)} N° ${escapeHtml(number)}</h1>
-          <div class="meta-line">
-            <div class="meta-label">Date :</div>
-            <div class="meta-value">${escapeHtml(dateLabel)}</div>
-          </div>
-          <div class="meta-line">
-            <div class="meta-label">V/Réf. :</div>
-            <div class="meta-value">${escapeHtml(refLabel)}</div>
-          </div>
-          <div class="contact-info">
-            <div style="font-size:8.5pt;font-style:italic;margin-bottom:4px;font-weight:300;color:var(--zr-label);">Votre contact commercial :</div>
-            <span class="contact-name">${escapeHtml(contactName)}</span>
-            ${contactPhone ? `<span class="contact-line">Tél. : ${escapeHtml(contactPhone)}</span>` : ""}
-            ${contactEmail ? `<span class="contact-line">Mail : ${escapeHtml(contactEmail)}</span>` : ""}
-          </div>
+    <div class="quote-band">
+      <div class="quote-meta">
+        <h1>Devis n° ${escapeHtml(number)}</h1>
+        <div class="meta-line">
+          <div class="meta-label">Date :</div>
+          <div class="meta-value">${escapeHtml(dateLabel)}</div>
         </div>
-      </div>
-      <div class="meta-col">
-        <div class="client-box">
-          <h2>${escapeHtml(clientName)}</h2>
+        <div class="meta-line">
+          <div class="meta-label">Affaire :</div>
+          <div class="meta-value">${escapeHtml(affair)}</div>
         </div>
+        ${refLabel && refLabel !== '—' ? `
+        <div class="meta-line">
+          <div class="meta-label">Réf. :</div>
+          <div class="meta-value">${escapeHtml(refLabel)}</div>
+        </div>` : ''}
+        ${contactName && contactName !== "Votre commercial Zerux" ? `
+        <div class="meta-line" style="margin-top:10px;">
+          <div class="meta-label">Contact :</div>
+          <div class="meta-value">${escapeHtml(contactName)}${contactPhone ? ` — ${escapeHtml(contactPhone)}` : ""}${contactEmail ? ` — ${escapeHtml(contactEmail)}` : ""}</div>
+        </div>` : ""}
       </div>
+      ${clientName && clientName !== '—' ? `
+      <div class="client-box">
+        <h2>${escapeHtml(clientName)}</h2>
+      </div>` : ''}
     </div>
 
     <table class="data-table">
       <thead>
         <tr>
-          <th style="width:40px;min-width:40px;text-align:center;">REP.</th>
-          <th>DÉSIGNATION</th>
-          <th style="width:65px;text-align:center;">DÉLAIS</th>
-          <th style="width:45px;text-align:right;">Q.</th>
-          <th style="width:85px;text-align:right;">P.U HT</th>
-          <th style="width:90px;text-align:right;">MONTANT HT</th>
+          <th style="width:34px;min-width:34px;text-align:center;">Rép.</th>
+          <th>Désignation</th>
+          <th style="width:42px;text-align:center;">Q.</th>
+          <th style="width:92px;text-align:right;">P.U. HT</th>
+          <th style="width:92px;text-align:right;">Total HT</th>
         </tr>
       </thead>
       <tbody>
-        ${rowsHtml || `<tr><td colspan="6" style="padding:20px;text-align:center;color:var(--zr-label);">Aucune ligne renseignée.</td></tr>`}
+        ${rowsHtml || `<tr><td colspan="5" style="padding:20px;text-align:center;color:var(--zr-label);">Aucune ligne renseignée.</td></tr>`}
       </tbody>
     </table>
 
     <div class="footer-summary">
-      <div class="eco-contribution">Total éco-contribution : 0,00 € HT</div>
+      <div class="eco-contribution">Total éco-contribution : ${formatPdfAmount(0, currency)}${amountSuffix} HT</div>
+      ${totalWeightKg > 0 ? `<div class="eco-contribution">Poids estimé total : ${Math.round(totalWeightKg).toLocaleString("fr-FR")} kg</div>` : ""}
+      ${isChf ? `
+      <div class="totals-hive">
+        <div class="totals-hive-row"><span>Total HT :</span><strong>${formatPdfAmount(grandTotal, currency)}${amountSuffix}</strong></div>
+        ${commercialDiscount ? `<div class="totals-hive-row"><span>Geste commercial HT</span><strong>${formatPdfAmount(commercialDiscount, currency)}${amountSuffix}</strong></div>` : ""}
+        <div class="totals-hive-row"><span>${escapeHtml(tvaLabel)}</span><strong>${formatPdfAmount(tvaAmount, currency)}${amountSuffix}</strong></div>
+        <div class="totals-hive-row"><span><strong>Total TTC :</strong></span><strong>${formatPdfAmount(totalTtc, currency)}${amountSuffix}</strong></div>
+      </div>` : `
       <div class="total-bar">
-        <span>Montant Total HT (en euros)</span>
-        <span>${formatEuro(grandTotal)} €</span>
+        <span>Montant Total HT (en ${currencyUnitLabel(currency)})</span>
+        <span>${formatPdfAmount(grandTotal, currency)}${amountSuffix}</span>
       </div>
+      ${commercialDiscount ? `<div class="total-bar total-bar-secondary"><span>Geste commercial HT</span><span>${formatPdfAmount(commercialDiscount, currency)}${amountSuffix}</span></div>` : ""}
+      <div class="total-bar total-bar-secondary"><span>${escapeHtml(tvaLabel)}</span><span>${formatPdfAmount(tvaAmount, currency)}${amountSuffix}</span></div>
+      <div class="total-bar total-bar-ttc"><span>Total TTC</span><span>${formatPdfAmount(totalTtc, currency)}${amountSuffix}</span></div>`}
+      ${isChf ? "" : `
       <div class="signature-block">
         <div class="sig-legal">
           <div style="margin-bottom:15px;">
@@ -508,12 +707,12 @@ export function buildDevisNexusHtml(data) {
             <span>CACHET ET SIGNATURE</span>
           </div>
         </div>
-      </div>
+      </div>`}
       <div class="web-footer">
         <div style="width:100%;font-family:'Montserrat',sans-serif;">
           <div class="footer-band" style="padding:4px 10mm;">
-            <span>${escapeHtml(docLabel)} N° ${escapeHtml(number)}</span>
-            <span>MONTANT TOTAL HT (EN EUROS) &nbsp;&nbsp; ${formatEuro(grandTotal)} €</span>
+            <span>${escapeHtml(docLabel)} n° ${escapeHtml(number)}</span>
+            <span>MONTANT TOTAL HT &nbsp;&nbsp; ${formatPdfAmount(grandTotal, currency)}${amountSuffix}</span>
           </div>
           <div style="display:flex;justify-content:space-between;align-items:flex-end;padding:12pt 10mm 15pt 10mm;">
             <div style="font-size:6.5pt;color:#636e72;line-height:1.5;flex:1;text-align:center;opacity:0.8;">
@@ -543,17 +742,18 @@ export function buildDevisNexusHtml(data) {
 export async function renderDevisPdfBuffer(html, opts = {}) {
   const offerNumber = opts.offerNumber || "Devis";
   const grandTotalLabel = opts.grandTotalLabel || "";
+  const grandTotalCurrency = normalizeCurrency(opts.grandTotalCurrency);
   const companyLine1 = opts.companyLine1 || process.env.DEVIS_PDF_COMPANY_LINE1 || "";
   const companyLine2 = opts.companyLine2 || process.env.DEVIS_PDF_COMPANY_LINE2 || "";
 
   const footerRight = grandTotalLabel
-    ? `MONTANT TOTAL HT (EN EUROS) &nbsp;&nbsp; ${grandTotalLabel} €`
+    ? `MONTANT TOTAL HT &nbsp;&nbsp; ${grandTotalLabel}${pdfAmountSuffix(grandTotalCurrency)}`
     : "Suite page suivante";
 
   const footerTemplate = `
     <div style="width:100%;font-family:'Montserrat',sans-serif;">
       <div style="display:flex;justify-content:space-between;align-items:center;background:${PDF_BRAND_HEX};color:#fff;padding:4px 10mm;">
-        <span style="font-size:7.5pt;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">Devis N° ${offerNumber}</span>
+        <span style="font-size:7.5pt;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">Devis n° ${offerNumber}</span>
         <span style="font-size:7.5pt;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">${footerRight}</span>
       </div>
       <div style="display:flex;justify-content:space-between;align-items:flex-end;padding:12pt 10mm 15pt 10mm;">
@@ -620,19 +820,30 @@ export async function buildDevisNexusPdf(input) {
   const number = devis.quote_number || devis.name || `D${devis.id}`;
   const dateLabel = new Date(devis.created_at || Date.now()).toLocaleDateString("fr-FR");
   const grandTotal = Number(devis.total_ht) || lines.reduce((s, l) => s + (Number(l.total_ligne_ht) || 0), 0);
+  const currency = normalizeCurrency(devis.currency);
+  const isChf = currency === "CHF";
+  const resolvedCompanyLine1 = input.companyLine1 || (isChf
+    ? "Zerux International SA – Route de Crassier 7 – CH-1262 Eysins – Tel : +41 (0)26 519 02 99"
+    : process.env.DEVIS_PDF_COMPANY_LINE1 || "");
+  const resolvedCompanyLine2 = input.companyLine2 || (isChf
+    ? "SA au capital de 100'000 CHF – UID : CHE-385.444.080 – TVA : CHE-385.444.080 – RC Vaud : CH-550.1.253.039-2"
+    : process.env.DEVIS_PDF_COMPANY_LINE2 || "");
 
   const html = buildDevisNexusHtml({
     ...input,
     offerNumber: number,
     offerDateLabel: dateLabel,
     referenceLabel: devis.deal_id || "—",
+    companyLine1: resolvedCompanyLine1,
+    companyLine2: resolvedCompanyLine2,
   });
 
   const buffer = await renderDevisPdfBuffer(html, {
     offerNumber: number,
-    grandTotalLabel: grandTotal ? new Intl.NumberFormat("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(grandTotal) : "",
-    companyLine1: input.companyLine1,
-    companyLine2: input.companyLine2,
+    grandTotalLabel: grandTotal ? formatPdfAmount(grandTotal, currency) : "",
+    grandTotalCurrency: currency,
+    companyLine1: resolvedCompanyLine1,
+    companyLine2: resolvedCompanyLine2,
   });
 
   const filename = devis.pdf_filename || fallbackPdfFilename(devis);

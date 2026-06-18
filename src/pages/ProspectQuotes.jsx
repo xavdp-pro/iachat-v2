@@ -14,6 +14,10 @@ import {
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { MarkdownRenderer } from '../components/MarkdownRenderer.jsx'
+import AppSidebar from '../components/AppSidebar.jsx'
+import AppBreadcrumbs from '../components/AppBreadcrumbs.jsx'
+import { useAppBreadcrumbs } from '../hooks/useAppBreadcrumbs.js'
+import { useBreadcrumbOverrideEffect } from '../context/BreadcrumbOverrideContext.jsx'
 import api from '../api/index.js'
 
 // ── Palette par gamme ────────────────────────────────────────────────────────
@@ -587,6 +591,10 @@ export default function ProspectQuotes() {
   const { id } = useParams()
 
   const [companyName, setCompanyName] = useState('Chargement...')
+  useBreadcrumbOverrideEffect({
+    companyName: companyName !== 'Chargement...' ? companyName : undefined,
+  })
+  const breadcrumbs = useAppBreadcrumbs()
 
   useEffect(() => {
     if (!id) return
@@ -979,7 +987,10 @@ export default function ProspectQuotes() {
   )
 
   return (
-    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--color-bg)', color: 'var(--color-text)', fontFamily: 'var(--font-body)' }}>
+    <div className="app-shell home-shell prospect-quotes-shell">
+      <AppSidebar />
+      <div className="prospect-quotes-workspace">
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--color-bg)', color: 'var(--color-text)', fontFamily: 'var(--font-body)' }}>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
 
       {/* ── Topbar ── */}
@@ -989,6 +1000,7 @@ export default function ProspectQuotes() {
             <FileSpreadsheet size={18} strokeWidth={2} />
           </div>
           <div className="admin-topbar-text">
+            <AppBreadcrumbs items={breadcrumbs} compact />
             <h1>Devis : {companyName}</h1>
             <p>{activeSession ? `${activeSession.name} — ${activeSession.count} lignes` : 'Importer un fichier .xlsx'}</p>
           </div>
@@ -1277,6 +1289,8 @@ export default function ProspectQuotes() {
           </div>
         </div>
       )}
+    </div>
+      </div>
     </div>
   )
 }

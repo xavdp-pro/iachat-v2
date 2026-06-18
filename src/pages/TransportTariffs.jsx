@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ArrowLeft, Check, Loader2, Plus, RefreshCw, Save, Search, Trash2, Truck } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import api from '../api/index.js'
+import AppPageShell from '../components/AppPageShell.jsx'
 
 const emptyTariff = {
   label: '',
@@ -153,29 +155,20 @@ export default function TransportTariffs() {
   }
 
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--color-bg)', color: 'var(--color-text)', fontFamily: 'var(--font-body)' }}>
-      <header style={{ height: 58, borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 18px', background: 'var(--color-surface)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <a href="/devis/grid" title="Retour au tableau de chiffrage" style={{ width: 32, height: 32, borderRadius: 6, border: '1px solid var(--color-border)', color: 'var(--color-text)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', textDecoration: 'none' }}>
-            <ArrowLeft size={16} />
-          </a>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-            <Truck size={20} color="var(--color-primary)" />
-            <div>
-              <h1 style={{ margin: 0, fontSize: 18, fontWeight: 800 }}>Tarifs transport</h1>
-              <div style={{ fontSize: 11, color: 'var(--color-text-3)' }}>{tariffs.length} règles · {activeCount} actives</div>
-            </div>
-          </div>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+    <AppPageShell
+      title="Tarifs transport"
+      subtitle={`${tariffs.length} règles · ${activeCount} actives`}
+      contentClassName="app-page-content app-page-content--padded"
+      headerActions={(
+        <>
           {saved && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, color: '#15803d', fontWeight: 700 }}><Check size={14} /> Enregistré</span>}
-          <button onClick={loadTariffs} disabled={loading} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 10px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-bg)', color: 'var(--color-text)', cursor: 'pointer', fontWeight: 700, fontSize: 12 }}>
-            {loading ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <RefreshCw size={14} />} Actualiser
+          <button type="button" className="admin-btn-ghost" onClick={loadTariffs} disabled={loading}>
+            {loading ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />} Actualiser
           </button>
-        </div>
-      </header>
-
-      <main style={{ padding: 18, display: 'grid', gap: 16 }}>
+        </>
+      )}
+    >
+      <div style={{ display: 'grid', gap: 16 }}>
         {error && <div style={{ padding: '9px 12px', borderRadius: 6, background: 'rgba(163,60,60,0.1)', color: '#a33c3c', fontSize: 13, fontWeight: 700 }}>{error}</div>}
 
         <section style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 360px', gap: 16 }}>
@@ -273,7 +266,7 @@ export default function TransportTariffs() {
             )}
           </aside>
         </section>
-      </main>
+      </div>
       {confirmDialog && (
         <div data-modal-backdrop="true" onClick={() => setConfirmDialog(null)} style={{ position: 'fixed', inset: 0, zIndex: 9500, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
           <div onClick={event => event.stopPropagation()} style={{ width: 360, maxWidth: '92vw', borderRadius: 10, border: '1px solid var(--color-border)', background: 'var(--color-surface)', boxShadow: '0 14px 40px rgba(0,0,0,0.28)', padding: 16 }}>
@@ -287,6 +280,6 @@ export default function TransportTariffs() {
         </div>
       )}
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-    </div>
+    </AppPageShell>
   )
 }

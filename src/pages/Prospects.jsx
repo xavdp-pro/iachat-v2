@@ -10,6 +10,7 @@ import {
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import api from '../api/index.js'
+import AppPageShell from '../components/AppPageShell.jsx'
 
 const LS_KEY = 'prospects_ui_v1'
 
@@ -192,27 +193,12 @@ export default function Prospects() {
   }
 
   return (
-    <div className="admin-shell">
-      <header className="admin-topbar">
-        <div className="admin-topbar-brand">
-          <div className="admin-topbar-mark">
-            <Building2 size={18} strokeWidth={2} />
-          </div>
-          <div className="admin-topbar-text">
-            <h1>Prospects</h1>
-            <p>HubSpot — entreprises, contacts et opportunités</p>
-          </div>
-        </div>
-        <div className="admin-topbar-actions">
-          <button type="button" className="admin-btn-ghost" onClick={() => navigate('/chat')}>
-            <MessageCircleReply size={16} />
-            <span>Retour au chat</span>
-          </button>
-        </div>
-      </header>
-
-      <main className="admin-main prospects-main">
-        <div className="prospects-main-inner">
+    <AppPageShell
+      title="Prospects"
+      subtitle="HubSpot — entreprises, contacts et opportunités"
+      contentClassName="admin-main prospects-main"
+    >
+      <div className="prospects-main-inner">
           <div className="prospects-intro">
             <strong style={{ color: 'var(--color-text)' }}>Vue CRM</strong>
             {' — '}
@@ -661,7 +647,6 @@ export default function Prospects() {
             </section>
           </div>
         </div>
-      </main>
-    </div>
+    </AppPageShell>
   )
 }
