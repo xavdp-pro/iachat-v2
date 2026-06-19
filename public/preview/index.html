@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Preview lot Armand — devis.zerux.com</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #0f1419;
+      --panel: #1a222c;
+      --border: #2d3744;
+      --text: #e8edf3;
+      --muted: #9aa8b8;
+      --accent: #3b82f6;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    header {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+    }
+    h1 { margin: 0; font-size: 18px; font-weight: 600; }
+    .meta { color: var(--muted); font-size: 13px; }
+    nav { display: flex; flex-wrap: wrap; gap: 8px; }
+    nav a {
+      color: var(--text);
+      text-decoration: none;
+      font-size: 13px;
+      padding: 6px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #111820;
+    }
+    nav a:hover, nav a.active { border-color: var(--accent); color: #93c5fd; }
+    main { display: grid; grid-template-columns: 1fr 1fr; gap: 0; min-height: calc(100vh - 72px); }
+    @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
+    .pane {
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid var(--border);
+      min-height: 0;
+    }
+    .pane:last-child { border-right: none; }
+    .pane h2 {
+      margin: 0;
+      padding: 10px 16px;
+      font-size: 13px;
+      font-weight: 600;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      color: var(--muted);
+    }
+    .viewer {
+      flex: 1;
+      overflow: auto;
+      background: #1e2530;
+      padding: 12px;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+    }
+    .viewer img {
+      max-width: 100%;
+      height: auto;
+      background: #fff;
+      box-shadow: 0 0 0 1px var(--border);
+    }
+    .viewer iframe {
+      width: 100%;
+      min-height: 80vh;
+      border: 0;
+      background: #fff;
+    }
+    .note {
+      padding: 12px 16px;
+      font-size: 12px;
+      color: var(--muted);
+      border-top: 1px solid var(--border);
+      line-height: 1.5;
+    }
+    .tabs { display: flex; gap: 6px; padding: 8px 16px 0; }
+    .tabs button {
+      font: inherit;
+      font-size: 12px;
+      padding: 4px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+    }
+    .tabs button.active { color: var(--text); border-color: var(--accent); }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Preview lot Armand — rendu PDF The Hive</h1>
+      <div class="meta">605.0106 · AAV Contractors SA · CHF · <code>npm run test:hive-pdf</code></div>
+    </div>
+    <nav>
+      <a href="/preview/index.html" class="active">Comparaison</a>
+      <a href="/devis">Stepper</a>
+      <a href="/devis/grid">Grille</a>
+      <a href="/preview/hive-sample.pdf" target="_blank">PDF généré</a>
+      <a href="/preview/reference-the-hive.pdf" target="_blank">PDF référence</a>
+      <a href="/preview/detail-sample.pdf" target="_blank">Fiche détail</a>
+    </nav>
+  </header>
+  <main>
+    <section class="pane">
+      <h2>Référence client — 605.0106 - The Hive.pdf</h2>
+      <div class="tabs">
+        <button type="button" class="active" data-pane="ref" data-mode="img">Image</button>
+        <button type="button" data-pane="ref" data-mode="pdf">PDF</button>
+        <button type="button" class="active" data-pane="ref" data-page="1">Page 1</button>
+        <button type="button" data-pane="ref" data-page="2">Page 2</button>
+      </div>
+      <div class="viewer" id="ref-viewer">
+        <img src="/preview/hive-ref-1.png" alt="Référence The Hive page 1" id="ref-img" data-prefix="/preview/hive-ref-" />
+        <iframe src="/preview/reference-the-hive.pdf" title="Référence PDF" id="ref-pdf" hidden></iframe>
+      </div>
+      <p class="note">Source : <code>ressources/XLSX/2606/NEW/605.0106 - The Hive.pdf</code></p>
+    </section>
+    <section class="pane">
+      <h2>Rendu produit — hive-sample.pdf</h2>
+      <div class="tabs">
+        <button type="button" class="active" data-pane="gen" data-mode="img">Image</button>
+        <button type="button" data-pane="gen" data-mode="pdf">PDF</button>
+        <button type="button" class="active" data-pane="gen" data-page="1">Page 1</button>
+        <button type="button" data-pane="gen" data-page="2">Page 2</button>
+      </div>
+      <div class="viewer" id="gen-viewer">
+        <img src="/preview/hive-gen-1.png" alt="PDF généré page 1" id="gen-img" data-prefix="/preview/hive-gen-" />
+        <iframe src="/preview/hive-sample.pdf" title="PDF généré" id="gen-pdf" hidden></iframe>
+      </div>
+      <p class="note">Écarts résiduels à valider ensemble (typo, espacements, pagination).</p>
+    </section>
+  </main>
+  <script>
+    document.querySelectorAll('.tabs button[data-mode]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const pane = btn.dataset.pane
+        const mode = btn.dataset.mode
+        btn.parentElement.querySelectorAll('button[data-mode]').forEach((b) => b.classList.toggle('active', b === btn))
+        const img = document.getElementById(pane + '-img')
+        const pdf = document.getElementById(pane + '-pdf')
+        const showPdf = mode === 'pdf'
+        img.hidden = showPdf
+        pdf.hidden = !showPdf
+      })
+    })
+    document.querySelectorAll('.tabs button[data-page]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const pane = btn.dataset.pane
+        const page = btn.dataset.page
+        btn.parentElement.querySelectorAll('button[data-page]').forEach((b) => b.classList.toggle('active', b === btn))
+        const img = document.getElementById(pane + '-img')
+        img.src = `${img.dataset.prefix}${page}.png`
+        img.alt = `${pane === 'ref' ? 'Référence The Hive' : 'PDF généré'} page ${page}`
+        img.hidden = false
+        document.getElementById(pane + '-pdf').hidden = true
+        btn.parentElement.querySelectorAll('button[data-mode]').forEach((b) => b.classList.toggle('active', b.dataset.mode === 'img'))
+      })
+    })
+  </script>
+</body>
+</html>

@@ -23,6 +23,7 @@ const Rules = lazy(() => import('./pages/Rules.jsx'))
 const DevisGrid = lazy(() => import('./pages/DevisGrid.jsx'))
 const DevisGridPdfDraft = lazy(() => import('./pages/DevisGridPdfDraft.jsx'))
 const TransportTariffs = lazy(() => import('./pages/TransportTariffs.jsx'))
+const ValidationArmand = lazy(() => import('./pages/ValidationArmand.jsx'))
 
 // Fallback for lazy routes
 const PageLoader = () => (
@@ -147,6 +148,8 @@ export default function App() {
               <Route path="/prospects" element={<Prospects />} />
               <Route path="/prospects/:id/quotes" element={<ProspectQuotes />} />
 
+              <Route path="/suivi-armand" element={<ValidationArmand />} />
+              <Route path="/validation" element={<ValidationArmand />} />
               <Route path="/devis">
                 <Route index element={<DevisStepper />} />
                 <Route path="search" element={<DevisSearch />} />

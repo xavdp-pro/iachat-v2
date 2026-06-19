@@ -30,6 +30,8 @@
     "test:graph-draft": "node scripts/test-graph-draft.mjs",
     "test:version-tree": "node scripts/test-version-tree.mjs",
     "test:hive-pdf": "node scripts/render-hive-sample-pdf.mjs /tmp/hive-sample.pdf",
+    "sync:hive-preview": "node scripts/sync-hive-preview.mjs",
+    "deploy:hive-zeruxia": "npm run sync:hive-preview && pm2 reload zeruxcomm-api-dev zeruxcomm-vite-dev",
     "test:detail-pdf": "node scripts/render-detail-sample-pdf.mjs /tmp/detail-sample.pdf",
     "test:recette-all": "node scripts/test-recette-all.mjs",
     "test:recette-suisse": "node scripts/recette-transport-suisse.mjs",

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Bot, Building2, FileSearch, FileSpreadsheet, LayoutGrid, Search } from 'lucide-react'
+import { Bot, Building2, FileSearch, FileSpreadsheet, LayoutGrid, Search, Truck, Database, BookOpen, Shield } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/useAuthStore.js'
 import AppSidebar from '../components/AppSidebar.jsx'

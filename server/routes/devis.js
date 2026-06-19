@@ -39,7 +39,7 @@ import os from 'os'
 import crypto from 'crypto'
 import { attachGridMetaToRaw } from '../lib/gridRowMeta.js'
 import { persistDevisPdfPaths, saveDevisPdfBuffer } from '../services/devis-pdf-store.js'
-import { auditPerformanceCompatibility } from '../lib/performanceCompatibility.js'
+import { auditPerformanceCompatibility, collectLinePerformances } from '../lib/performanceCompatibility.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -56,6 +56,35 @@ const VALID_LINE_SECTIONS = new Set(['products', 'calculations', 'transport'])
 const normalizeLineSection = (value) => VALID_LINE_SECTIONS.has(value) ? value : 'products'
 const R061_DEFAULT_FERME_PORTE = 'TS-5000 bras glissière'
 const R061_DEFAULT_PLINTHE = 'plinthe automatique encastrée'
+const EQUIPMENT_CLEARED_SENTINEL = '__NONE__'
+
+function isEquipmentCleared(value) {
+  return String(value ?? '').trim() === EQUIPMENT_CLEARED_SENTINEL
+}
+
+function rowTypeFromLine(line = {}) {
+  try {
+    const raw = typeof line.raw_json === 'string' ? JSON.parse(line.raw_json) : line.raw_json
+    if (Array.isArray(raw) && raw[0]) return String(raw[0])
+    if (raw?.cells?.[0]) return String(raw.cells[0])
+  } catch { /* noop */ }
+  return String(line.type_porte || line.type || '')
+}
+
+function isR061EligibleRowType(typeCell) {
+  const t = String(typeCell || '').toLowerCase()
+  if (/ch[aâ]ssis/.test(t)) return false
+  if (/guichet/.test(t)) return false
+  return true
+}
+
+function autresClearedFromLine(line = {}) {
+  try {
+    const raw = typeof line.raw_json === 'string' ? JSON.parse(line.raw_json) : line.raw_json
+    if (Array.isArray(raw) && isEquipmentCleared(raw[16])) return true
+  } catch { /* noop */ }
+  return false
+}
 const RD_VALIDATION_CATEGORY = 'Validations individuelles R&D'
 const AI_ATTACHMENT_MIMES = new Set(['application/pdf', 'image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif', 'image/tiff'])
 const EQUIPMENT_CATALOG_FILES = ['EQUIP-COMMUN.md', 'EQUIP-EI.md', 'EQUIP-FB.md', 'SERRURES-GARNITURES.md']
@@ -98,10 +127,12 @@ function applyR061Defaults(line = {}) {
   const section = normalizeLineSection(line.line_section)
   if (section !== 'products') return line
   const next = { ...line, line_section: section }
-  if (!String(next.ferme_porte_ref || next.ferme_porte?.ref || '').trim()) {
+  if (!isR061EligibleRowType(rowTypeFromLine(line))) return next
+  if (!isEquipmentCleared(next.ferme_porte_ref) && !String(next.ferme_porte_ref || next.ferme_porte?.ref || '').trim()) {
     next.ferme_porte_ref = R061_DEFAULT_FERME_PORTE
     next.ferme_porte = { ...(next.ferme_porte || {}), ref: R061_DEFAULT_FERME_PORTE }
   }
+  if (autresClearedFromLine(line)) return next
   const equipements = Array.isArray(next.equipements_json)
     ? next.equipements_json
     : Array.isArray(next.equip_extra)
@@ -624,6 +655,8 @@ async function loadEquipmentCatalogForRow(row = {}) {
 }
 
 function detectRowPerformances(row = {}) {
+  const fromRaw = [...collectLinePerformances(row)]
+  if (fromRaw.length) return fromRaw
   const parts = [
     row.gamme, row.rc, row.pb, row.cf, row.blast, row.belier, row.prison,
     row.acoustic, row.type, row.type_porte, row.designation,
@@ -1827,15 +1860,21 @@ router.post('/recompute-row', async (req, res) => {
   const qty = Math.max(1, parseInt(req.body?.qty) || 1)
   if (!Array.isArray(req.body?.row)) return res.status(400).json({ error: 'row (array) requis' })
   while (rowArr.length < 17) rowArr.push(null)
-  // R061: default ferme-porte + plinthe encastrée when slots are empty
-  const fpEmpty = !String(rowArr[15] || '').trim()
-  const autresText = String(rowArr[16] || '')
-  const plintheMissing = !/plinthe/i.test(autresText)
-  if (fpEmpty) rowArr[15] = rowArr[15] || R061_DEFAULT_FERME_PORTE
-  if (plintheMissing) {
-    rowArr[16] = autresText.trim()
-      ? `${autresText.trim()}, ${R061_DEFAULT_PLINTHE}`
-      : R061_DEFAULT_PLINTHE
+  // R061: default ferme-porte + plinthe encastrée when slots are empty (BP only, not chassis/guichet)
+  if (isR061EligibleRowType(rowArr[0])) {
+    const fpVal = String(rowArr[15] ?? '').trim()
+    const fpCleared = isEquipmentCleared(fpVal)
+    if (!fpCleared && !fpVal) rowArr[15] = R061_DEFAULT_FERME_PORTE
+    const autresVal = String(rowArr[16] ?? '').trim()
+    const autresCleared = isEquipmentCleared(autresVal)
+    if (!autresCleared) {
+      const plintheMissing = !/plinthe/i.test(autresVal)
+      if (plintheMissing) {
+        rowArr[16] = autresVal
+          ? `${autresVal}, ${R061_DEFAULT_PLINTHE}`
+          : R061_DEFAULT_PLINTHE
+      }
+    }
   }
   try {
     const { spawn } = await import('node:child_process')
@@ -2850,7 +2889,7 @@ router.post('/', async (req, res) => {
 
 // PUT /api/devis/:id — update devis header
 router.put('/:id', async (req, res) => {
-  const allowed = ['deal_id', 'company_id', 'client_name', 'name', 'status', 'source_file', 'analysis_json', 'validation_json', 'total_ht', 'pdf_path', 'hubspot_note_id', 'currency', 'tva_rate', 'commercial_discount_ht', 'exchange_rate', 'exchange_locked', 'requester_contact_id', 'requester_contact_name', 'source_email_json', 'no_email_source', 'email_draft_body']
+  const allowed = ['deal_id', 'company_id', 'client_name', 'name', 'status', 'source_file', 'analysis_json', 'validation_json', 'total_ht', 'pdf_path', 'hubspot_note_id', 'currency', 'tva_rate', 'commercial_discount_ht', 'commercial_discount_pct', 'exchange_rate', 'exchange_locked', 'requester_contact_id', 'requester_contact_name', 'source_email_json', 'no_email_source', 'email_draft_body']
   const sets = []
   const vals = []
   for (const key of allowed) {
@@ -3035,6 +3074,11 @@ router.post('/:id/sync-grid', async (req, res) => {
       if (meta.commercial_discount_ht != null && Number.isFinite(Number(meta.commercial_discount_ht))) {
         metaUpdates.push('commercial_discount_ht = ?')
         metaParams.push(Number(meta.commercial_discount_ht))
+      }
+      if (meta.commercial_discount_pct != null) {
+        const pct = Number(meta.commercial_discount_pct)
+        metaUpdates.push('commercial_discount_pct = ?')
+        metaParams.push(Number.isFinite(pct) && pct !== 0 ? pct : null)
       }
       if (meta.change_rate != null && Number.isFinite(Number(meta.change_rate))) {
         metaUpdates.push('exchange_rate = ?')

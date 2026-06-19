@@ -61,6 +61,7 @@ export default function Admin() {
   const [maintenanceError, setMaintenanceError] = useState('')
   const [maintenanceCfg, setMaintenanceCfg] = useState(null)
   const [maintenanceForm, setMaintenanceForm] = useState({ enabled: false, message: '', bypassIps: '' })
+  const [fxStatus, setFxStatus] = useState(null)
 
   const [sttTesting, setSttTesting] = useState(false)
   const [sttResult, setSttResult] = useState('')
@@ -118,6 +119,10 @@ export default function Admin() {
   useEffect(() => {
     if (activeTab === TAB_EXPERIENCES) fetchAllExperiences()
   }, [activeTab, fetchAllExperiences])
+
+  useEffect(() => {
+    api.get('/exchange-rates/status').then(setFxStatus).catch(() => setFxStatus(null))
+  }, [activeTab])
 
   const loadMaintenanceSettings = useCallback(async () => {
     setMaintenanceLoading(true)
@@ -406,6 +411,11 @@ export default function Admin() {
       </header>
 
       <main className="admin-main admin-main--navless">
+        {fxStatus?.alert_active && (
+          <div style={{ margin: '0 0 16px', padding: '10px 12px', borderRadius: 8, border: '1px solid #dc2626', background: 'rgba(220,38,38,0.08)', color: '#dc2626', fontSize: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
+            <AlertTriangle size={16} /> Les taux de change doivent être validés pour ce semestre ({fxStatus?.semester || '—'}).
+          </div>
+        )}
         {activeTab === TAB_MAINTENANCE && (
           <section id="admin-panel-maintenance" role="tabpanel" aria-labelledby="admin-tab-maintenance" className="admin-ollama-panel">
             <div className="admin-ollama-head">

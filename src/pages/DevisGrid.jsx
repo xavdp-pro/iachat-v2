@@ -16,6 +16,19 @@ import { dbLineToGridRow, gridRowToLinePayload } from '../lib/devisLineMappers.j
 import { buildGridXlsxPayload } from '../lib/gridXlsxPayload.js'
 import Select from 'react-select'
 
+const EQUIPMENT_CLEARED_SENTINEL = '__NONE__'
+
+function isEquipmentCleared(value) {
+  return String(value ?? '').trim() === EQUIPMENT_CLEARED_SENTINEL
+}
+
+function effectiveGesteCommercial(totalHT, amount = 0, percent = null) {
+  const pct = Number(percent)
+  if (Number.isFinite(pct) && pct !== 0) return Math.round(-Number(totalHT || 0) * pct / 100)
+  const n = Number(amount)
+  return Number.isFinite(n) ? n : 0
+}
+
 // ─── Palettes ──────────────────────────────────────────────────────────────
 const CELL = {
   yellow:  { background: 'rgba(255,210,80,0.13)', border: '1px solid rgba(255,200,50,0.35)' },
@@ -463,7 +476,10 @@ function EditableEquipmentText({ value, onCommit, placeholder = '—', datalistI
   const commit = () => {
     focused.current = false
     const trimmed = String(v || '').trim()
-    if (trimmed !== String(value ?? '').trim()) onCommit(trimmed || null)
+    const nextValue = trimmed || EQUIPMENT_CLEARED_SENTINEL
+    const prevTrimmed = String(value ?? '').trim()
+    const prevEffective = prevTrimmed || EQUIPMENT_CLEARED_SENTINEL
+    if (nextValue !== prevEffective) onCommit(nextValue === EQUIPMENT_CLEARED_SENTINEL ? EQUIPMENT_CLEARED_SENTINEL : trimmed)
   }
 
   return (
@@ -593,7 +609,7 @@ function hasVisibleEquipmentValue(row, column, resolved = resolveRow(row)) {
 }
 
 function mainEquipLabel(value) {
-  if (!value) return ''
+  if (!value || isEquipmentCleared(value)) return ''
   return String(value)
     .replace(/^\s*[34]\d{3}\s*[—-]\s*/u, '')
     .replace(/\s*\(?\b(r[ée]f\.?|ref\.?)\s*[34]\d{3}\b\)?/giu, '')
@@ -866,9 +882,10 @@ async function recomputeRowFromApi(row, { preserveOverrides = true } = {}) {
   const res = await api.post('/devis/recompute-row', { row: raw, qty: qtyInt }, { timeout: 30000 })
   const result = res?.result
   if (!result) return row
+  const effectiveRaw = Array.isArray(result._raw) ? result._raw : raw
   let recomputed = {
     ...result,
-    _raw: raw,
+    _raw: effectiveRaw,
     _lineId: row._lineId,
     _dbPosition: row._dbPosition,
     _manualBlank: row._manualBlank,
@@ -1129,7 +1146,7 @@ function GammeBadge({ gamme, fullWidth }) {
 
 // Largeur calculée automatiquement après PERF_OPTIONS
 const PERF_CONTROL_WIDTH = {}
-const PERF_LABELS = { rc: 'RC', pb: 'PB', cf: 'CF', blast: 'Blast', belier: 'Bélier', prison: 'Prison', acoustic: 'Acoustique' }
+const PERF_LABELS = { rc: 'RC', pb: 'PB', cf: 'CF', blast: 'Blast', belier: 'Bélier', prison: 'Prison', cem: 'CEM', acoustic: 'Acoustique' }
 const PERF_CONTROL_MIN_WIDTH = 62
 const PERF_CONTROL_DEFAULT_WIDTH = 72
 const PERF_MENU_MIN_WIDTH = 136
@@ -1171,6 +1188,7 @@ function inferredPerformanceValue(row = {}, key) {
   if (key === 'blast') return blastValue(text) || null
   if (key === 'belier') return /ANTI.?B[ÉE]LIER|\bB[ÉE]LIER\b/u.test(upper) ? 'Bélier' : null
   if (key === 'prison') return /\bPRISON\b/u.test(upper) ? 'Prison' : null
+  if (key === 'cem') return /^(?:oui|cem|électromagnétique|electromagnetique)$/iu.test(String(text || '').trim()) ? 'Oui' : null
   if (key === 'acoustic') return upper.match(/\b(30|35|40|45)\s*DB\b/)?.[0]?.replace('DB', 'dB').replace(/\s+/g, ' ') || null
   return null
 }
@@ -1205,7 +1223,7 @@ function coerceExcelPerfRawValue(val, key) {
 }
 
 function performanceValue(row = {}, resolved = {}, key) {
-  const rawIndexByPerf = { rc: 3, pb: 4, cf: 5, blast: 6, belier: 7, prison: 8, acoustic: null }
+  const rawIndexByPerf = { rc: 3, pb: 4, cf: 5, blast: 6, belier: 7, prison: 8, cem: 9, acoustic: null }
   const hasManualPerf = row._perfOverrides && Object.keys(row._perfOverrides).length > 0
   if (hasManualPerf) {
     if (key === 'acoustic') return acousticValue(row._raw?.[16]) || null
@@ -1227,7 +1245,7 @@ function performanceValue(row = {}, resolved = {}, key) {
  * Used for compact PERFS on all product rows (import + ligne blanche); expanded strip uses full performanceValue().
  */
 function performanceValueRawSlotOnly(row, key) {
-  const rawIndexByPerf = { rc: 3, pb: 4, cf: 5, blast: 6, belier: 7, prison: 8, acoustic: null }
+  const rawIndexByPerf = { rc: 3, pb: 4, cf: 5, blast: 6, belier: 7, prison: 8, cem: 9, acoustic: null }
   if (key === 'acoustic') {
     if (row._overrideAcoustic !== undefined) return row._overrideAcoustic
     return acousticValue(row._raw?.[16]) || null
@@ -1252,7 +1270,7 @@ function performanceOptionFor(row = {}, key, value) {
 }
 
 function performanceDetailItems(row = {}, resolved = resolveRow(row)) {
-  return ['rc', 'pb', 'cf', 'blast', 'belier', 'prison', 'acoustic']
+  return ['rc', 'pb', 'cf', 'blast', 'belier', 'prison', 'cem', 'acoustic']
     .map(key => {
       const value = performanceValue(row, resolved, key)
       if (!value) return null
@@ -1786,7 +1804,7 @@ function VerifyRulesModal({ row, rowIndex = 0, currentKnowledge = null, onClose,
     linePreview.gamme,
     linePreview.vantail,
   ].filter(Boolean).join(' · ')
-  const perfPreview = ['rc','pb','cf','blast','belier','prison','acoustic']
+  const perfPreview = ['rc','pb','cf','blast','belier','prison','cem','acoustic']
     .map(key => [PERF_LABELS[key], performanceValue(row, resolveRow(row), key)])
     .filter(([, value]) => value != null)
     .map(([label, value]) => `${label} ${value}`)
@@ -2098,8 +2116,8 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
     if (expanded && editMode && !isAmountSection) fetchEquipmentOptions()
   }, [expanded, editMode, isAmountSection, fetchEquipmentOptions])
   const showEmptyPerfs = row._perfStripShowAll === true
-  const perfKeys = ['rc', 'pb', 'cf', 'blast', 'belier', 'prison', 'acoustic']
-  const rawIndexByPerf = { rc: 3, pb: 4, cf: 5, blast: 6, belier: 7, prison: 8, acoustic: null }
+  const perfKeys = ['rc', 'pb', 'cf', 'blast', 'belier', 'prison', 'cem', 'acoustic']
+  const rawIndexByPerf = { rc: 3, pb: 4, cf: 5, blast: 6, belier: 7, prison: 8, cem: 9, acoustic: null }
   // Compact = _raw slots only (xlsx / import parity) for every product row; "+" exposes empty slots, "−" folds after expand.
   const perfKeyVisibleInStrip = (k) => {
     if (showEmptyPerfs) return performanceValue(row, r, k)
@@ -2202,7 +2220,7 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
         )}
       </Td>
       {/* Performances */}
-      <Td style={{ minWidth: perfCellMinWidth, width: perfCellWidth, fontSize: 10, color: 'var(--color-text-2)', verticalAlign: 'top', ...assistantCellStyle('rc', 'pb', 'cf', 'blast', 'belier', 'prison', 'acoustic') }}>
+      <Td style={{ minWidth: perfCellMinWidth, width: perfCellWidth, fontSize: 10, color: 'var(--color-text-2)', verticalAlign: 'top', ...assistantCellStyle('rc', 'pb', 'cf', 'blast', 'belier', 'prison', 'cem', 'acoustic') }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'stretch' }}>
           {editMode ? (
             <div style={{ display: 'flex', flexWrap: 'nowrap', gap: 4, alignItems: 'flex-end', minHeight: 35, width: 'max-content', maxWidth: '100%', overflowX: 'auto' }}>
@@ -2279,7 +2297,7 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
             </div>
           ) : (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, fontSize: 9, minHeight: 20 }}>
-              {(['rc','pb','cf','blast','belier','prison','acoustic']).map(key => {
+              {(['rc','pb','cf','blast','belier','prison','cem','acoustic']).map(key => {
                 const cur = performanceValue(row, r, key)
                 if (!cur) return null
                 return (
@@ -2793,6 +2811,7 @@ const PERF_OPTIONS = {
   blast:  [{ value: null, label: '—' }, { value: '2t/m²', label: 'Blast 2t' }, { value: '4t/m²', label: 'Blast 4t' }, { value: '5t/m²', label: 'Blast 5t' }],
   belier: [{ value: null, label: '—' }, { value: 'Bélier', label: 'Bélier' }],
   prison: [{ value: null, label: '—' }, { value: 'Prison', label: 'Prison' }],
+  cem: [{ value: null, label: '—' }, { value: 'Oui', label: 'Oui' }, { value: 'Non', label: 'Non' }],
   acoustic: [{ value: null, label: '—' }, { value: '30 dB', label: '30 dB' }, { value: '35 dB', label: '35 dB' }, { value: '40 dB', label: '40 dB' }, { value: '45 dB', label: '45 dB' }],
 }
 const perfLabelWidth = (label, charWidth = 8) => String(label || '').length * charWidth + 38
@@ -2885,6 +2904,7 @@ const GRID_INTENT_RAW_SLOTS = {
   blast: 6,
   belier: 7,
   prison: 8,
+  cem: 9,
   serrure: 12,
   garniture_int: 13,
   garniture_ext: 14,
@@ -2908,6 +2928,7 @@ const GRID_INTENT_FIELD_LABELS = {
   cf: 'coupe-feu',
   blast: 'blast',
   belier: 'anti-bélier',
+  cem: 'blindage CEM (électromagnétique)',
   prison: 'prison',
   acoustic: 'acoustique',
   serrure: 'serrure',
@@ -4164,6 +4185,12 @@ export function DevisGridWorkspace({
   const [gesteCommercial, setGesteCommercial] = useState(() => {
     try { const v = parseFloat(localStorage.getItem('devisGridGesteCommercial')); return Number.isFinite(v) ? v : 0 } catch { return 0 }
   })
+  const [gesteCommercialMode, setGesteCommercialMode] = useState(() => {
+    try { return localStorage.getItem('devisGridGesteMode') || 'amount' } catch { return 'amount' }
+  })
+  const [gesteCommercialPct, setGesteCommercialPct] = useState(() => {
+    try { const v = parseFloat(localStorage.getItem('devisGridGestePct')); return Number.isFinite(v) ? v : 0 } catch { return 0 }
+  })
   const [changeLocked, setChangeLocked] = useState(() => {
     try { return localStorage.getItem('devisGridChangeLocked') === '1' } catch { return false }
   })
@@ -4186,6 +4213,8 @@ export function DevisGridWorkspace({
   useEffect(() => { try { localStorage.setItem('devisGridMultGlobal', String(multGlobal)) } catch { /* noop */ } }, [multGlobal])
   useEffect(() => { try { localStorage.setItem('devisGridCurrency', currency) } catch { /* noop */ } }, [currency])
   useEffect(() => { try { localStorage.setItem('devisGridGesteCommercial', String(gesteCommercial)) } catch { /* noop */ } }, [gesteCommercial])
+  useEffect(() => { try { localStorage.setItem('devisGridGesteMode', gesteCommercialMode) } catch { /* noop */ } }, [gesteCommercialMode])
+  useEffect(() => { try { localStorage.setItem('devisGridGestePct', String(gesteCommercialPct)) } catch { /* noop */ } }, [gesteCommercialPct])
   useEffect(() => { try { localStorage.setItem('devisGridChangeLocked', changeLocked ? '1' : '0') } catch { /* noop */ } }, [changeLocked])
   useEffect(() => { try { localStorage.setItem('devisGridEditMode', editMode ? '1' : '0') } catch { /* noop */ } }, [editMode])
   useEffect(() => {
@@ -4197,7 +4226,13 @@ export function DevisGridWorkspace({
     ]).then(([devis, fx]) => {
       if (devis?.currency) setCurrency(devis.currency)
       if (devis?.tva_rate != null) setTva(Number(devis.tva_rate))
-      if (devis?.commercial_discount_ht != null) setGesteCommercial(Number(devis.commercial_discount_ht))
+      if (devis?.commercial_discount_pct != null && Number(devis.commercial_discount_pct)) {
+        setGesteCommercialMode('percent')
+        setGesteCommercialPct(Number(devis.commercial_discount_pct))
+      } else if (devis?.commercial_discount_ht != null) {
+        setGesteCommercialMode('amount')
+        setGesteCommercial(Number(devis.commercial_discount_ht))
+      }
       if (devis?.exchange_rate != null && Number.isFinite(Number(devis.exchange_rate))) {
         setChange(Number(devis.exchange_rate))
       }
@@ -4222,26 +4257,28 @@ export function DevisGridWorkspace({
     onMetaChange?.({
       currency,
       tva_rate: tva,
-      commercial_discount_ht: gesteCommercial,
+      commercial_discount_ht: gesteCommercialMode === 'amount' ? gesteCommercial : 0,
+      commercial_discount_pct: gesteCommercialMode === 'percent' ? gesteCommercialPct : null,
       change_rate: change,
       exchange_rate: change,
       exchange_locked: changeLocked,
       version_id: versionId || undefined,
     })
-  }, [change, changeLocked, currency, gesteCommercial, onMetaChange, tva, versionId])
+  }, [change, changeLocked, currency, gesteCommercial, gesteCommercialMode, gesteCommercialPct, onMetaChange, tva, versionId])
   useEffect(() => {
     if (!devisId || hydratedDevisSettingsRef.current !== String(devisId)) return
     const timer = window.setTimeout(() => {
       api.put(`/devis/${devisId}`, {
         currency,
         tva_rate: tva,
-        commercial_discount_ht: gesteCommercial,
+        commercial_discount_ht: gesteCommercialMode === 'amount' ? gesteCommercial : 0,
+        commercial_discount_pct: gesteCommercialMode === 'percent' ? gesteCommercialPct : null,
         exchange_rate: change,
         exchange_locked: changeLocked ? 1 : 0,
       }).catch(() => {})
     }, 400)
     return () => window.clearTimeout(timer)
-  }, [change, changeLocked, currency, devisId, gesteCommercial, tva])
+  }, [change, changeLocked, currency, devisId, gesteCommercial, gesteCommercialMode, gesteCommercialPct, tva])
   const refreshValidationKnowledge = useCallback(async () => {
     if (!hasAuthToken()) return null
     try {
@@ -4863,9 +4900,10 @@ export function DevisGridWorkspace({
       .then(res => {
         const result = res?.result
         if (!result) return
+        const effectiveRaw = Array.isArray(result._raw) ? result._raw : raw
         const recomputedRow = {
           ...result,
-          _raw: raw,
+          _raw: effectiveRaw,
           _lineId,
           _dbPosition,
           _manualBlank,
@@ -5260,7 +5298,8 @@ export function DevisGridWorkspace({
   }, [onRowsChange, refreshValidationKnowledge, showToast, validateEntriesProgressively, validationKnowledge])
   const totalPU  = rows.reduce((s, r) => s + (resolveRow(r, change, tva, multGlobal)._pu), 0)
   const totalHT = rows.reduce((s, r) => s + (resolveRow(r, change, tva, multGlobal)._totalHt || 0), 0)
-  const totalAfterGeste = totalHT + (Number(gesteCommercial) || 0)
+  const totalAfterGeste = totalHT + effectiveGesteCommercial(totalHT, gesteCommercial, gesteCommercialMode === 'percent' ? gesteCommercialPct : null)
+  const gesteDisplayed = effectiveGesteCommercial(totalHT, gesteCommercial, gesteCommercialMode === 'percent' ? gesteCommercialPct : null)
   const tvaAmount = Math.round(totalAfterGeste * tva)
   const totalTTC = totalAfterGeste + tvaAmount
 
@@ -5775,11 +5814,21 @@ export function DevisGridWorkspace({
                 <tr style={{ background: 'var(--color-surface)' }}>
                   <td colSpan={gridTotalCols - 5} style={{ padding: '6px 16px', fontWeight: 600, fontSize: 11, color: 'var(--color-text-2)' }}>
                     Geste commercial
+                    <select
+                      value={gesteCommercialMode}
+                      onChange={e => setGesteCommercialMode(e.target.value)}
+                      style={{ marginLeft: 8, fontSize: 10, padding: '2px 6px', borderRadius: 4, border: '1px solid var(--color-border)', background: 'var(--color-bg)' }}
+                    >
+                      <option value="amount">€ HT</option>
+                      <option value="percent">%</option>
+                    </select>
                   </td>
                   <td colSpan={4} style={{ padding: '4px 12px', textAlign: 'right', background: CELL.yellow.background }}>
-                    <EditableNumber value={gesteCommercial} onCommit={setGesteCommercial} step={50} min={-999999} max={999999} width="100%" textAlign="right" />
+                    {gesteCommercialMode === 'percent'
+                      ? <EditableNumber value={gesteCommercialPct} onCommit={setGesteCommercialPct} step={1} min={-100} max={100} width="100%" textAlign="right" />
+                      : <EditableNumber value={gesteCommercial} onCommit={setGesteCommercial} step={50} min={-999999} max={999999} width="100%" textAlign="right" />}
                   </td>
-                  <td style={{ fontSize: 11, textAlign: 'right', padding: '6px 8px', fontWeight: 700, whiteSpace: 'nowrap' }}>{formatGridMoney(gesteCommercial)}</td>
+                  <td style={{ fontSize: 11, textAlign: 'right', padding: '6px 8px', fontWeight: 700, whiteSpace: 'nowrap' }}>{formatGridMoney(gesteDisplayed)}</td>
                 </tr>
                 <tr style={{ background: 'var(--color-surface)' }}>
                   <td colSpan={gridTotalCols - 5} style={{ padding: '6px 16px', fontWeight: 600, fontSize: 11, color: 'var(--color-text-2)' }}>

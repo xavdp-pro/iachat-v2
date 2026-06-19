@@ -39,6 +39,22 @@ const apiProxy = {
   configure: configureForwardedHeaders,
 }
 
+/** Let React handle /validation — static assets stay under public/validation/*. */
+function validationAssetsPlugin() {
+  return {
+    name: 'validation-assets-only',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const path = (req.url || '').split('?')[0]
+        if (path === '/validation' || path === '/validation/') {
+          req.url = '/index.html' + ((req.url || '').includes('?') ? req.url.slice(req.url.indexOf('?')) : '')
+        }
+        next()
+      })
+    },
+  }
+}
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const publicHost = resolvePublicHost(env)
@@ -47,6 +63,7 @@ export default defineConfig(({ mode }) => {
     plugins: [
       react(),
       tailwindcss(),
+      validationAssetsPlugin(),
     ],
     // Single React instance for the app + zustand / framer-motion (avoids "Invalid hook call")
     resolve: {

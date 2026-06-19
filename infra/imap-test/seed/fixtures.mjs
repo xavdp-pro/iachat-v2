@@ -3,6 +3,45 @@
  * Each item is one message; use messageId + inReplyTo to chain conversations.
  */
 export const FIXTURE_THREADS = [
+  // ── Armand AJEX — real IMAP test mails (17 Jun 2026, Zimbra → xavier@xavdp.pro) ──
+  {
+    from: 'armand.guilhot@ajex-holding.fr',
+    fromName: 'Armand Guilhot | AJEX',
+    subject: 'Demande de prix réf 1706TEST01',
+    date: 'Tue, 17 Jun 2026 17:42:00 +0200',
+    messageId: '<ajex-1706test01@ajex-holding.fr>',
+    body: `Xavier,
+
+Email test pour la mise en place IMAP sur devis.zerux.com.
+
+Pièce jointe : 03.16 Demande façade RC4 et pare-balles.pdf
+
+Cordialement,
+
+AJEX
+Armand Guilhot — Associé
+550 Montée de la Ruelle
+69270 Fontaines-Saint-Martin
+armand.guilhot@ajex-holding.fr`,
+  },
+  {
+    from: 'armand.guilhot@ajex-holding.fr',
+    fromName: 'Armand Guilhot | AJEX',
+    subject: 'Deuxième demande de prix réf 1706TEST02',
+    date: 'Tue, 17 Jun 2026 17:43:00 +0200',
+    messageId: '<ajex-1706test02@ajex-holding.fr>',
+    inReplyTo: '<ajex-1706test01@ajex-holding.fr>',
+    body: `Xavier,
+
+Deuxième email test, sait-on jamais !
+
+Cordialement,
+
+AJEX
+Armand Guilhot — Associé
+armand.guilhot@ajex-holding.fr`,
+  },
+
   // ── The Hive (3) ──────────────────────────────────────────────────────────
   {
     from: 'sophie.martin@thehive-paris.fr',

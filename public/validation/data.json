@@ -1,0 +1,373 @@
+{
+  "meta": {
+    "title": "Suivi livraison — Partie 2",
+    "client": "Armand Guilhot (Zerux)",
+    "contact": "armand.guilhot@zerux.com",
+    "project": "devis.zerux.com",
+    "updatedAt": "2026-06-19",
+    "overallDevPct": 81
+  },
+  "jalons": [
+    {
+      "id": "A",
+      "label": "Équipements & corrections tarifaires",
+      "contractPct": 20,
+      "targetDate": "2026-06-19",
+      "items": [
+        {
+          "id": "A1",
+          "label": "Matrices équipements 14 perfs + filtrage onglet tarif",
+          "dev": "done",
+          "devNote": "CR3→EF2 importés. Arthur RC4 = référence.",
+          "ag": "pending"
+        },
+        {
+          "id": "A2",
+          "label": "CR6+EI60 : pas d'avis de chantier si non obligatoire",
+          "dev": "done",
+          "devNote": "test:performance-compat",
+          "ag": "pending"
+        },
+        {
+          "id": "A3",
+          "label": "Porte bélier : cumul autres performances",
+          "dev": "in_progress",
+          "devNote": "Règles FB7/EI60 + avis chantier feu+PB codées — recette cas réel manquante",
+          "ag": "pending",
+          "question": "Peux-tu fournir un devis pilote (n° + perfs attendues) pour valider le cumul anti-bélier + EI/FB/45 dB ?",
+          "neededToFinish": "Devis pilote Armand + confirmation règles cumul (avis chantier oui/non par combinaison)"
+        },
+        {
+          "id": "A4",
+          "label": "Anti-bélier bloqué si BP 2 vantaux",
+          "dev": "done",
+          "devNote": "Règle compatibilité",
+          "ag": "pending"
+        },
+        {
+          "id": "A5",
+          "label": "Option joint acoustique",
+          "dev": "question",
+          "devNote": "Implémenté provisoirement : 175 € HT (1V) / 280 € HT (2V) — libellé « Joint acoustique »",
+          "ag": "pending",
+          "question": "Quelle référence tarif NEXUS, libellé exact et montant HT pour l’option joint acoustique ?",
+          "neededToFinish": "Référence + libellé + prix validés par Armand (remplace le provisoire detect_nexus)"
+        },
+        {
+          "id": "A6",
+          "label": "Compatibilités CR / FB / EI",
+          "dev": "done",
+          "devNote": "Matrice + tests auto",
+          "ag": "pending"
+        },
+        {
+          "id": "A7",
+          "label": "Recalcul auto si case équipement vidée",
+          "dev": "done",
+          "ag": "pending"
+        },
+        {
+          "id": "A8",
+          "label": "Arrondi prix tarif à l'unité (ex. 4476)",
+          "dev": "done",
+          "ag": "pending"
+        },
+        {
+          "id": "A9",
+          "label": "FB5 → FB6 si perf indispo",
+          "dev": "done",
+          "ag": "pending"
+        },
+        {
+          "id": "A10",
+          "label": "Règle R061 (FP + plinthe) prise en compte IA",
+          "dev": "in_progress",
+          "devNote": "Règle en base (TS-5000 + plinthe encastrée) — audit validate-lines OK",
+          "ag": "pending",
+          "question": "Sur quel devis tester la règle R061 via grille / IA ? Le FP TS-5000 + plinthe auto doivent-ils toujours apparaître même si l’utilisateur les efface ?",
+          "neededToFinish": "Recette IA sur devis réel Armand + validation comportement attendu (forçage vs suggestion)"
+        }
+      ],
+      "stats": {
+        "done": 7,
+        "inProgress": 2,
+        "waiting": 1,
+        "agValidated": 0,
+        "total": 10,
+        "devPct": 80
+      }
+    },
+    {
+      "id": "B",
+      "label": "PDF devis & fiches détail",
+      "contractPct": 30,
+      "targetDate": "2026-06-26",
+      "items": [
+        {
+          "id": "B1",
+          "label": "PDF devis ~99 % (The Hive)",
+          "dev": "in_progress",
+          "devNote": "PDF généré — validation visuelle",
+          "ag": "pending",
+          "agNote": "Comparer The Hive.pdf",
+          "question": "Peux-tu comparer le PDF généré avec 605.0106 The Hive et lister les écarts visuels restants ?"
+        },
+        {
+          "id": "B2",
+          "label": "Stepper étape 4 : PDF live à droite",
+          "dev": "done",
+          "devNote": "Preview + libellés live",
+          "ag": "pending"
+        },
+        {
+          "id": "B3",
+          "label": "Fiches détail : 1/repère, PDF unique",
+          "dev": "in_progress",
+          "devNote": "2V OK · 1V manquant · châssis squelette",
+          "ag": "pending",
+          "question": "La fiche 2 vantaux te convient-elle ? Quels écarts vs ton PDF ? (F1/F2 bloquent le 1V et châssis)",
+          "neededToFinish": "F1 Fiche 1 vantail + F2 modèle châssis fixe"
+        },
+        {
+          "id": "B4",
+          "label": "Poids admin + report détail PDF",
+          "dev": "done",
+          "devNote": "Admin + Calcul poids.xlsx",
+          "ag": "pending"
+        },
+        {
+          "id": "B5",
+          "label": "Lignes fin : Total HT, remise, TVA, TTC",
+          "dev": "done",
+          "ag": "pending"
+        }
+      ],
+      "stats": {
+        "done": 3,
+        "inProgress": 2,
+        "waiting": 0,
+        "agValidated": 0,
+        "total": 5,
+        "devPct": 80
+      }
+    },
+    {
+      "id": "C",
+      "label": "Multi-devise & numérotation",
+      "contractPct": 5,
+      "targetDate": "2026-07-03",
+      "items": [
+        {
+          "id": "C1",
+          "label": "EUR, CHF (0,9), GBP (0,9), USD (1,2)",
+          "dev": "done",
+          "devNote": "Admin taux + grille",
+          "ag": "pending"
+        },
+        {
+          "id": "C2",
+          "label": "Alerte taux 2×/an (janv. / juin)",
+          "dev": "done",
+          "devNote": "Bandeau admin",
+          "ag": "pending"
+        },
+        {
+          "id": "C3",
+          "label": "Admin numérotation mensuelle",
+          "dev": "done",
+          "devNote": "Format + trous séquence",
+          "ag": "pending"
+        }
+      ],
+      "stats": {
+        "done": 3,
+        "inProgress": 0,
+        "waiting": 0,
+        "agValidated": 0,
+        "total": 3,
+        "devPct": 100
+      }
+    },
+    {
+      "id": "D",
+      "label": "HubSpot, IMAP, Envoi",
+      "contractPct": 20,
+      "targetDate": "2026-07-03",
+      "items": [
+        {
+          "id": "D1",
+          "label": "IMAP : 5 mails + « Pas d'email »",
+          "dev": "done",
+          "devNote": "Dovecot test + prod Zimbra à config",
+          "ag": "pending"
+        },
+        {
+          "id": "D2",
+          "label": "Étape Envoi : aperçu, corps, PJ, brouillon",
+          "dev": "in_progress",
+          "devNote": "UI OK — MS_GRAPH_* manquant",
+          "ag": "pending",
+          "question": "Qui configure MS_GRAPH_* pour la boîte commerciale ? Délai estimé ?",
+          "neededToFinish": "Credentials F4 (IT Zerux)"
+        },
+        {
+          "id": "D3",
+          "label": "Contact HubSpot dans l'entreprise",
+          "dev": "done",
+          "ag": "pending"
+        },
+        {
+          "id": "D4",
+          "label": "Deal auto + [n° devis] - [client]",
+          "dev": "in_progress",
+          "devNote": "À recetter deal réel HubSpot",
+          "ag": "pending",
+          "question": "Quel deal HubSpot utiliser pour la recette (n° deal ou entreprise pilote) ?",
+          "neededToFinish": "Deal pilote Armand + accès HubSpot prod"
+        }
+      ],
+      "stats": {
+        "done": 2,
+        "inProgress": 2,
+        "waiting": 0,
+        "agValidated": 0,
+        "total": 4,
+        "devPct": 75
+      }
+    }
+  ],
+  "files": [
+    {
+      "id": "F1",
+      "label": "Fiche de détail 1 vantail.pdf",
+      "dev": "waiting",
+      "devNote": "PJ mail 10/06",
+      "ag": "to_provide",
+      "question": "Armand : déposer ou confirmer"
+    },
+    {
+      "id": "F2",
+      "label": "Modèle PDF fiche châssis fixe",
+      "dev": "waiting",
+      "devNote": "Squelette dev seulement",
+      "ag": "to_provide",
+      "question": "Armand : PDF modèle"
+    },
+    {
+      "id": "F3",
+      "label": "Matrice RC4 Arthur colonne par colonne",
+      "dev": "waiting",
+      "devNote": "Bootstrap CR4 en place",
+      "ag": "to_provide",
+      "question": "Arthur / Armand"
+    },
+    {
+      "id": "F4",
+      "label": "Credentials MS_GRAPH_* boîte commerciale",
+      "dev": "waiting",
+      "devNote": "IT Zerux — bloque D2",
+      "ag": "to_provide",
+      "question": "Armand / IT"
+    }
+  ],
+  "agenda": [
+    "A5 — référence tarif joint acoustique (réponse directe ci-dessous)",
+    "A3 — devis pilote anti-bélier + perfs cumulées",
+    "A10 — recette R061 sur devis réel (FP + plinthe IA)",
+    "Fichiers F1, F2, F3 — dépôt aujourd'hui ?",
+    "B1 — comparer The Hive côte à côte (5 min)",
+    "B3 — fiche 2 vantaux OK ? écarts ?",
+    "D2 / F4 — qui configure Outlook Graph ?",
+    "Cocher Validé AG ou Retour ligne par ligne"
+  ],
+  "openQuestions": [
+    {
+      "id": "A3",
+      "label": "Porte bélier : cumul autres performances",
+      "dev": "in_progress",
+      "question": "Peux-tu fournir un devis pilote (n° + perfs attendues) pour valider le cumul anti-bélier + EI/FB/45 dB ?",
+      "neededToFinish": "Devis pilote Armand + confirmation règles cumul (avis chantier oui/non par combinaison)",
+      "jalonId": "A"
+    },
+    {
+      "id": "A5",
+      "label": "Option joint acoustique",
+      "dev": "question",
+      "question": "Quelle référence tarif NEXUS, libellé exact et montant HT pour l’option joint acoustique ?",
+      "neededToFinish": "Référence + libellé + prix validés par Armand (remplace le provisoire detect_nexus)",
+      "jalonId": "A"
+    },
+    {
+      "id": "A10",
+      "label": "Règle R061 (FP + plinthe) prise en compte IA",
+      "dev": "in_progress",
+      "question": "Sur quel devis tester la règle R061 via grille / IA ? Le FP TS-5000 + plinthe auto doivent-ils toujours apparaître même si l’utilisateur les efface ?",
+      "neededToFinish": "Recette IA sur devis réel Armand + validation comportement attendu (forçage vs suggestion)",
+      "jalonId": "A"
+    },
+    {
+      "id": "B1",
+      "label": "PDF devis ~99 % (The Hive)",
+      "dev": "in_progress",
+      "question": "Peux-tu comparer le PDF généré avec 605.0106 The Hive et lister les écarts visuels restants ?",
+      "neededToFinish": null,
+      "jalonId": "B"
+    },
+    {
+      "id": "B3",
+      "label": "Fiches détail : 1/repère, PDF unique",
+      "dev": "in_progress",
+      "question": "La fiche 2 vantaux te convient-elle ? Quels écarts vs ton PDF ? (F1/F2 bloquent le 1V et châssis)",
+      "neededToFinish": "F1 Fiche 1 vantail + F2 modèle châssis fixe",
+      "jalonId": "B"
+    },
+    {
+      "id": "D2",
+      "label": "Étape Envoi : aperçu, corps, PJ, brouillon",
+      "dev": "in_progress",
+      "question": "Qui configure MS_GRAPH_* pour la boîte commerciale ? Délai estimé ?",
+      "neededToFinish": "Credentials F4 (IT Zerux)",
+      "jalonId": "D"
+    },
+    {
+      "id": "D4",
+      "label": "Deal auto + [n° devis] - [client]",
+      "dev": "in_progress",
+      "question": "Quel deal HubSpot utiliser pour la recette (n° deal ou entreprise pilote) ?",
+      "neededToFinish": "Deal pilote Armand + accès HubSpot prod",
+      "jalonId": "D"
+    },
+    {
+      "id": "F1",
+      "label": "Fiche de détail 1 vantail.pdf",
+      "dev": "waiting",
+      "question": "Armand : déposer ou confirmer",
+      "neededToFinish": "PJ mail 10/06",
+      "jalonId": "F"
+    },
+    {
+      "id": "F2",
+      "label": "Modèle PDF fiche châssis fixe",
+      "dev": "waiting",
+      "question": "Armand : PDF modèle",
+      "neededToFinish": "Squelette dev seulement",
+      "jalonId": "F"
+    },
+    {
+      "id": "F3",
+      "label": "Matrice RC4 Arthur colonne par colonne",
+      "dev": "waiting",
+      "question": "Arthur / Armand",
+      "neededToFinish": "Bootstrap CR4 en place",
+      "jalonId": "F"
+    },
+    {
+      "id": "F4",
+      "label": "Credentials MS_GRAPH_* boîte commerciale",
+      "dev": "waiting",
+      "question": "Armand / IT",
+      "neededToFinish": "IT Zerux — bloque D2",
+      "jalonId": "F"
+    }
+  ]
+}

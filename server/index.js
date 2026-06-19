@@ -26,6 +26,7 @@ import exchangeRatesRoutes from './routes/exchangeRates.js'
 import quoteAdminRoutes from './routes/quoteAdmin.js'
 import imapRoutes from './routes/imap.js'
 import outlookRoutes from './routes/outlook.js'
+import validationRoutes from './routes/validation.js'
 import { ensureDbSchema } from './db/ensureSchema.js'
 import { warmupMemory } from './services/memory.js'
 import { getMaintenanceSettings } from './services/appSettings.js'
@@ -62,6 +63,9 @@ app.get('/api/maintenance-status', async (req, res) => {
     res.status(500).json({ error: err.message })
   }
 })
+
+// Validation Armand — before maintenance so the shared link stays usable
+app.use('/api/validation', validationRoutes)
 
 app.use(maintenanceMode)
 

@@ -64,7 +64,8 @@ SEEDS = {
         'serrure': [
             ('section', None, 'Serrures Dény LSS 7 points (obligatoire CR6)'),
             ('item', '4172', 'Dény LSS méca 7 pts — modèle Satyx, cyl. européen (défaut CR6)'),
-            ('item', '4185', 'Option contacts de position'),
+            ('item', '4176', 'Dény LSS motorisée 7 pts — cyl. européen sécurité'),
+            ('item', '4185', 'Option contacts de position (accessoire, pas serrure)'),
         ],
         'autres_add': [
             ('item', None, 'EI² 30 (max L 1340 H 2600) — + 1 500 € TG'),

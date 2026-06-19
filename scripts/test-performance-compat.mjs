@@ -25,6 +25,24 @@ const cases = [
     line: { designation: 'BP CR6 FB7', _raw: [null, null, null, 6, 7] },
     expectViolation: true,
   },
+  {
+    name: 'CR4 + FB4 + EI60 (tokens grille H2300×L1150)',
+    line: {
+      gamme: 'CR4',
+      designation: 'BP 1V',
+      haut_mm: 2300,
+      larg_mm: 1150,
+      _raw: ['BP 1V', 1150, 2300, 'CR4', 'FB4', 'EI60'],
+    },
+    expectViolation: false,
+    expectPerfs: ['CR4', 'FB4', 'EI60'],
+  },
+  {
+    name: 'CR4 + FB4 + EI60 (slots numériques)',
+    line: { gamme: 'CR4', _raw: [null, 1150, 2300, 4, 4, 60] },
+    expectViolation: false,
+    expectPerfs: ['CR4', 'FB4', 'EI60'],
+  },
 ]
 
 let failed = 0
@@ -33,10 +51,12 @@ for (const testCase of cases) {
   const hasViolation = issues.some(item => item.status === 'violation')
   const perfs = [...collectLinePerformances(testCase.line)]
   const ok = hasViolation === testCase.expectViolation
+    && (!testCase.expectPerfs || testCase.expectPerfs.every(perf => perfs.includes(perf)))
   console.log(`${ok ? '✓' : '✗'} ${testCase.name} — perfs=[${perfs.join(', ')}] issues=${issues.length}`)
   if (!ok) {
     failed += 1
     console.log('  ', issues)
+    if (testCase.expectPerfs) console.log('   expected perfs:', testCase.expectPerfs)
   }
 }
 

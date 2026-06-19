@@ -83,15 +83,41 @@ function extractPerfsFromText(text) {
   return set
 }
 
+function pushRawPerformanceSlot(set, val, kind) {
+  if (val == null || !String(val).trim()) return
+  const token = String(val).trim().toUpperCase()
+  if (kind === 'rc') {
+    if (/^CR[2-6]$/.test(token)) pushPerf(set, token)
+    else if (/^[2-6]$/.test(token)) pushPerf(set, `CR${token}`)
+    else pushPerf(set, token)
+    return
+  }
+  if (kind === 'pb') {
+    if (/^FB[4-7]$/.test(token)) pushPerf(set, token)
+    else if (/^[4-7]$/.test(token)) pushPerf(set, `FB${token}`)
+    else pushPerf(set, token)
+    return
+  }
+  if (kind === 'cf') {
+    if (/^EI(?:30|60|90|120)$/.test(token)) pushPerf(set, token)
+    else if (/^(30|60|90|120)$/.test(token)) pushPerf(set, `EI${token}`)
+    else pushPerf(set, token)
+    return
+  }
+  if (kind === 'blast') pushPerf(set, 'BLAST')
+  else if (kind === 'belier') pushPerf(set, 'ANTI-BELIER')
+  else if (kind === 'prison') pushPerf(set, 'PRISON')
+}
+
 function extractPerfsFromRaw(raw) {
   const set = new Set()
   if (!Array.isArray(raw)) return set
-  if (raw[3] != null && String(raw[3]).trim()) pushPerf(set, `CR${raw[3]}`)
-  if (raw[4] != null && String(raw[4]).trim()) pushPerf(set, `FB${raw[4]}`)
-  if (raw[5] != null && String(raw[5]).trim()) pushPerf(set, `EI${raw[5]}`)
-  if (raw[6] != null && String(raw[6]).trim()) pushPerf(set, 'BLAST')
-  if (raw[7] != null && String(raw[7]).trim()) pushPerf(set, 'ANTI-BELIER')
-  if (raw[8] != null && String(raw[8]).trim()) pushPerf(set, 'PRISON')
+  pushRawPerformanceSlot(set, raw[3], 'rc')
+  pushRawPerformanceSlot(set, raw[4], 'pb')
+  pushRawPerformanceSlot(set, raw[5], 'cf')
+  pushRawPerformanceSlot(set, raw[6], 'blast')
+  pushRawPerformanceSlot(set, raw[7], 'belier')
+  pushRawPerformanceSlot(set, raw[8], 'prison')
   return set
 }
 

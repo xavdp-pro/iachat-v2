@@ -63,6 +63,11 @@ function parseRawJson(value) {
   return { cells: [], meta: {} }
 }
 
+function lineWeightKg(line = {}) {
+  const weight = Number(line?.weight_kg)
+  return Number.isFinite(weight) && weight > 0 ? weight : null
+}
+
 function lineDetailMeta(line = {}) {
   const { meta, cells } = parseRawJson(line.raw_json)
   const text = [
@@ -270,6 +275,7 @@ function detailSheetHtml(line, index, devis) {
   const dims = dimensions(line)
   const equipment = equipmentBulletRows(line)
   const detailMeta = lineDetailMeta(line)
+  const weightKg = lineWeightKg(line)
   const sheetTitle = twoLeaf ? 'Fiche de détail - BP Nexus 2 vantaux' : 'Fiche de détail - BP Nexus 1 vantail'
   const thermo = /thermolaquage|RAL/i.test(String(line.designation || ''))
     ? (String(line.designation || '').match(/teinte RAL[^,\n]*/i)?.[0] || 'Teinte RAL au choix')
@@ -326,6 +332,7 @@ function detailSheetHtml(line, index, devis) {
           <div class="section-title">Produit</div>
           <div class="info-value strong">${escapeHtml(field(line.type_porte || line.designation?.split('\n')[0] || line.gamme))}</div>
           <div class="info-note">${escapeHtml(field(line.gamme))} ${escapeHtml(field(line.vantail))}</div>
+          ${weightKg ? `<div class="info-note">Poids approximatif — vantail : <strong>${weightKg} kg</strong></div>` : ''}
         </div>
       </div>
 

@@ -630,11 +630,73 @@ export async function ensureDbSchema() {
     }
     console.log('✅ DB: exchange_rates ready')
 
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS armand_roadmap_feedback (
+        item_id     VARCHAR(10) PRIMARY KEY,
+        ag_status   VARCHAR(20) NOT NULL DEFAULT 'pending',
+        ag_comment  TEXT DEFAULT NULL,
+        ag_answer   TEXT DEFAULT NULL,
+        dev_response TEXT DEFAULT NULL,
+        dev_response_at DATETIME DEFAULT NULL,
+        dev_response_by VARCHAR(120) DEFAULT NULL,
+        updated_by  VARCHAR(120) DEFAULT NULL,
+        updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_armand_feedback_status (ag_status)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `)
+    console.log('✅ DB: armand_roadmap_feedback ready')
+
+    const armandFeedbackCols = [
+      ['dev_response', 'TEXT DEFAULT NULL AFTER ag_answer'],
+      ['dev_response_at', 'DATETIME DEFAULT NULL AFTER dev_response'],
+      ['dev_response_by', 'VARCHAR(120) DEFAULT NULL AFTER dev_response_at'],
+      ['ag_feedback_at', 'DATETIME DEFAULT NULL AFTER ag_answer'],
+    ]
+    for (const [col, ddl] of armandFeedbackCols) {
+      const [exists] = await db.query(
+        `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'armand_roadmap_feedback' AND COLUMN_NAME = ?`,
+        [col]
+      )
+      if (!exists.length) {
+        await db.query(`ALTER TABLE armand_roadmap_feedback ADD COLUMN ${col} ${ddl}`)
+        console.log(`✅ DB: armand_roadmap_feedback.${col} added`)
+      }
+    }
+
+    // Preserve client feedback time when dev publishes corrections later
+    await db.query(`
+      UPDATE armand_roadmap_feedback
+         SET ag_feedback_at = updated_at
+       WHERE ag_feedback_at IS NULL
+         AND updated_by IS NOT NULL
+         AND updated_by NOT IN ('Équipe dev', 'Equipe dev', 'Xavier')
+         AND (ag_comment IS NOT NULL OR ag_answer IS NOT NULL OR ag_status NOT IN ('pending'))
+    `)
+    const legacyAgTimes = {
+      A6: '2026-06-19 11:49:33',
+      A9: '2026-06-19 13:48:00',
+      A7: '2026-06-19 13:54:00',
+      A1: '2026-06-19 16:45:00',
+      A5: '2026-06-19 16:45:00',
+      A10: '2026-06-19 16:45:00',
+      B4: '2026-06-19 16:45:00',
+      B5: '2026-06-19 16:45:00',
+      C2: '2026-06-19 16:45:00',
+    }
+    for (const [itemId, at] of Object.entries(legacyAgTimes)) {
+      await db.query(
+        `UPDATE armand_roadmap_feedback SET ag_feedback_at = ? WHERE item_id = ? AND ag_feedback_at IS NULL`,
+        [at, itemId]
+      )
+    }
+
     const devisExtraCols = [
       ['currency', "VARCHAR(3) NOT NULL DEFAULT 'EUR' AFTER client_name"],
       ['tva_rate', 'DECIMAL(6,4) DEFAULT NULL AFTER currency'],
       ['commercial_discount_ht', 'DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER tva_rate'],
-      ['exchange_rate', 'DECIMAL(12,6) DEFAULT NULL AFTER commercial_discount_ht'],
+      ['commercial_discount_pct', 'DECIMAL(8,4) DEFAULT NULL AFTER commercial_discount_ht'],
+      ['exchange_rate', 'DECIMAL(12,6) DEFAULT NULL AFTER commercial_discount_pct'],
       ['exchange_locked', 'TINYINT(1) NOT NULL DEFAULT 0 AFTER exchange_rate'],
       ['requester_contact_id', 'VARCHAR(50) DEFAULT NULL AFTER company_id'],
       ['requester_contact_name', 'VARCHAR(255) DEFAULT NULL AFTER requester_contact_id'],

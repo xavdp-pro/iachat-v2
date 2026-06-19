@@ -28,6 +28,7 @@ export const COMMERCIAL_SECTIONS = [
       { label: 'Recherche devis', to: '/devis/search', icon: 'FileSearch', param: 'q', placeholder: 'N° devis, affaire, client...' },
       { label: 'Grille chiffrage', to: '/devis/grid', icon: 'LayoutGrid', param: 'prompt', placeholder: 'BP 2V RC5 2200 x 3200...' },
       { label: 'Tarifs transport', to: '/devis/transport', icon: 'Truck' },
+      { label: 'Suivi validation P2', to: '/validation', icon: 'CheckCircle2' },
       { label: 'Lab IMAP', to: '/devis/imap-lab', icon: 'FlaskConical', roles: [ROLES.ADMIN] },
     ],
   },

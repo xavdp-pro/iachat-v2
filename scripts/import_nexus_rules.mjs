@@ -166,6 +166,11 @@ const rules = [
     category: 'Feu', severity: 'blocking', source_type: 'markdown', source_ref: 'GUIDE-DEVIS.md:213-224 + ANTI-BELIER.md:68', tags: ['FB7', 'EI60'],
   },
   {
+    title: 'CR4 + FB4 + EI60 : combinaison standard cumulable',
+    content: 'Une ligne BP CR4 avec options pare-balles FB4 et coupe-feu EI60 est une combinaison NEXUS standard et cumulable (ex. H2300×L1150). Chiffrer sur base CR4 + options FB4 et EI60. L’avis de chantier FB4+EI60 est obligatoire et non remisable, mutualisé une fois par devis — ce n’est pas une incompatibilité bloquante.',
+    category: 'Chiffrage', severity: 'warning', source_type: 'markdown', source_ref: 'CR4.md + EI60.md + GUIDE-DEVIS.md', tags: ['CR4', 'FB4', 'EI60', 'compatibilité'],
+  },
+  {
     title: 'Anti-bélier : FB7 non cumulable EI60',
     content: 'Sur une porte anti-bélier, l’option FB7 n’est pas cumulable avec EI60. Le devis doit demander un choix exclusif.',
     category: 'Règle métier', severity: 'blocking', source_type: 'markdown', source_ref: 'ANTI-BELIER.md:26-31 + 66-70', tags: ['anti-belier', 'FB7', 'EI60'],
