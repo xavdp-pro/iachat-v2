@@ -167,7 +167,7 @@ const rules = [
   },
   {
     title: 'CR4 + FB4 + EI60 : combinaison standard cumulable',
-    content: 'Une ligne BP CR4 avec options pare-balles FB4 et coupe-feu EI60 est une combinaison NEXUS standard et cumulable (ex. H2300×L1150). Chiffrer sur base CR4 + options FB4 et EI60. L’avis de chantier FB4+EI60 est obligatoire et non remisable, mutualisé une fois par devis — ce n’est pas une incompatibilité bloquante.',
+    content: 'Une ligne BP CR4 avec options pare-balles FB4 et coupe-feu EI60 est une combinaison NEXUS standard et cumulable (ex. H2300×L1150). Chiffrer sur base CR4 + options FB4 et EI60. Pas d’avis de chantier automatique pour FB4+EI60 (retour validation Armand juin 2026).',
     category: 'Chiffrage', severity: 'warning', source_type: 'markdown', source_ref: 'CR4.md + EI60.md + GUIDE-DEVIS.md', tags: ['CR4', 'FB4', 'EI60', 'compatibilité'],
   },
   {

@@ -649,6 +649,7 @@ function optionPerformanceKey(option) {
   if (/^(?:performance\s+)?blast\s*[245]|^[245]\s*t\s*\/\s*m/i.test(label)) return 'blast'
   if (/^(?:performance\s+)?anti.?b[ée]lier\b/i.test(label)) return 'belier'
   if (/^(?:performance\s+)?prison\b/i.test(label)) return 'prison'
+  if (/joints?\s+blindage.*cem|blindage\s+électromagnétique|blindage\s+electromagnetique|\bcem\b/i.test(text)) return 'cem'
   return null
 }
 
@@ -1146,6 +1147,7 @@ function GammeBadge({ gamme, fullWidth }) {
 
 // Largeur calculée automatiquement après PERF_OPTIONS
 const PERF_CONTROL_WIDTH = {}
+const CEM_OPTION_LABEL = 'Joints blindage électromagnétique CEM'
 const PERF_LABELS = { rc: 'RC', pb: 'PB', cf: 'CF', blast: 'Blast', belier: 'Bélier', prison: 'Prison', cem: 'CEM', acoustic: 'Acoustique' }
 const PERF_CONTROL_MIN_WIDTH = 62
 const PERF_CONTROL_DEFAULT_WIDTH = 72
@@ -1265,6 +1267,7 @@ function performanceOptionFor(row = {}, key, value) {
     const text = equipmentText(option).replace(/\s+/g, '').toUpperCase()
     if (key === 'acoustic') return acousticValue(text) === value || text.includes(normalizedValue)
     if (key === 'blast') return blastValue(text) === value || text.includes(normalizedValue.replace('²', '2'))
+    if (key === 'cem') return /CEM|ÉLECTROMAGNETIQUE|ELECTROMAGNETIQUE|BLINDAGE/i.test(text)
     return text.includes(normalizedValue)
   }) || null
 }
@@ -1281,6 +1284,13 @@ function performanceDetailItems(row = {}, resolved = resolveRow(row)) {
         ref: resolved._acousticRef || extractOptionRef(option) || null,
         prix: resolved._acousticPrix ?? option?.prix ?? null,
         note: resolved._acousticNote || option?.note || null,
+      }
+      if (key === 'cem') return {
+        key,
+        label: option?.label || CEM_OPTION_LABEL,
+        ref: extractOptionRef(option) || null,
+        prix: option?.prix ?? null,
+        note: option?.note || null,
       }
       return {
         key,
@@ -2286,7 +2296,7 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
                           onRecompute?.({ [`_raw_${rawIdx}`]: v, _perfOverrides: { ...(row._perfOverrides || {}), [key]: true } })
                         }
                       }}
-                      title={key === 'acoustic' ? 'Acoustique' : key.toUpperCase()}
+                      title={key === 'acoustic' ? 'Acoustique' : key === 'cem' ? CEM_OPTION_LABEL : key.toUpperCase()}
                       width={controlWidth}
                       menuWidth={menuWidth}
                       active={isSet}
@@ -2345,7 +2355,7 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
                               onRecompute?.({ [`_raw_${rawIdx}`]: v, _perfOverrides: { ...(row._perfOverrides || {}), [key]: true } })
                             }
                           }}
-                          title={key === 'acoustic' ? 'Acoustique' : key.toUpperCase()}
+                          title={key === 'acoustic' ? 'Acoustique' : key === 'cem' ? CEM_OPTION_LABEL : key.toUpperCase()}
                           width={112}
                           menuWidth={PERF_CONTROL_WIDTH[key] || PERF_MENU_MIN_WIDTH}
                           active={isSet}
@@ -2928,7 +2938,7 @@ const GRID_INTENT_FIELD_LABELS = {
   cf: 'coupe-feu',
   blast: 'blast',
   belier: 'anti-bélier',
-  cem: 'blindage CEM (électromagnétique)',
+  cem: CEM_OPTION_LABEL,
   prison: 'prison',
   acoustic: 'acoustique',
   serrure: 'serrure',
