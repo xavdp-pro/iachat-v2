@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Lab Mail Graph — démo Armand</title>
+  <style>
+    :root { --bg:#141618; --surface:#1c1f24; --border:#2a2f38; --text:#e8eaed; --muted:#9aa0a6; --accent:#5b8def; --warn:#fbbf24; --ok:#22c55e; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, sans-serif; background:var(--bg); color:var(--text); line-height:1.5; }
+    .wrap { max-width: 960px; margin: 0 auto; padding: 24px; }
+    h1 { font-size: 1.35rem; margin: 0 0 8px; }
+    .banner { background: rgba(251,191,36,.12); border: 1px solid var(--warn); color: #fde68a; padding: 12px 14px; border-radius: 10px; font-size: 13px; margin: 16px 0; }
+    .banner.ok { background: rgba(34,197,94,.1); border-color: var(--ok); color: #bbf7d0; }
+    .grid { display: grid; grid-template-columns: 280px 1fr; gap: 12px; min-height: 360px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+    .threads { background: var(--surface); border-right: 1px solid var(--border); overflow-y: auto; }
+    .thread { padding: 12px; border-bottom: 1px solid var(--border); cursor: default; }
+    .thread.active { background: rgba(91,141,239,.12); box-shadow: inset 3px 0 0 var(--accent); }
+    .thread h3 { margin: 0; font-size: 13px; line-height: 1.35; }
+    .thread .meta { font-size: 11px; color: var(--muted); margin-top: 6px; }
+    .msgs { padding: 12px; overflow-y: auto; }
+    .msg { border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-bottom: 10px; background: var(--surface); }
+    .msg h4 { margin: 0 0 4px; font-size: 12px; }
+    .msg .when { font-size: 11px; color: var(--muted); }
+    .msg .body { margin-top: 8px; font-size: 12px; color: #c9cdd3; white-space: pre-wrap; max-height: 140px; overflow: hidden; }
+    .pj { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; padding: 4px 8px; border-radius: 6px; background: rgba(91,141,239,.15); margin-top: 8px; }
+    .steps { font-size: 13px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px; margin-top: 20px; }
+    .steps ol { margin: 8px 0 0; padding-left: 20px; }
+    code { background: #0d0f12; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+    button { background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 10px 14px; font-weight: 700; cursor: pointer; margin-top: 10px; }
+    button:hover { filter: brightness(1.08); }
+    .err { color: #f87171; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Lab Mail Graph — vue Armand (lecture seule)</h1>
+    <p style="color:var(--muted); font-size:14px; margin:0">Historique client depuis la boîte <strong>armand.guilhot@zerux.com</strong> via Microsoft Graph.</p>
+    <div id="status" class="banner">Chargement…</div>
+    <div id="viewer" class="grid" hidden>
+      <div class="threads" id="threads"></div>
+      <div class="msgs" id="msgs"></div>
+    </div>
+    <div class="steps">
+      <strong>Ouvrir l’app réelle (connecté en Armand)</strong>
+      <ol>
+        <li>Aller sur <a href="https://devis.zerux.com/login" style="color:var(--accent)">devis.zerux.com</a> (ou se connecter normalement)</li>
+        <li>Ou coller le token Armand en console : <code>localStorage.setItem('token','…')</code> puis F5</li>
+        <li>Menu <strong>Lab Mail Graph</strong> ou <code>/devis/imap-lab</code></li>
+        <li>Stepper devis → étape Client : conversations du contact HubSpot</li>
+      </ol>
+      <button type="button" id="copyToken">Copier le token Armand (7 jours)</button>
+      <button type="button" id="openLab" style="margin-left:8px;background:#374151">Ouvrir /devis/imap-lab</button>
+    </div>
+  </div>
+  <script>
+    const fmt = (iso) => iso ? new Date(iso).toLocaleString('fr-FR', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' }) : '—'
+    let demo = null
+
+    fetch('/mail-lab-armand-demo.json').then(r => r.json()).then(data => {
+      demo = data
+      document.getElementById('status').className = 'banner ok'
+      document.getElementById('status').textContent = `Graph OK · boîte ${data.mailbox} · contact ${data.contact} · ${data.threads.length} conversation(s) · généré ${fmt(data.generatedAt)}`
+      document.getElementById('viewer').hidden = false
+      render(data.threads[0])
+      const th = document.getElementById('threads')
+      data.threads.forEach((t, i) => {
+        const el = document.createElement('div')
+        el.className = 'thread' + (i === 0 ? ' active' : '')
+        el.innerHTML = `<h3>${t.subject || '(sans objet)'}</h3><div class="meta">${t.message_count} msg · ${fmt(t.last_date)}</div>`
+        el.onclick = () => {
+          th.querySelectorAll('.thread').forEach(n => n.classList.remove('active'))
+          el.classList.add('active')
+          render(t)
+        }
+        th.appendChild(el)
+      })
+    }).catch(err => {
+      document.getElementById('status').className = 'banner'
+      document.getElementById('status').innerHTML = '<span class="err">Erreur chargement démo : ' + err.message + '</span>'
+    })
+
+    function render(thread) {
+      const box = document.getElementById('msgs')
+      box.innerHTML = ''
+      if (!thread) return
+      thread.messages.forEach((m, i) => {
+        const div = document.createElement('div')
+        div.className = 'msg'
+        const pjs = (i === 0 && demo?.sampleAttachments?.length)
+          ? demo.sampleAttachments.map(a => `<span class="pj">PJ: ${a.name}</span>`).join('')
+          : (m.has_attachments ? '<span class="pj">Pièces jointes</span>' : '')
+        div.innerHTML = `<h4>${m.from_name || m.from}</h4><div class="when">${fmt(m.date)}</div>${i===0?'<div style="font-size:10px;color:#86efac;margin-top:4px">Demande initiale probable</div>':''}<div class="body">${(m.body_text || m.preview || '').slice(0, 500)}</div>${pjs}`
+        box.appendChild(div)
+      })
+    }
+
+    document.getElementById('copyToken').onclick = () => {
+      if (!demo?.token) return alert('Token indisponible')
+      navigator.clipboard.writeText(`localStorage.setItem('token', ${JSON.stringify(demo.token)}); location.href='/devis/imap-lab';`)
+      alert('Snippet console copié — colle sur devis.zerux.com (F12 → Console)')
+    }
+    document.getElementById('openLab').onclick = () => {
+      if (demo?.token) localStorage.setItem('token', demo.token)
+      location.href = '/devis/imap-lab'
+    }
+  </script>
+</body>
+</html>

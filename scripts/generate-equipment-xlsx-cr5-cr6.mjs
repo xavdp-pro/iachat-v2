@@ -43,17 +43,58 @@ SEEDS = {
             ('section', None, 'Serrures Dény LSS profil européen (en applique)'),
             ('item', '4120', 'Dény LSS méca — 3 pts + cyl. européen'),
             ('item', '4122', 'Dény LSS auto — 3 pts sortie libre'),
-            ('item', '4185', 'Option contacts de position'),
             ('item', '4126', 'Dény LSS motorisée — sortie libre'),
             ('item', '4128', 'Dény LSS motorisée — sortie contrôlée DAS'),
             ('section', None, 'Serrures Dény LSS profil rond (en applique) — CR5'),
             ('item', '4150', 'Dény LSS méca — 5 points + cyl. rond (défaut CR5)'),
+            ('item', '4152', 'Dény LSS méca — 5 pts + cyl. rond (variante CR5)'),
+            ('item', '4156', 'Dény LSS motorisée — 5 pts + cyl. rond'),
+            ('item', '4158', 'Dény LSS auto — 5 pts sortie libre + cyl. rond'),
+            ('item', '4160', 'Dény LSS méca — 5 pts + cyl. rond (sortie contrôlée)'),
+            ('item', '4162', 'Dény LSS auto — 5 pts sortie libre + cyl. rond (variante)'),
+            ('item', '4166', 'Dény LSS motorisée — 5 pts sortie libre + cyl. rond'),
+            ('item', '4170', 'Dény LSS motorisée — 5 pts sortie contrôlée DAS + cyl. rond'),
             ('item', '4140', 'Dény LSS méca — 4 pts + cyl. rond'),
             ('item', '4142', 'Dény LSS auto — 4 pts sortie libre + cyl. rond'),
             ('item', '4146', 'Dény LSS motorisée — sortie libre + cyl. rond'),
             ('item', '4148', 'Dény LSS motorisée — sortie contrôlée DAS + cyl. rond'),
+            ('section', None, 'Serrures Dény LSS Duplex — H ≥ 3500 mm'),
+            ('item', '4190', 'Dény LSS Duplex 40815 sans sortie libre — béquille int. inox'),
+            ('item', '4192', 'Dény LSS Duplex 30811 avec sortie libre — béquille PMR int.'),
+            ('item', '4193', 'Dény LSS Duplex 20815 sans sortie libre — béquille int. inox'),
+            ('item', '4194', 'Dény LSS Duplex 20815 sans sortie libre — béquille double inox'),
+            ('item', '4195', 'Dény LSS Duplex 20811 avec sortie libre — béquille PMR int.'),
+            ('section', None, 'Serrures Abloy Bigsur Evo'),
+            ('item', '4201', 'Serrure motorisée Abloy Bigsur Evo 4 points'),
+            ('item', '4203', 'Serrure motorisée Abloy Bigsur Evo 4 points — 3 pênes 1/2 tour'),
+        ],
+        'garniture_int': [
+            ('section', None, 'Garnitures intérieures CR5'),
+            ('item', '4180', 'Barre horizontale pour sortie libre pour serrure LSS'),
+            ('item', '4181', 'Béquille intérieure inox pour serrure LSS'),
+            ('item', '4211', 'Béquille int. + poignée palière ext. sur plaque blindée pour Bigsur Evo'),
+            ('item', '4219', 'Palette Exéa Control int. + poignée palière ext. sur plaque blindée'),
+        ],
+        'garniture_ext': [
+            ('section', None, 'Garniture extérieure CR5'),
+            ('item', None, 'Bouclier anti-meuleuse + poignée de préhension inox (de série)'),
+        ],
+        'vitrage': [
+            ('section', None, 'Oculus CR5'),
+            ('item', '4516', 'Oculus L 600 H 600 — vitrage feuilleté isolant P6B - air - 44.2'),
+            ('item', '4517', 'Oculus L 600 H 600 — vitrage feuilleté isolant P6B - air - EI² 60'),
+            ('item', '4518', 'Oculus L 800 H 800 — vitrage feuilleté isolant P6B - air - 44.2'),
+            ('item', '4521', 'Oculus L 800 H 800 — vitrage feuilleté isolant P6B - air - EI² 60'),
+            ('item', '4616', 'Oculus plein vantail CR5 — vitrage P6B - air - 44.2'),
+            ('item', '4617', 'Oculus plein vantail CR5 — vitrage P6B - air - EI² 60'),
+            ('item', '4621', 'Oculus plein vantail CR5 — vitrage P6B - air - 44.2 (variante)'),
+            ('item', '4666', 'Oculus semi-vantail CR5 — vitrage P6B - air - 44.2'),
+            ('item', '4667', 'Oculus semi-vantail CR5 — vitrage P6B - air - EI² 60'),
+            ('item', '4671', 'Oculus L 200 H 2000 CR5 — vitrage P6B - air - EI² 60'),
         ],
         'autres_add': [
+            ('item', '4455', 'Judas pare-balles FB6 (compatible EI 30/60)'),
+            ('item', '4456', 'Judas pare-balles FB7 (non compatible coupe-feu)'),
             ('item', None, 'FB4 (pare-balles) — + 1 100 € TG'),
             ('item', None, 'FB6 (pare-balles) — + 3 850 € TG'),
             ('item', None, 'Joints blindage CEM — + 990 € TG / vantail'),
@@ -323,7 +364,7 @@ for perf in targets:
     ref_col, label_col = COLUMN_INDEX['serrure']
     clear_column(ws, ref_col, label_col)
     write_column(ws, ref_col, label_col, seed['serrure'])
-    for extra_col in ('garniture_int', 'garniture_ext'):
+    for extra_col in ('garniture_int', 'garniture_ext', 'vitrage'):
         if seed.get(extra_col):
             c_ref, c_lbl = COLUMN_INDEX[extra_col]
             clear_column(ws, c_ref, c_lbl)

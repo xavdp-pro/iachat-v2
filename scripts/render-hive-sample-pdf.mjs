@@ -36,13 +36,13 @@ Localisation : Type 1`
 const lineB = `BLOC-PORTE PYROPLUS 60 UN VANTAIL
 Performances coupe-feu EI² 60 minutes recto-verso
 Coefficient de transmission thermique Uw = 1,4 W/m².K
-Affaiblissement phonique Rw = 52 dB (-1;-5)
+Affaiblissement phonique Rw = 52 dB (-1;-3)
 Classement anti-effraction niveau CR3 selon normes EN 1627 - 1630
 Vantail en tôle épaisseur 20/10° double face
 Dimensions sur mesure : L 950 H 2700 Passage libre à 90°
-Soit dimensions hors-tout : L 1100 H 2779
-Réservation gros oeuvre prévoir : L 1110 H 2789
-Poids approximatif - Vantail nu : 110 kg - Bâti 39 kg
+Soit dimensions hors-tout : L 1110 H 2779
+Réservation gros oeuvre prévoir : L 1120 H 2789
+Poids approximatif - Vantail nu : 161 kg - Bâti : 39 kg
 Finition : acier galvanisé + thermolaquage classement C5 teinte RAL au choix
 Equipement fourni-posé :
 - Serrure 3 points modèle Abloy KEL 166 à sortie libre (manœuvre ext par clé uniquement)
@@ -52,7 +52,7 @@ Equipement fourni-posé :
 - Sélecteur de fermeture à bandeau pour ferme-porte TS-5000V ou TS-5000 - argent
 - Barre de seuil + plinthe automatique encastrée
 - Pions antidégondage
-- 4 paumelles avec boite à bille inox
+- 4 paumelles avec butée à bille inox
 Localisation : Type 2`
 
 const devis = {
@@ -92,7 +92,7 @@ const lines = [
     gamme: 'CR3',
     vantail: '1V',
     hauteur_mm: 2779,
-    largeur_mm: 1100,
+    largeur_mm: 1110,
     total_ligne_ht: 6863,
     prix_base_ht: 6863,
     qty: 1,
@@ -104,7 +104,7 @@ const lines = [
     gamme: 'CR3',
     vantail: '1V',
     hauteur_mm: 2779,
-    largeur_mm: 1100,
+    largeur_mm: 1110,
     total_ligne_ht: 6863,
     prix_base_ht: 6863,
     qty: 1,

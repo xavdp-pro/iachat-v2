@@ -21,6 +21,7 @@ export function groupMessagesIntoThreads(messages = []) {
   }
 
   function threadRootKey(msg) {
+    if (msg.conversation_id) return `conv:${msg.conversation_id}`
     let cur = msg
     const seen = new Set()
     while (cur?.in_reply_to && byMessageId.has(cur.in_reply_to) && !seen.has(cur.in_reply_to)) {

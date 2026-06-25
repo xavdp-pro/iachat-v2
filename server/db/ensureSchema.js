@@ -353,6 +353,38 @@ export async function ensureDbSchema() {
     `)
     console.log('✅ DB: devis_version_lines table ready')
 
+    const dvlExtraCols = [
+      ['designation_pdf_i18n', 'JSON DEFAULT NULL AFTER designation_pdf'],
+    ]
+    for (const [col, ddl] of dvlExtraCols) {
+      const [exists] = await db.query(
+        `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'devis_version_lines' AND COLUMN_NAME = ?`,
+        [col]
+      )
+      if (!exists.length) {
+        await db.query(`ALTER TABLE devis_version_lines ADD COLUMN ${col} ${ddl}`)
+        console.log(`✅ DB: devis_version_lines.${col} added`)
+      }
+    }
+
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS pdf_translation_entries (
+        id          INT AUTO_INCREMENT PRIMARY KEY,
+        fr_text     VARCHAR(500) NOT NULL,
+        en_text     VARCHAR(500) DEFAULT NULL,
+        de_text     VARCHAR(500) DEFAULT NULL,
+        category    VARCHAR(80) NOT NULL DEFAULT 'general',
+        sort_order  INT NOT NULL DEFAULT 0,
+        active      TINYINT(1) NOT NULL DEFAULT 1,
+        created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_pdf_translation_fr (fr_text),
+        INDEX idx_pdf_translation_active (active, sort_order)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `)
+    console.log('✅ DB: pdf_translation_entries table ready')
+
     // ── devis_version_comments (comments/checkpoints timeline) ───────────
     await db.query(`
       CREATE TABLE IF NOT EXISTS devis_version_comments (
@@ -703,6 +735,7 @@ export async function ensureDbSchema() {
       ['source_email_json', 'JSON DEFAULT NULL AFTER hubspot_note_id'],
       ['no_email_source', 'TINYINT(1) NOT NULL DEFAULT 0 AFTER source_email_json'],
       ['email_draft_body', 'TEXT DEFAULT NULL AFTER no_email_source'],
+      ['pdf_language', "VARCHAR(2) NOT NULL DEFAULT 'fr' AFTER currency"],
     ]
     for (const [col, ddl] of devisExtraCols) {
       const [exists] = await db.query(
@@ -715,6 +748,47 @@ export async function ensureDbSchema() {
         console.log(`✅ DB: devis.${col} added`)
       }
     }
+
+    // ── CRM contact index + mail thread cache (HubSpot ↔ Graph sync) ─────
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS crm_contacts_index (
+        id                  INT AUTO_INCREMENT PRIMARY KEY,
+        hubspot_contact_id  VARCHAR(50) NOT NULL,
+        hubspot_company_id  VARCHAR(50) DEFAULT NULL,
+        email               VARCHAR(255) NOT NULL,
+        firstname           VARCHAR(255) DEFAULT NULL,
+        lastname            VARCHAR(255) DEFAULT NULL,
+        company_name        VARCHAR(255) DEFAULT NULL,
+        indexed_at          DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uk_crm_contact_email (email),
+        KEY idx_crm_contact_hs_id (hubspot_contact_id),
+        KEY idx_crm_contact_company (hubspot_company_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `)
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS mail_thread_cache (
+        id              BIGINT AUTO_INCREMENT PRIMARY KEY,
+        mailbox         VARCHAR(255) NOT NULL,
+        contact_email   VARCHAR(255) NOT NULL,
+        threads_json    JSON NOT NULL,
+        total_messages  INT NOT NULL DEFAULT 0,
+        synced_at       DATETIME NOT NULL,
+        UNIQUE KEY uk_mailbox_contact (mailbox, contact_email),
+        KEY idx_mail_cache_synced (synced_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `)
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS mail_sync_log (
+        id                INT AUTO_INCREMENT PRIMARY KEY,
+        started_at        DATETIME NOT NULL,
+        finished_at       DATETIME DEFAULT NULL,
+        status            ENUM('running','success','partial','error') NOT NULL DEFAULT 'running',
+        contacts_indexed  INT NOT NULL DEFAULT 0,
+        threads_synced    INT NOT NULL DEFAULT 0,
+        errors_json       JSON DEFAULT NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `)
+    console.log('✅ DB: crm_contacts_index / mail_thread_cache / mail_sync_log ready')
 
     const [transportCount] = await db.query('SELECT COUNT(*) AS count FROM transport_tariffs')
     if (Number(transportCount[0]?.count || 0) === 0) {
@@ -733,6 +807,9 @@ export async function ensureDbSchema() {
       )
       console.log('✅ DB: transport_tariffs seeded from Tarifs transport.xlsx')
     }
+
+    const { loadPdfTranslationEntries } = await import('../services/pdf-translation-dictionary.js')
+    await loadPdfTranslationEntries({ force: true })
 
   } catch (err) {
     console.error('ensureDbSchema:', err.message)

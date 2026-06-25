@@ -10,8 +10,11 @@ const EQUIPMENT_COLUMNS = [
   { key: 'passeCable', label: 'Passe-câble' },
   { key: 'plinthes', label: 'Plinthe' },
   { key: 'ventouse', label: 'Ventouse' },
+  { key: 'protection', label: 'Protection' },
   { key: 'vitrage', label: 'Vitrage' },
   { key: 'judas', label: 'Judas' },
+  { key: 'trappes', label: 'Trappe' },
+  { key: 'divers', label: 'Divers' },
   { key: 'paumelle', label: 'Paumelle' },
 ]
 

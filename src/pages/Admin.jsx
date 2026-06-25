@@ -11,6 +11,7 @@ import DataEquipmentCatalog from './admin/DataEquipmentCatalog.jsx'
 import DataExchangeRates from './admin/DataExchangeRates.jsx'
 import DataQuoteNumbers from './admin/DataQuoteNumbers.jsx'
 import DataTariffKnowledge from './admin/DataTariffKnowledge.jsx'
+import DataPdfTranslations from './admin/DataPdfTranslations.jsx'
 import AppSidebar from '../components/AppSidebar.jsx'
 import AppBreadcrumbs from '../components/AppBreadcrumbs.jsx'
 import { useAppBreadcrumbs } from '../hooks/useAppBreadcrumbs.js'
@@ -18,6 +19,8 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { useAuthStore } from '../store/useAuthStore.js'
 import { useThemeStore } from '../store/useThemeStore.js'
 import api from '../api/index.js'
+import { ZrSelect } from '../ui/ZrSelect.jsx'
+import { ZrSearchableSelect } from '../ui/ZrSearchableSelect.jsx'
 
 const TAB_USERS = 'users'
 const TAB_STT = 'stt'
@@ -88,7 +91,7 @@ export default function Admin() {
   const tabParam = searchParams.get('tab')
   const dataSubParam = searchParams.get('sub')
   const activeTab = VALID_TABS.has(tabParam) ? tabParam : TAB_USERS
-  const activeDataSub = ['weight', 'equipements', 'taux-change', 'numerotation', 'tarif-nexus', 'thermolaquage'].includes(dataSubParam)
+  const activeDataSub = ['weight', 'equipements', 'taux-change', 'numerotation', 'tarif-nexus', 'thermolaquage', 'traductions-pdf'].includes(dataSubParam)
     ? dataSubParam
     : DATA_SUB_WEIGHT
   const breadcrumbs = useAppBreadcrumbs()
@@ -534,6 +537,7 @@ export default function Admin() {
                 {activeDataSub === 'numerotation' && <DataQuoteNumbers />}
                 {activeDataSub === 'tarif-nexus' && <DataTariffKnowledge mode="tarif" />}
                 {activeDataSub === 'thermolaquage' && <DataTariffKnowledge mode="thermo" />}
+                {activeDataSub === 'traductions-pdf' && <DataPdfTranslations />}
             </div>
           </section>
         )}
@@ -1001,44 +1005,49 @@ function UserModal({ user, hubspotUsers = [], hubspotUsersLoading = false, onRef
           <div className="admin-form-grid">
             <div className="chat-modal-field" style={{ marginBottom: 0 }}>
               <label className="chat-modal-label" htmlFor="adm-role">{t('admin.role')}</label>
-              <select
-                id="adm-role"
-                className="chat-modal-select"
+              <ZrSelect
+                fullWidth
+                ariaLabel={t('admin.role')}
                 value={form.role}
-                onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))}
-              >
-                <option value="user">{t('admin.roleUser')}</option>
-                <option value="admin">{t('admin.roleAdmin')}</option>
-              </select>
+                options={[
+                  { value: 'user', label: t('admin.roleUser') },
+                  { value: 'admin', label: t('admin.roleAdmin') },
+                ]}
+                onChange={(role) => setForm((f) => ({ ...f, role }))}
+              />
             </div>
             <div className="chat-modal-field" style={{ marginBottom: 0 }}>
               <label className="chat-modal-label" htmlFor="adm-active">{t('admin.accountState')}</label>
-              <select
-                id="adm-active"
-                className="chat-modal-select"
+              <ZrSelect
+                fullWidth
+                ariaLabel={t('admin.accountState')}
                 value={form.active ? '1' : '0'}
-                onChange={(e) => setForm((f) => ({ ...f, active: e.target.value === '1' }))}
-              >
-                <option value="1">{t('common.active')}</option>
-                <option value="0">{t('common.inactive')}</option>
-              </select>
+                options={[
+                  { value: '1', label: t('common.active') },
+                  { value: '0', label: t('common.inactive') },
+                ]}
+                onChange={(next) => setForm((f) => ({ ...f, active: next === '1' }))}
+              />
             </div>
           </div>
           <div className="chat-modal-field">
             <label className="chat-modal-label" htmlFor="adm-hubspot-user">Utilisateur HubSpot associé</label>
             <div style={{ display: 'flex', gap: 8 }}>
-              <select
-                id="adm-hubspot-user"
-                className="chat-modal-select"
-                value={form.hubspot_user_id || ''}
-                onChange={(e) => handleHubspotSelect(e.target.value)}
-                style={{ flex: 1 }}
-              >
-                <option value="">Aucun utilisateur HubSpot</option>
-                {hubspotUsers.map((hubspotUser) => (
-                  <option key={hubspotUser.id} value={hubspotUser.id}>{hubspotUserLabel(hubspotUser)}</option>
-                ))}
-              </select>
+              <div style={{ flex: 1 }}>
+                <ZrSearchableSelect
+                  fullWidth
+                  ariaLabel="Utilisateur HubSpot associé"
+                  value={form.hubspot_user_id || ''}
+                  options={[
+                    { value: '', label: 'Aucun utilisateur HubSpot' },
+                    ...hubspotUsers.map((hubspotUser) => ({
+                      value: String(hubspotUser.id),
+                      label: hubspotUserLabel(hubspotUser),
+                    })),
+                  ]}
+                  onChange={handleHubspotSelect}
+                />
+              </div>
               <button
                 type="button"
                 className="chat-modal-btn chat-modal-btn--secondary"

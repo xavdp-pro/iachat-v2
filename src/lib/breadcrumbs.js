@@ -19,6 +19,7 @@ const ADMIN_SUB_LABELS = {
   numerotation: 'Numérotation',
   'tarif-nexus': 'Tarif NEXUS',
   thermolaquage: 'Thermolaquage',
+  'traductions-pdf': 'Traductions PDF',
 }
 
 /**
@@ -58,7 +59,7 @@ export function buildBreadcrumbs(pathname, search = '', overrides = {}) {
       return crumbs
     }
     if (pathname === '/devis/imap-lab') {
-      crumbs.push({ label: 'Lab IMAP' })
+      crumbs.push({ label: 'Lab Mail Graph' })
       return crumbs
     }
     crumbs.push({ label: pathname.replace('/devis/', '') })

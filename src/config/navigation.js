@@ -29,7 +29,7 @@ export const COMMERCIAL_SECTIONS = [
       { label: 'Grille chiffrage', to: '/devis/grid', icon: 'LayoutGrid', param: 'prompt', placeholder: 'BP 2V RC5 2200 x 3200...' },
       { label: 'Tarifs transport', to: '/devis/transport', icon: 'Truck' },
       { label: 'Suivi validation P2', to: '/validation', icon: 'CheckCircle2' },
-      { label: 'Lab IMAP', to: '/devis/imap-lab', icon: 'FlaskConical', roles: [ROLES.ADMIN] },
+      { label: 'Lab Mail Graph', to: '/devis/imap-lab', icon: 'FlaskConical', roles: [ROLES.ADMIN] },
     ],
   },
   {
@@ -73,6 +73,7 @@ export const ADMIN_SECTIONS = [
       { label: 'Numérotation', to: '/admin?tab=data&sub=numerotation', icon: 'Hash', matchTab: 'data', matchSub: 'numerotation' },
       { label: 'Tarif NEXUS', to: '/admin?tab=data&sub=tarif-nexus', icon: 'FileSpreadsheet', matchTab: 'data', matchSub: 'tarif-nexus' },
       { label: 'Thermolaquage', to: '/admin?tab=data&sub=thermolaquage', icon: 'Palette', matchTab: 'data', matchSub: 'thermolaquage' },
+      { label: 'Traductions PDF', to: '/admin?tab=data&sub=traductions-pdf', icon: 'BookOpen', matchTab: 'data', matchSub: 'traductions-pdf' },
     ],
   },
   {

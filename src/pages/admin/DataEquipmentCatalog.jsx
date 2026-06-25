@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Loader2, Plus, RefreshCw, Save, Shield, Trash2, Upload } from 'lucide-react'
 import api from '../../api/index.js'
+import { ZrSelect } from '../../ui/ZrSelect.jsx'
 
 const emptyItem = {
   performance: 'CR4',
@@ -14,6 +15,11 @@ const emptyItem = {
   active: true,
   notes: '',
 }
+
+const ROW_KIND_OPTIONS = [
+  { value: 'item', label: 'Équipement' },
+  { value: 'section', label: 'Section' },
+]
 
 function normalizeItem(row) {
   return {
@@ -282,10 +288,16 @@ export default function DataEquipmentCatalog() {
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', fontSize: 13, color: 'var(--color-text-2)' }}>
         <span><strong>{filteredItems.length}</strong> lignes affichées</span>
         <span><strong>{activeCount}</strong> équipements actifs ({performance})</span>
-        <select value={columnFilter} onChange={e => setColumnFilter(e.target.value)} style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid var(--color-border)' }}>
-          <option value="">Toutes les colonnes</option>
-          {columns.map(col => <option key={col.id} value={col.id}>{col.label}</option>)}
-        </select>
+        <ZrSelect
+          ariaLabel="Filtrer par colonne"
+          value={columnFilter}
+          minWidth={180}
+          options={[
+            { value: '', label: 'Toutes les colonnes' },
+            ...columns.map((col) => ({ value: col.id, label: col.label })),
+          ]}
+          onChange={setColumnFilter}
+        />
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Rechercher réf, libellé…" style={{ minWidth: 220, padding: '6px 9px', borderRadius: 6, border: '1px solid var(--color-border)' }} />
       </div>
 
@@ -302,15 +314,26 @@ export default function DataEquipmentCatalog() {
             {filteredItems.map(row => (
               <tr key={row.id} style={row.row_kind === 'section' ? { background: 'rgba(99,102,241,0.06)' } : undefined}>
                 <td style={{ padding: 8 }}>
-                  <select value={row.grid_column} onChange={e => updateRow(row.id, 'grid_column', e.target.value)} style={{ padding: '6px 7px', borderRadius: 6, border: '1px solid var(--color-border)', minWidth: 130 }}>
-                    {columns.map(col => <option key={col.id} value={col.id}>{col.label}</option>)}
-                  </select>
+                  <ZrSelect
+                    size="sm"
+                    fullWidth
+                    ariaLabel="Colonne grille"
+                    value={row.grid_column}
+                    minWidth={130}
+                    options={columns.map((col) => ({ value: col.id, label: col.label }))}
+                    onChange={(next) => updateRow(row.id, 'grid_column', next)}
+                  />
                 </td>
                 <td style={{ padding: 8 }}>
-                  <select value={row.row_kind} onChange={e => updateRow(row.id, 'row_kind', e.target.value)} style={{ padding: '6px 7px', borderRadius: 6, border: '1px solid var(--color-border)' }}>
-                    <option value="item">Équipement</option>
-                    <option value="section">Section</option>
-                  </select>
+                  <ZrSelect
+                    size="sm"
+                    fullWidth
+                    ariaLabel="Type de ligne"
+                    value={row.row_kind}
+                    minWidth={120}
+                    options={ROW_KIND_OPTIONS}
+                    onChange={(next) => updateRow(row.id, 'row_kind', next)}
+                  />
                 </td>
                 <td style={{ padding: 8 }}><Input row={row} field="ref" onChange={(f, v) => updateRow(row.id, f, v)} width={70} placeholder="4120" /></td>
                 <td style={{ padding: 8 }}><Input row={row} field="label" onChange={(f, v) => updateRow(row.id, f, v)} width={280} /></td>
@@ -330,15 +353,26 @@ export default function DataEquipmentCatalog() {
             ))}
             <tr style={{ background: 'rgba(34,197,94,0.06)' }}>
               <td style={{ padding: 8 }}>
-                <select value={draft.grid_column} onChange={e => updateDraft('grid_column', e.target.value)} style={{ padding: '6px 7px', borderRadius: 6, border: '1px solid var(--color-border)', minWidth: 130 }}>
-                  {columns.map(col => <option key={col.id} value={col.id}>{col.label}</option>)}
-                </select>
+                <ZrSelect
+                  size="sm"
+                  fullWidth
+                  ariaLabel="Colonne grille"
+                  value={draft.grid_column}
+                  minWidth={130}
+                  options={columns.map((col) => ({ value: col.id, label: col.label }))}
+                  onChange={(next) => updateDraft('grid_column', next)}
+                />
               </td>
               <td style={{ padding: 8 }}>
-                <select value={draft.row_kind} onChange={e => updateDraft('row_kind', e.target.value)} style={{ padding: '6px 7px', borderRadius: 6, border: '1px solid var(--color-border)' }}>
-                  <option value="item">Équipement</option>
-                  <option value="section">Section</option>
-                </select>
+                <ZrSelect
+                  size="sm"
+                  fullWidth
+                  ariaLabel="Type de ligne"
+                  value={draft.row_kind}
+                  minWidth={120}
+                  options={ROW_KIND_OPTIONS}
+                  onChange={(next) => updateDraft('row_kind', next)}
+                />
               </td>
               <td style={{ padding: 8 }}><Input row={draft} field="ref" onChange={updateDraft} width={70} /></td>
               <td style={{ padding: 8 }}><Input row={draft} field="label" onChange={updateDraft} width={280} placeholder="Libellé équipement" /></td>

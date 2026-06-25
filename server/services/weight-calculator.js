@@ -54,11 +54,36 @@ function numberOrNull(value) {
 }
 
 function rowText(row = {}) {
+  const options = Array.isArray(row.options_json)
+    ? row.options_json
+    : (Array.isArray(row.options) ? row.options : [])
+  const optionText = options.map((o) => o?.label || o?.ref || '').join(' ')
   return [
     row.type, row.type_porte, row.designation, row.gamme, row.vantail, row.ref_base,
     row.rc, row.pb, row.cf, row.blast, row.belier, row.prison,
+    optionText,
     ...(Array.isArray(row._raw) ? row._raw : []),
   ].filter(Boolean).join(' ')
+}
+
+/** Map persisted devis line fields to weight profile matcher input. */
+export function devisLineToWeightRow(line = {}) {
+  let raw = line.raw_json
+  if (typeof raw === 'string') {
+    try { raw = JSON.parse(raw) } catch { raw = null }
+  }
+  const options = Array.isArray(line.options_json)
+    ? line.options_json
+    : (typeof line.options_json === 'string'
+      ? (() => { try { return JSON.parse(line.options_json) } catch { return [] } })()
+      : [])
+  return {
+    ...line,
+    type: line.type_porte || line.type,
+    options_json: options,
+    _raw: Array.isArray(raw) ? raw : [],
+    ...(raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}),
+  }
 }
 
 export function isChassisProduct(row = {}) {
@@ -169,6 +194,27 @@ export function resolveWeightProfile(row = {}, profiles = []) {
 }
 
 export function calculateLineWeightKg(profile, { height_mm, width_mm, qty = 1, vitrage_kg_m2 = null } = {}) {
+  const breakdown = calculateLineWeightBreakdown(profile, { height_mm, width_mm, qty: 1, vitrage_kg_m2 })
+  if (!breakdown) return null
+  const quantity = numberOrNull(qty) || 1
+  return Math.round(breakdown.total_kg * quantity * 100) / 100
+}
+
+function roundKg(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n <= 0) return null
+  return Math.round(n)
+}
+
+export function isTwoLeafDoor(line = {}) {
+  const text = [line.vantail, line.type_porte, line.designation, line.gamme].filter(Boolean).join(' ')
+  return /\b2\s*V\b/i.test(text) || /deux\s*vantaux/i.test(text)
+}
+
+/**
+ * Leaf + frame breakdown (kg) for PDF Hive-style labels.
+ */
+export function calculateLineWeightBreakdown(profile, { height_mm, width_mm, qty = 1, vitrage_kg_m2 = null } = {}) {
   if (!profile) return null
   const hMm = numberOrNull(height_mm)
   const lMm = numberOrNull(width_mm)
@@ -190,8 +236,84 @@ export function calculateLineWeightKg(profile, { height_mm, width_mm, qty = 1, v
 
   const frameWeight = Number(profile.frame_kg_m || 0) * perimeter
   const unitKg = leafWeight + frameWeight
+  if (!Number.isFinite(unitKg) || unitKg <= 0) return null
+
   const quantity = numberOrNull(qty) || 1
-  return Math.round(unitKg * quantity * 100) / 100
+  return {
+    leaf_kg: roundKg(leafWeight),
+    frame_kg: roundKg(frameWeight),
+    total_kg: Math.round(unitKg * quantity * 100) / 100,
+    profile_type_label: profile.type_label || null,
+    leaf_kg_m2: profile.leaf_kg_m2 != null ? Number(profile.leaf_kg_m2) : null,
+  }
+}
+
+export function formatPdfWeightLine(line = {}, breakdown = null, language = 'fr') {
+  if (!breakdown?.total_kg) return null
+  const leaf = breakdown.leaf_kg
+  const frame = breakdown.frame_kg
+  if (!leaf && !frame) return null
+
+  const coeffFr = breakdown.leaf_kg_m2 ? ` — ${breakdown.leaf_kg_m2} kg/m² par ouvrant` : ''
+  const coeffEn = breakdown.leaf_kg_m2 ? ` — ${breakdown.leaf_kg_m2} kg/m² per leaf` : ''
+  const coeffDe = breakdown.leaf_kg_m2 ? ` — ${breakdown.leaf_kg_m2} kg/m² pro Flügel` : ''
+
+  const twoLeaf = isTwoLeafDoor(line)
+  if (language === 'en') {
+    if (twoLeaf && leaf) {
+      const half = Math.round(leaf / 2)
+      return `Approximate weight - service leaf: ${half} kg - semi-fixed leaf: ${half} kg - frame: ${frame || 0} kg${coeffEn}`
+    }
+    return `Approximate weight - leaf: ${leaf || 0} kg - frame: ${frame || 0} kg${coeffEn}`
+  }
+  if (language === 'de') {
+    if (twoLeaf && leaf) {
+      const half = Math.round(leaf / 2)
+      return `Ungefähres Gewicht - Bedienflügel: ${half} kg - Feststellflügel: ${half} kg - Zarge: ${frame || 0} kg${coeffDe}`
+    }
+    return `Ungefähres Gewicht - Flügel: ${leaf || 0} kg - Zarge: ${frame || 0} kg${coeffDe}`
+  }
+  if (twoLeaf && leaf) {
+    const half = Math.round(leaf / 2)
+    return `Poids approximatif - Vantail de service nu : ${half} kg - Vantail semi-fixe nu : ${half} kg - Bâti : ${frame || 0} kg${coeffFr}`
+  }
+  return `Poids approximatif - Vantail nu : ${leaf || 0} kg - Bâti : ${frame || 0} kg${coeffFr}`
+}
+
+export function enrichLineWithComputedWeight(line = {}, profiles = [], options = {}) {
+  if ((line.line_section || 'products') !== 'products') return line
+  if (line._isFooter || line._isBlank) return line
+
+  const existing = Number(line.weight_kg)
+  const weightRow = devisLineToWeightRow(line)
+  const profile = resolveWeightProfile(weightRow, profiles)
+  const height_mm = line.haut_mm ?? line.hauteur_mm
+  const width_mm = line.larg_mm ?? line.largeur_mm
+  const qty = line.qty ?? line.quantite ?? 1
+  const breakdown = calculateLineWeightBreakdown(profile, {
+    height_mm,
+    width_mm,
+    qty: 1,
+    vitrage_kg_m2: options.vitrage_kg_m2 ?? null,
+  })
+
+  if (!breakdown) return line
+
+  const weight_kg = Number.isFinite(existing) && existing > 0
+    ? existing
+    : Math.round(breakdown.total_kg * (numberOrNull(qty) || 1) * 100) / 100
+
+  const weight_pdf_line = formatPdfWeightLine(weightRow, {
+    ...breakdown,
+    total_kg: weight_kg,
+  })
+
+  return {
+    ...line,
+    weight_kg,
+    weight_breakdown: breakdown,
+    weight_pdf_line,
+  }
 }
 
 export function calculateDevisWeight(rows = [], profiles = [], options = {}) {

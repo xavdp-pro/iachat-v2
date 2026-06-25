@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Loader2, Plus, RefreshCw, Save, Scale, Trash2 } from 'lucide-react'
 import api from '../../api/index.js'
+import { ZrSelect } from '../../ui/ZrSelect.jsx'
 
 const emptyProfile = {
   type_label: '',
@@ -12,6 +13,16 @@ const emptyProfile = {
   active: true,
   notes: '',
 }
+
+const PRODUCT_FAMILY_OPTIONS = [
+  { value: 'BP', label: 'BP' },
+  { value: 'CF', label: 'CF' },
+]
+
+const LEAF_FORMULA_OPTIONS = [
+  { value: '', label: 'Numérique (kg/m²)' },
+  { value: 'vitrage_surface_minus_100mm', label: 'Vitrage × surface −100 mm' },
+]
 
 const numberFields = new Set(['leaf_kg_m2', 'frame_kg_m', 'sort_order'])
 
@@ -293,18 +304,26 @@ export default function DataWeightProfiles() {
               <tr key={row.id}>
                 <td style={{ padding: 8 }}><Input row={row} field="type_label" onChange={(f, v) => updateRow(row.id, f, v)} width={220} /></td>
                 <td style={{ padding: 8 }}>
-                  <select value={row.product_family || 'BP'} onChange={e => updateRow(row.id, 'product_family', e.target.value)} style={{ padding: '6px 7px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-surface)' }}>
-                    <option value="BP">BP</option>
-                    <option value="CF">CF</option>
-                  </select>
+                  <ZrSelect
+                    size="sm"
+                    ariaLabel="Famille produit"
+                    value={row.product_family || 'BP'}
+                    minWidth={72}
+                    options={PRODUCT_FAMILY_OPTIONS}
+                    onChange={(next) => updateRow(row.id, 'product_family', next)}
+                  />
                 </td>
                 <td style={{ padding: 8 }}><Input row={row} field="leaf_kg_m2" onChange={(f, v) => updateRow(row.id, f, v)} width={80} /></td>
                 <td style={{ padding: 8 }}><Input row={row} field="frame_kg_m" onChange={(f, v) => updateRow(row.id, f, v)} width={70} /></td>
                 <td style={{ padding: 8 }}>
-                  <select value={row.leaf_formula || ''} onChange={e => updateRow(row.id, 'leaf_formula', e.target.value || null)} style={{ padding: '6px 7px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-surface)', minWidth: 180 }}>
-                    <option value="">Numérique (kg/m²)</option>
-                    <option value="vitrage_surface_minus_100mm">Vitrage × surface −100 mm</option>
-                  </select>
+                  <ZrSelect
+                    size="sm"
+                    ariaLabel="Formule vantail"
+                    value={row.leaf_formula || ''}
+                    minWidth={180}
+                    options={LEAF_FORMULA_OPTIONS}
+                    onChange={(next) => updateRow(row.id, 'leaf_formula', next || null)}
+                  />
                 </td>
                 <td style={{ padding: 8 }}><Input row={row} field="sort_order" onChange={(f, v) => updateRow(row.id, f, v)} width={50} /></td>
                 <td style={{ padding: 8 }}>
@@ -323,18 +342,26 @@ export default function DataWeightProfiles() {
             <tr style={{ background: 'rgba(99,102,241,0.06)' }}>
               <td style={{ padding: 8 }}><Input row={draft} field="type_label" onChange={updateDraft} width={220} placeholder="BP Nexus CR4" /></td>
               <td style={{ padding: 8 }}>
-                <select value={draft.product_family} onChange={e => updateDraft('product_family', e.target.value)} style={{ padding: '6px 7px', borderRadius: 6, border: '1px solid var(--color-border)' }}>
-                  <option value="BP">BP</option>
-                  <option value="CF">CF</option>
-                </select>
+                <ZrSelect
+                  size="sm"
+                  ariaLabel="Famille produit"
+                  value={draft.product_family}
+                  minWidth={72}
+                  options={PRODUCT_FAMILY_OPTIONS}
+                  onChange={(next) => updateDraft('product_family', next)}
+                />
               </td>
               <td style={{ padding: 8 }}><Input row={draft} field="leaf_kg_m2" onChange={updateDraft} width={80} /></td>
               <td style={{ padding: 8 }}><Input row={draft} field="frame_kg_m" onChange={updateDraft} width={70} /></td>
               <td style={{ padding: 8 }}>
-                <select value={draft.leaf_formula || ''} onChange={e => updateDraft('leaf_formula', e.target.value)} style={{ padding: '6px 7px', borderRadius: 6, border: '1px solid var(--color-border)', minWidth: 180 }}>
-                  <option value="">Numérique (kg/m²)</option>
-                  <option value="vitrage_surface_minus_100mm">Vitrage × surface −100 mm</option>
-                </select>
+                <ZrSelect
+                  size="sm"
+                  ariaLabel="Formule vantail"
+                  value={draft.leaf_formula || ''}
+                  minWidth={180}
+                  options={LEAF_FORMULA_OPTIONS}
+                  onChange={(next) => updateDraft('leaf_formula', next)}
+                />
               </td>
               <td style={{ padding: 8 }}><Input row={draft} field="sort_order" onChange={updateDraft} width={50} /></td>
               <td style={{ padding: 8 }}><input type="checkbox" checked={draft.active} onChange={e => updateDraft('active', e.target.checked)} /></td>

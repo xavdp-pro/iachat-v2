@@ -1,131 +1,151 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { ChevronDown, Search } from "lucide-react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { ChevronDown, Search } from 'lucide-react'
 
 export function ZrSearchableSelect({
   value,
   onChange,
   options,
   ariaLabel,
-  searchPlaceholder = "Rechercher…",
+  searchPlaceholder = 'Rechercher…',
   minWidth = 200,
   disabled = false,
   fullWidth = false,
+  size = 'md',
 }) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const rootRef = useRef(null);
-  const searchRef = useRef(null);
-  const listId = useId();
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [menuPos, setMenuPos] = useState(null)
+  const rootRef = useRef(null)
+  const triggerRef = useRef(null)
+  const searchRef = useRef(null)
+  const listId = useId()
+
+  const updateMenuPos = () => {
+    const rect = triggerRef.current?.getBoundingClientRect()
+    if (!rect) return
+    setMenuPos({
+      top: rect.bottom + 4,
+      left: rect.left,
+      width: Math.max(rect.width, minWidth, 240),
+    })
+  }
 
   useEffect(() => {
-    if (!open) return;
-    setQuery("");
-    const t = window.setTimeout(() => searchRef.current?.focus(), 50);
-    return () => window.clearTimeout(t);
-  }, [open]);
+    if (!open) return undefined
+    setQuery('')
+    const t = window.setTimeout(() => searchRef.current?.focus(), 50)
+    return () => window.clearTimeout(t)
+  }, [open])
 
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e) => {
-      if (!rootRef.current?.contains(e.target)) setOpen(false);
-    };
-    const onKey = (e) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDoc, true);
-    document.addEventListener("keydown", onKey);
+  useLayoutEffect(() => {
+    if (!open) return undefined
+    updateMenuPos()
+    const onLayout = () => updateMenuPos()
+    window.addEventListener('scroll', onLayout, true)
+    window.addEventListener('resize', onLayout)
     return () => {
-      document.removeEventListener("mousedown", onDoc, true);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
+      window.removeEventListener('scroll', onLayout, true)
+      window.removeEventListener('resize', onLayout)
+    }
+  }, [open, minWidth])
+
+  useEffect(() => {
+    if (!open) return undefined
+    const onDoc = (e) => {
+      if (!rootRef.current?.contains(e.target)) setOpen(false)
+    }
+    const onKey = (e) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc, true)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDoc, true)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
 
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return options;
-    return options.filter((o) => String(o.label).toLowerCase().includes(q));
-  }, [options, query]);
+    const q = query.trim().toLowerCase()
+    if (!q) return options
+    return options.filter((o) => String(o.label).toLowerCase().includes(q))
+  }, [options, query])
 
-  const selected = options.find((o) => String(o.value) === String(value)) ?? options[0];
-  const label = selected?.label ?? "—";
+  const selected = options.find((o) => String(o.value) === String(value)) ?? options[0]
+  const label = selected?.label ?? '—'
+  const sizeClass = size === 'sm' ? 'zr-select-trigger--sm' : ''
 
   return (
     <div
       ref={rootRef}
-      style={{ position: "relative", minWidth: fullWidth ? 0 : minWidth, width: fullWidth ? "100%" : undefined }}
+      style={{ position: 'relative', minWidth: fullWidth ? 0 : minWidth, width: fullWidth ? '100%' : undefined }}
     >
       <button
+        ref={triggerRef}
         type="button"
         disabled={disabled}
-        className="zr-select-trigger"
+        className={`zr-select-trigger ${sizeClass}`.trim()}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={listId}
         aria-label={ariaLabel}
-        onClick={() => !disabled && setOpen((o) => !o)}
+        onClick={() => {
+          if (disabled) return
+          if (!open) updateMenuPos()
+          setOpen((o) => !o)
+        }}
         style={{
-          width: "100%",
+          width: '100%',
           minWidth: fullWidth ? 0 : minWidth,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
           gap: 8,
-          cursor: disabled ? "not-allowed" : "pointer",
+          cursor: disabled ? 'not-allowed' : 'pointer',
         }}
       >
-        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{label}</span>
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{label}</span>
         <ChevronDown
-          size={16}
+          size={size === 'sm' ? 14 : 16}
           aria-hidden
+          className="zr-select-chevron"
           style={{
             flexShrink: 0,
-            opacity: 0.8,
-            transform: open ? "rotate(180deg)" : "none",
-            transition: "transform 0.15s ease",
+            opacity: 0.75,
+            transform: open ? 'rotate(180deg)' : 'none',
           }}
         />
       </button>
-      {open ? (
+      {open && menuPos ? (
         <>
           <div
-            style={{ position: "fixed", inset: 0, zIndex: 1040 }}
+            style={{ position: 'fixed', inset: 0, zIndex: 1990 }}
             aria-hidden
             onClick={() => setOpen(false)}
           />
           <div
             id={listId}
             role="listbox"
+            className="zr-select-listbox"
             style={{
-              position: "absolute",
-              top: "100%",
-              left: 0,
-              right: 0,
-              marginTop: 4,
-              zIndex: 1050,
-              borderRadius: 8,
-              border: "1px solid var(--zr-border)",
-              background: "var(--zr-surface)",
-              boxShadow: "0 12px 32px rgba(0,0,0,0.35)",
-              overflow: "hidden",
-              minWidth: Math.max(minWidth, 240),
+              position: 'fixed',
+              top: menuPos.top,
+              left: menuPos.left,
+              width: menuPos.width,
+              zIndex: 2000,
+              overflow: 'hidden',
             }}
           >
-            <div
-              style={{
-                padding: 8,
-                borderBottom: "1px solid var(--zr-border)",
-                background: "var(--zr-surface-alt)",
-              }}
-            >
-              <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+            <div className="zr-select-search-wrap">
+              <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
                 <Search
                   size={14}
                   aria-hidden
                   style={{
-                    position: "absolute",
+                    position: 'absolute',
                     left: 10,
-                    color: "var(--zr-muted)",
-                    pointerEvents: "none",
+                    color: 'var(--color-text-3)',
+                    pointerEvents: 'none',
                   }}
                 />
                 <input
@@ -134,17 +154,7 @@ export function ZrSearchableSelect({
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   placeholder={searchPlaceholder}
-                  style={{
-                    width: "100%",
-                    padding: "6px 10px 6px 32px",
-                    borderRadius: 6,
-                    border: "1px solid var(--zr-border)",
-                    background: "var(--zr-surface)",
-                    color: "var(--zr-text)",
-                    fontSize: "0.8125rem",
-                    minHeight: 34,
-                    boxSizing: "border-box",
-                  }}
+                  className="zr-select-search"
                   onClick={(e) => e.stopPropagation()}
                   onKeyDown={(e) => e.stopPropagation()}
                 />
@@ -153,51 +163,38 @@ export function ZrSearchableSelect({
             <ul
               style={{
                 maxHeight: 260,
-                overflowY: "auto",
+                overflowY: 'auto',
                 margin: 0,
                 padding: 4,
-                listStyle: "none",
+                listStyle: 'none',
               }}
             >
               {filtered.map((opt) => {
-                const isSel = String(opt.value) === String(value);
+                const isSel = String(opt.value) === String(value)
                 return (
                   <li key={String(opt.value)}>
                     <button
                       type="button"
                       role="option"
                       aria-selected={isSel}
+                      className="zr-select-option"
                       onClick={() => {
-                        onChange(String(opt.value));
-                        setOpen(false);
-                      }}
-                      style={{
-                        width: "100%",
-                        textAlign: "left",
-                        padding: "8px 10px",
-                        border: "none",
-                        borderRadius: 6,
-                        background: isSel ? "var(--zr-surface-alt)" : "transparent",
-                        color: "var(--zr-text)",
-                        fontSize: "0.875rem",
-                        cursor: "pointer",
-                        fontWeight: isSel ? 600 : 400,
+                        onChange(String(opt.value))
+                        setOpen(false)
                       }}
                     >
                       {opt.label}
                     </button>
                   </li>
-                );
+                )
               })}
               {filtered.length === 0 ? (
-                <li className="muted" style={{ padding: "12px 10px", fontSize: "0.8125rem", textAlign: "center" }}>
-                  Aucun résultat.
-                </li>
+                <li className="zr-select-empty">Aucun résultat.</li>
               ) : null}
             </ul>
           </div>
         </>
       ) : null}
     </div>
-  );
+  )
 }

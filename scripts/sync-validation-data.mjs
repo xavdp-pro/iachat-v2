@@ -10,6 +10,8 @@ import {
   JALONS,
   FILES_BLOCKERS,
   MEETING_AGENDA,
+  STATUS_BULLETIN,
+  VALIDATION_DOWNLOADS,
   jalonStats,
   openQuestions,
 } from '../src/data/armandValidationRoadmap.js'
@@ -23,6 +25,8 @@ const mergeGuide = (item) => enrichItemWithGuide(item)
 
 const payload = {
   meta: ROADMAP_META,
+  statusBulletin: STATUS_BULLETIN,
+  validationDownloads: VALIDATION_DOWNLOADS,
   jalons: JALONS.map((j) => ({
     ...j,
     items: j.items.map(mergeGuide),

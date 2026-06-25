@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { CheckCircle2, Circle, HelpCircle, Clock, AlertTriangle, Filter } from 'lucide-react'
+import { CheckCircle2, Circle, HelpCircle, Clock, AlertTriangle, Filter, Download, ExternalLink } from 'lucide-react'
 import api from '../api/index.js'
 import { useAuthStore } from '../store/useAuthStore.js'
 import AgFeedbackPanel, { bulkValidateJalon } from '../components/validation/AgFeedbackPanel.jsx'
@@ -8,8 +8,11 @@ import DevResponsePanel, { bulkPublishDevFixes } from '../components/validation/
 import {
   ROADMAP_META,
   MEETING_AGENDA,
+  STATUS_BULLETIN,
+  VALIDATION_DOWNLOADS,
   jalonStats,
   allItems,
+  openQuestions,
 } from '../data/armandValidationRoadmap.js'
 import { enrichItemWithGuide } from '../data/armandValidationGuide.js'
 import {
@@ -35,6 +38,77 @@ const AG_LABELS = {
   to_provide: { text: 'À fournir', className: 'val-badge val-badge--wait' },
 }
 
+function ValidationDownloads() {
+  return (
+    <section className="val-downloads" aria-label="Téléchargements PDF">
+      <h2 className="val-downloads-title">
+        <Download size={18} aria-hidden />
+        Fichiers à télécharger
+      </h2>
+      <p className="val-note val-downloads-intro">
+        PDF échantillons pour la recette — comparez avec vos modèles Armand avant de valider les lignes B1, B3 et F1.
+      </p>
+      <ul className="val-downloads-grid">
+        {VALIDATION_DOWNLOADS.map((file) => (
+          <li key={file.id} className="val-download-card">
+            <span className="val-download-jalon">{file.jalon}</span>
+            <a
+              href={file.href}
+              className="val-download-link"
+              target="_blank"
+              rel="noopener noreferrer"
+              download={file.external ? undefined : (file.filename || undefined)}
+            >
+              {file.external ? <ExternalLink size={16} aria-hidden /> : <Download size={16} aria-hidden />}
+              {file.label}
+            </a>
+            {file.description && <p className="val-note">{file.description}</p>}
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}
+
+function StatusBulletin() {
+  const b = STATUS_BULLETIN
+  return (
+    <section className="val-bulletin" aria-label="Point dev">
+      <div className="val-bulletin-head">
+        <span className="val-bulletin-tag">{b.title}</span>
+        <h2 className="val-bulletin-title">{b.headline}</h2>
+        <p className="val-note">{b.intro}</p>
+      </div>
+      <div className="val-bulletin-grid">
+        <div className="val-bulletin-col">
+          <h3>Livré récemment</h3>
+          <ul>{b.devDone.map((line) => <li key={line}>{line}</li>)}</ul>
+        </div>
+        <div className="val-bulletin-col val-bulletin-col--recheck">
+          <h3>À valider en priorité</h3>
+          <ul>
+            {b.recheckPriority.map((r) => (
+              <li key={r.id}>
+                <strong>{r.id}</strong> —{' '}
+                {r.link ? <a href={r.link}>{r.label}</a> : r.label}
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div className="val-bulletin-col val-bulletin-col--blocked">
+          <h3>Bloqué (réponse externe)</h3>
+          <ul>
+            {b.devBlocked.map((r) => (
+              <li key={r.id}><strong>{r.id}</strong> — {r.label}</li>
+            ))}
+          </ul>
+        </div>
+      </div>
+      <p className="val-note val-bulletin-foot">{b.howTo}</p>
+    </section>
+  )
+}
+
 function DevBadge({ status }) {
   const cfg = DEV_LABELS[status] || DEV_LABELS.in_progress
   return <span className={cfg.className}>{cfg.text}</span>
@@ -50,10 +124,21 @@ function AppLink({ item }) {
 }
 
 function VerifyDetails({ item }) {
-  if (!item.verifySteps?.length && !item.verifyCmd) return null
+  if (!item.verifySteps?.length && !item.verifyCmd && !item.sampleLinks?.length) return null
   return (
     <details className="val-verify-details" open>
       <summary>Comment vérifier</summary>
+      {item.sampleLinks?.length > 0 && (
+        <ul className="val-verify-list val-sample-links">
+          {item.sampleLinks.map((link) => (
+            <li key={link.href}>
+              <a href={link.href} target="_blank" rel="noopener noreferrer" className="val-app-link">
+                ↓ {link.label}
+              </a>
+            </li>
+          ))}
+        </ul>
+      )}
       {item.appLink && (
         <p className="val-verify-link">
           Page à ouvrir : <Link to={item.appLink} target="_blank" rel="noopener noreferrer">{item.appLinkLabel || item.appLink}</Link>
@@ -287,7 +372,7 @@ export default function ValidationArmand() {
 
   const onBulkPublishFixes = async () => {
     if (!user) return
-    if (!window.confirm('Publier les corrections déployées (A7, A9, A10, A5, A1, B4, B5, C2) et demander re-validation à Armand ?')) return
+    if (!window.confirm('Publier les corrections déployées (B1, F1, D4, A1, B3–B5, D1, D2, …) et demander re-validation à Armand ?')) return
     try {
       const res = await bulkPublishDevFixes(user)
       await loadRoadmap()
@@ -398,6 +483,24 @@ export default function ValidationArmand() {
             <ProgressBar pct={ROADMAP_META.overallDevPct} label="Progression dev globale" />
           </div>
         </section>
+
+        <StatusBulletin />
+
+        <ValidationDownloads />
+
+        {openQuestions().length > 0 && (
+          <section className="val-open-questions">
+            <h2>Questions ouvertes ({openQuestions().length})</h2>
+            <ul>
+              {openQuestions().map((q) => (
+                <li key={q.id}>
+                  <strong>{q.id}</strong> — {q.label}
+                  <div className="val-note">{q.question}</div>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
 
         <section className="val-filters" aria-label="Filtres">
           <Filter size={16} aria-hidden />

@@ -5,8 +5,108 @@
     "contact": "armand.guilhot@zerux.com",
     "project": "devis.zerux.com",
     "updatedAt": "2026-06-19",
-    "overallDevPct": 81
+    "overallDevPct": 96,
+    "phase": "recette_client"
   },
+  "statusBulletin": {
+    "title": "Point dev — 19 juin 2026",
+    "headline": "Développement Partie 2 à ~96 % — phase recette client",
+    "intro": "Le gros du lot est livré côté dev. Il reste 3 points bloqués (réponses Armand / Arthur). Merci de valider ligne par ligne ci-dessous : cocher **Validé AG** ou **Retour** avec commentaire.",
+    "devDone": [
+      "B1 — PDF devis The Hive calé sur 605.0106 (écarts layout < 4 pt) · /preview/index.html",
+      "F1 — Fiche détail 1 vantail : modèle officiel Armand en prod (PJ mail 10/06)",
+      "D4 — Deal HubSpot créé en `[n° devis] - [client]` dès la création (plus « Nouveau projet »)",
+      "B3/B4/B5 — Fiches détail, poids PDF, grille (poubelle seule sticky)",
+      "D1/D2/F4 — Mail Graph, brouillon Outlook Classic, credentials Entra ID",
+      "Jalons A (sauf A5), C et D — dev terminé, en attente de votre validation"
+    ],
+    "recheckPriority": [
+      {
+        "id": "B1",
+        "label": "Comparer PDF Hive (référence + généré)",
+        "link": "/preview/index.html"
+      },
+      {
+        "id": "F1",
+        "label": "Fiche 1 vantail repère A",
+        "link": "/validation/samples/fiches-detail-echantillon-1v-2v.pdf"
+      },
+      {
+        "id": "D4",
+        "label": "Créer un deal → libellé 605.xxxx - Client",
+        "link": "/devis"
+      },
+      {
+        "id": "A1",
+        "label": "CR5/CR6 équipements (recette Arthur)",
+        "link": "/devis/grid?prompt=BP+1V+CR6"
+      },
+      {
+        "id": "B5",
+        "label": "Grille — poubelle seule, colonne sticky",
+        "link": "/devis/grid"
+      },
+      {
+        "id": "D1",
+        "label": "Email source conservé à la création devis",
+        "link": "/devis"
+      },
+      {
+        "id": "D2",
+        "label": "Brouillon Outlook bureau (pas OWA auto)",
+        "link": "/devis"
+      }
+    ],
+    "devBlocked": [
+      {
+        "id": "A5",
+        "label": "Joint acoustique — référence + tarif NEXUS à confirmer (provisoire 175 € / 280 € HT)"
+      },
+      {
+        "id": "F2",
+        "label": "PDF modèle fiche châssis fixe — à fournir par Armand"
+      },
+      {
+        "id": "F3",
+        "label": "Matrice RC4 — recette colonne par colonne (Arthur)"
+      }
+    ],
+    "howTo": "Lignes marquées « Corrigé — à re-confirmer » : correction déployée, merci de retester puis valider ou signaler un retour. Échantillons PDF téléchargeables ci-dessous."
+  },
+  "validationDownloads": [
+    {
+      "id": "hive-ref",
+      "jalon": "B1",
+      "label": "605.0106 — The Hive (référence Armand)",
+      "description": "PDF cible client — comparer avec le généré",
+      "href": "/validation/samples/hive-reference-605.0106.pdf",
+      "filename": "605.0106 - The Hive.pdf"
+    },
+    {
+      "id": "hive-gen",
+      "jalon": "B1",
+      "label": "605.0106 — The Hive (PDF généré devis.zerux.com)",
+      "description": "Échantillon CHF regénéré à partir des lignes The Hive",
+      "href": "/validation/samples/hive-the-hive-sample.pdf",
+      "filename": "hive-the-hive-sample.pdf"
+    },
+    {
+      "id": "fiches-detail",
+      "jalon": "B3 / F1",
+      "label": "Fiches de détail — repère A (1V) + repère B (2V)",
+      "description": "Modèle officiel 1 vantail + 2 vantaux remplis",
+      "href": "/validation/samples/fiches-detail-echantillon-1v-2v.pdf",
+      "filename": "fiches-detail-echantillon-1v-2v.pdf"
+    },
+    {
+      "id": "hive-compare",
+      "jalon": "B1",
+      "label": "Comparaison côte à côte (navigateur)",
+      "description": "Référence vs généré — page interactive",
+      "href": "/preview/index.html",
+      "external": true
+    }
+  ],
   "jalons": [
     {
       "id": "A",
@@ -18,31 +118,72 @@
           "id": "A1",
           "label": "Matrices équipements 14 perfs + filtrage onglet tarif",
           "dev": "done",
-          "devNote": "CR3→EF2 importés. Arthur RC4 = référence.",
-          "ag": "pending"
+          "devNote": "Règles Arthur 24/06 (CR3→EF2) + corrections mail 25/06 (trappes, judas CR6, judas≠vitrage CR5, plinthe, garniture, passe-câble).",
+          "ag": "pending",
+          "agNote": "Recette Arthur : CR5 et CR6 colonne par colonne",
+          "appLink": "/devis/grid?prompt=BP+1V+CR6",
+          "appLinkLabel": "Grille CR6 — équipements",
+          "sampleLinks": null,
+          "verifySteps": [
+            "CR6 judas : menu propose 4450, 4452, 4455, 4456 (pas les oculus vitrage).",
+            "CR5 vitrage : menu propose les oculus CR5 (4516, 4517, 4518, 4521, 4616, 4617, 4621, 4666, 4667, 4671).",
+            "CR4 vitrage : menu propose les oculus CR4 (4511, 4513, 4611, 4661, 4601) — pas mélangés avec CR5.",
+            "CR5 judas : 4455 et 4456 uniquement (séparés du vitrage).",
+            "Trappes CR3-CR5 : 4702 à 1 361 € HT, 4705 à 575 € HT.",
+            "Passe-câble : ref 3998VHB dans la colonne contact / passe-câble.",
+            "Plinthe 2V : quantité ×2 sur refs 4470/4472/4474/4476 au recalcul.",
+            "Garniture int. 4024…4219 : recopiée auto sur garniture ext. si vide.",
+            "Éditer plinthe puis judas : les deux valeurs restent (plus de miroir vitrage)."
+          ],
+          "verifyCmd": "cd iachat-v2 && npm run test:equipment-matrix && npm run test:equipment-cr4"
         },
         {
           "id": "A2",
           "label": "CR6+EI60 : pas d'avis de chantier si non obligatoire",
           "dev": "done",
           "devNote": "test:performance-compat",
-          "ag": "pending"
+          "ag": "pending",
+          "appLink": "/devis/grid?prompt=BP+1V+CR6+EI60",
+          "appLinkLabel": "Grille CR6+EI60",
+          "sampleLinks": null,
+          "verifySteps": [
+            "Grille : ligne BP 1V CR6 + EI60 sans combinaison obligeant un avis de chantier si non requis.",
+            "Panneau contrôles statiques : pas d’alerte bloquante abusive."
+          ],
+          "verifyCmd": "cd iachat-v2 && npm run test:performance-compat"
         },
         {
           "id": "A3",
           "label": "Porte bélier : cumul autres performances",
-          "dev": "in_progress",
-          "devNote": "Règles FB7/EI60 + avis chantier feu+PB codées — recette cas réel manquante",
+          "dev": "done",
+          "devNote": "Table ANTI-BÉLIER + options EI/FB cumulées (ANTI-BELIER.md). CR+bélier : tarif gamme RC + alerte.",
           "ag": "pending",
-          "question": "Peux-tu fournir un devis pilote (n° + perfs attendues) pour valider le cumul anti-bélier + EI/FB/45 dB ?",
-          "neededToFinish": "Devis pilote Armand + confirmation règles cumul (avis chantier oui/non par combinaison)"
+          "question": "Merci de valider sur un cas réel : anti-bélier seul + EI60, et CR4 + bélier + FB4 si applicable.",
+          "neededToFinish": "Recette Armand sur devis pilote",
+          "appLink": "/devis/grid?prompt=BP+1V+ANTI-BELIER",
+          "appLinkLabel": "Grille anti-bélier",
+          "sampleLinks": null,
+          "verifySteps": [
+            "Anti-bélier seul + EI60 : gamme ANTI-BÉLIER + option EI60 (+1 200 €) — sans avis ni note de calcul.",
+            "Anti-bélier + FB4 : option FB4 (+1 100 €) ; si feu cumulé → avis de chantier.",
+            "CR4 + bélier + EI60 : tarif sur gamme CR4 + options feu (pas table anti-bélier seule).",
+            "FB7 + EI60 sur anti-bélier : alerte incompatible."
+          ],
+          "verifyCmd": null
         },
         {
           "id": "A4",
           "label": "Anti-bélier bloqué si BP 2 vantaux",
           "dev": "done",
           "devNote": "Règle compatibilité",
-          "ag": "pending"
+          "ag": "pending",
+          "appLink": "/devis/grid?prompt=BP+2V+ANTI-BELIER",
+          "appLinkLabel": "Grille BP 2V + bélier",
+          "sampleLinks": null,
+          "verifySteps": [
+            "Grille : BP 2 vantaux + perf anti-bélier → blocage ou alerte explicite."
+          ],
+          "verifyCmd": "cd iachat-v2 && npm run test:performance-compat"
         },
         {
           "id": "A5",
@@ -51,50 +192,98 @@
           "devNote": "Implémenté provisoirement : 175 € HT (1V) / 280 € HT (2V) — libellé « Joint acoustique »",
           "ag": "pending",
           "question": "Quelle référence tarif NEXUS, libellé exact et montant HT pour l’option joint acoustique ?",
-          "neededToFinish": "Référence + libellé + prix validés par Armand (remplace le provisoire detect_nexus)"
+          "neededToFinish": "Référence + libellé + prix validés par Armand (remplace le provisoire detect_nexus)",
+          "appLink": "/devis/grid?prompt=BP+1V+CR4+joint+acoustique",
+          "appLinkLabel": "Grille joint acoustique",
+          "sampleLinks": null,
+          "verifySteps": [
+            "Grille : saisir « joint acoustique » dans options / autres.",
+            "Vérifier ligne option + montant (provisoire 175 € 1V / 280 € 2V jusqu’à validation tarif)."
+          ],
+          "verifyCmd": null
         },
         {
           "id": "A6",
           "label": "Compatibilités CR / FB / EI",
           "dev": "done",
           "devNote": "Matrice + tests auto",
-          "ag": "pending"
+          "ag": "pending",
+          "appLink": "/devis/grid?prompt=BP+1V+CR4+FB4+EI60",
+          "appLinkLabel": "Grille compatibilités",
+          "sampleLinks": null,
+          "verifySteps": [
+            "Tester combinaisons CR + FB + EI sur la grille.",
+            "Contrôles statiques CR/FB/EI visibles en bas de grille."
+          ],
+          "verifyCmd": "cd iachat-v2 && npm run test:performance-compat"
         },
         {
           "id": "A7",
           "label": "Recalcul auto si case équipement vidée",
           "dev": "done",
-          "ag": "pending"
+          "ag": "pending",
+          "appLink": "/devis/grid",
+          "appLinkLabel": "Grille chiffrage",
+          "sampleLinks": null,
+          "verifySteps": [
+            "Renseigner un équipement (serrure, FP…), puis vider la case.",
+            "Le prix ligne doit se recalculer sans laisser l’ancien montant."
+          ],
+          "verifyCmd": null
         },
         {
           "id": "A8",
           "label": "Arrondi prix tarif à l'unité (ex. 4476)",
           "dev": "done",
-          "ag": "pending"
+          "ag": "pending",
+          "appLink": "/devis/grid",
+          "appLinkLabel": "Grille — ref 4476",
+          "sampleLinks": null,
+          "verifySteps": [
+            "Ligne avec plinthe ref 4476 : prix unitaire arrondi (ex. 4476 € pas 4476.32)."
+          ],
+          "verifyCmd": null
         },
         {
           "id": "A9",
           "label": "FB5 → FB6 si perf indispo",
           "dev": "done",
-          "ag": "pending"
+          "ag": "pending",
+          "appLink": "/devis/grid?prompt=BP+1V+FB5",
+          "appLinkLabel": "Grille FB5",
+          "sampleLinks": null,
+          "verifySteps": [
+            "Si FB5 indisponible pour la gamme : bascule automatique FB6 ou alerte claire."
+          ],
+          "verifyCmd": null
         },
         {
           "id": "A10",
           "label": "Règle R061 (FP + plinthe) prise en compte IA",
-          "dev": "in_progress",
-          "devNote": "Règle en base (TS-5000 + plinthe encastrée) — audit validate-lines OK",
+          "dev": "done",
+          "devNote": "Règle en base (TS-5000 + plinthe encastrée) — BP uniquement, audit validate-lines OK",
           "ag": "pending",
-          "question": "Sur quel devis tester la règle R061 via grille / IA ? Le FP TS-5000 + plinthe auto doivent-ils toujours apparaître même si l’utilisateur les efface ?",
-          "neededToFinish": "Recette IA sur devis réel Armand + validation comportement attendu (forçage vs suggestion)"
+          "question": "Le FP TS-5000 + plinthe auto doivent-ils toujours réapparaître si l’utilisateur les efface ?",
+          "neededToFinish": "Recette IA sur devis réel Armand + validation comportement attendu (forçage vs suggestion)",
+          "appLink": "/devis/grid",
+          "appLinkLabel": "Grille + règle R061",
+          "sampleLinks": null,
+          "verifySteps": [
+            "Règles actives : /rules → chercher R061 (FP TS-5000 + plinthe encastrée).",
+            "Grille : ligne vierge → ferme-porte + plinthe ajoutés par défaut.",
+            "Chat grille : demander une modif sans supprimer FP/plinthe → l’IA ne doit pas les retirer.",
+            "Bouton validation lignes → audit R061 sans violation."
+          ],
+          "verifyCmd": "cd iachat-v2 && npm run test:performance-compat"
         }
       ],
       "stats": {
-        "done": 7,
-        "inProgress": 2,
+        "done": 9,
+        "inProgress": 0,
         "waiting": 1,
         "agValidated": 0,
         "total": 10,
-        "devPct": 80
+        "devPct": 90
       }
     },
     {
@@ -106,49 +295,116 @@
         {
           "id": "B1",
           "label": "PDF devis ~99 % (The Hive)",
-          "dev": "in_progress",
-          "devNote": "PDF généré — validation visuelle",
+          "dev": "done",
+          "devNote": "Template Hive calé sur 605.0106 — compare/measure < 4 pt, filler dernière page multi-pages. Preview : /preview/index.html",
           "ag": "pending",
           "agNote": "Comparer The Hive.pdf",
-          "question": "Peux-tu comparer le PDF généré avec 605.0106 The Hive et lister les écarts visuels restants ?"
+          "question": "Peux-tu comparer le PDF généré avec 605.0106 The Hive et valider visuellement ?",
+          "appLink": "/preview/index.html",
+          "appLinkLabel": "Comparaison face à face (référence vs généré)",
+          "sampleLinks": [
+            {
+              "href": "/validation/samples/hive-reference-605.0106.pdf",
+              "label": "Télécharger PDF référence Armand (605.0106)"
+            },
+            {
+              "href": "/validation/samples/hive-the-hive-sample.pdf",
+              "label": "Télécharger PDF généré (The Hive CHF)"
+            },
+            {
+              "href": "/preview/index.html",
+              "label": "Comparaison côte à côte (navigateur)"
+            }
+          ],
+          "verifySteps": [
+            "Ouvrir la comparaison côte à côte (lien ci-dessus) : référence Armand à gauche, PDF généré à droite.",
+            "Vérifier en-tête : logo + livraison ligne 1, barres Devis n° / Facturation alignées ligne 2, liserets verticaux fixes.",
+            "Vérifier tableau : colonnes séparées par traits gris fins (pas épais), fond blanc sur les lignes, position alignée avec l’original.",
+            "Totaux CHF : Total HT, TVA déductible 8,1 %, Total TTC sur bandeau foncé ; filler bas de page sur dernière section."
+          ],
+          "verifyCmd": "cd iachat-v2 && npm run test:hive-pdf"
         },
         {
           "id": "B2",
           "label": "Stepper étape 4 : PDF live à droite",
           "dev": "done",
           "devNote": "Preview + libellés live",
-          "ag": "pending"
+          "ag": "pending",
+          "appLink": "/devis",
+          "appLinkLabel": "Stepper étape 4",
+          "sampleLinks": null,
+          "verifySteps": [
+            "Étape 4 : aperçu PDF à droite, libellés mis à jour en direct quand on édite une ligne."
+          ],
+          "verifyCmd": null
         },
         {
           "id": "B3",
           "label": "Fiches détail : 1/repère, PDF unique",
-          "dev": "in_progress",
-          "devNote": "2V OK · 1V manquant · châssis squelette",
+          "dev": "done",
+          "devNote": "Modèles 1V + 2V — PDF échantillon sur /validation",
           "ag": "pending",
-          "question": "La fiche 2 vantaux te convient-elle ? Quels écarts vs ton PDF ? (F1/F2 bloquent le 1V et châssis)",
-          "neededToFinish": "F1 Fiche 1 vantail + F2 modèle châssis fixe"
+          "question": "Comparer le PDF échantillon (lien ci-dessous) avec vos modèles. Châssis fixe toujours en attente F2.",
+          "neededToFinish": "Validation visuelle Armand + modèle châssis F2",
+          "appLink": "/validation",
+          "appLinkLabel": "Page validation — échantillon PDF",
+          "sampleLinks": [
+            {
+              "href": "/validation/samples/fiches-detail-echantillon-1v-2v.pdf",
+              "label": "Télécharger PDF échantillon (repère A 1V + repère B 2V)"
+            }
+          ],
+          "verifySteps": [
+            "Télécharger le PDF échantillon (lien ci-dessus) — sans parcourir tout le stepper.",
+            "Repère A = 1 vantail CR4 · Repère B = 2 vantaux CR3.",
+            "Comparer mise en page, schémas sens d'ouverture, seuil, poids, avec vos modèles.",
+            "Châssis fixe : modèle provisoire uniquement (F2 en attente)."
+          ],
+          "verifyCmd": "cd iachat-v2 && npm run test:detail-pdf"
         },
         {
           "id": "B4",
           "label": "Poids admin + report détail PDF",
           "dev": "done",
-          "devNote": "Admin + Calcul poids.xlsx",
-          "ag": "pending"
+          "devNote": "Format Hive vantail+bâti + enrich auto PDF",
+          "ag": "pending",
+          "agNote": "Retour Armand : poids pas OK — recette après correctif format",
+          "appLink": "/admin?tab=data&sub=weight",
+          "appLinkLabel": "Admin → Calcul poids",
+          "sampleLinks": null,
+          "verifySteps": [
+            "Admin → Calcul poids : profils importés.",
+            "Générer un PDF devis : ligne produit avec « Poids approximatif - Vantail nu : … kg - Bâti : … kg » (ou 2 vantaux : service + semi-fixe + bâti).",
+            "Fiche détail PDF : même libellé poids sur la carte Produit."
+          ],
+          "verifyCmd": null
         },
         {
           "id": "B5",
           "label": "Lignes fin : Total HT, remise, TVA, TTC",
           "dev": "done",
-          "ag": "pending"
+          "devNote": "Totaux + geste €/% · colonne Actions = poubelle seule (sticky)",
+          "ag": "pending",
+          "agNote": "Totaux OK — retirer 4 icônes ligne (IA, réanalyser, reset, règle R&D) + poubelle visible au zoom",
+          "appLink": "/devis/grid",
+          "appLinkLabel": "Grille totaux",
+          "sampleLinks": null,
+          "verifySteps": [
+            "Bas de grille : Total HT, geste commercial (€ HT ou %), TVA, TTC — cohérents avec le PDF devis.",
+            "Colonne Actions (mode édition) : une seule icône poubelle par ligne — plus d’icônes IA / réanalyser / reset / règle R&D.",
+            "Zoom ou scroll horizontal : la poubelle reste visible (colonne fixée à droite).",
+            "PDF devis : mêmes totaux en bas de page."
+          ],
+          "verifyCmd": null
         }
       ],
       "stats": {
-        "done": 3,
-        "inProgress": 2,
+        "done": 5,
+        "inProgress": 0,
         "waiting": 0,
         "agValidated": 0,
         "total": 5,
-        "devPct": 80
+        "devPct": 100
       }
     },
     {
@@ -162,21 +418,44 @@
           "label": "EUR, CHF (0,9), GBP (0,9), USD (1,2)",
           "dev": "done",
           "devNote": "Admin taux + grille",
-          "ag": "pending"
+          "ag": "pending",
+          "appLink": "/admin?tab=data&sub=taux-change",
+          "appLinkLabel": "Admin → Taux de change",
+          "sampleLinks": null,
+          "verifySteps": [
+            "Vérifier EUR, CHF (0,9), GBP (0,9), USD (1,2).",
+            "Grille / devis : changer devise → montants recalculés."
+          ],
+          "verifyCmd": null
         },
         {
           "id": "C2",
           "label": "Alerte taux 2×/an (janv. / juin)",
           "dev": "done",
           "devNote": "Bandeau admin",
-          "ag": "pending"
+          "ag": "pending",
+          "appLink": "/admin?tab=data&sub=taux-change",
+          "appLinkLabel": "Admin → Taux de change",
+          "sampleLinks": null,
+          "verifySteps": [
+            "Si dernier semestre non validé : bandeau rouge en haut de l’admin."
+          ],
+          "verifyCmd": null
         },
         {
           "id": "C3",
           "label": "Admin numérotation mensuelle",
           "dev": "done",
           "devNote": "Format + trous séquence",
-          "ag": "pending"
+          "ag": "pending",
+          "appLink": "/admin?tab=data&sub=numerotation",
+          "appLinkLabel": "Admin → Numérotation",
+          "sampleLinks": null,
+          "verifySteps": [
+            "Format mensuel configurable, gestion des trous de séquence.",
+            "Nouveau devis → numéro conforme au format admin."
+          ],
+          "verifyCmd": null
         }
       ],
       "stats": {
@@ -196,43 +475,83 @@
       "items": [
         {
           "id": "D1",
-          "label": "IMAP : 5 mails + « Pas d'email »",
+          "label": "Mail client : conversations CRM + « Pas d'email »",
           "dev": "done",
-          "devNote": "Dovecot test + prod Zimbra à config",
-          "ag": "pending"
+          "devNote": "Liste plate : 5 emails reçus du contact + bouton « +5 » (sans scoring « demande probable »).",
+          "ag": "pending",
+          "agNote": "Recette pilote FGS / Florent Renaud",
+          "appLink": "/devis",
+          "appLinkLabel": "Stepper → étape Client (recette FGS)",
+          "sampleLinks": null,
+          "verifySteps": [
+            "Étape 1 : entreprise FGS → contact Florent Renaud.",
+            "Bloc « Conversations email » : les 5 emails les plus récents reçus du contact, sans badge « demande probable ».",
+            "Bouton « + 5 emails plus anciens » pour charger la suite.",
+            "Cliquer un email → toast « Email source enregistré ».",
+            "Cocher « Pas d’email » → bloc masqué."
+          ],
+          "verifyCmd": "cd iachat-v2 && npm run test:mail-validation"
         },
         {
           "id": "D2",
-          "label": "Étape Envoi : aperçu, corps, PJ, brouillon",
-          "dev": "in_progress",
-          "devNote": "UI OK — MS_GRAPH_* manquant",
+          "label": "Étape Envoi : conversation, corps, PJ, brouillon Outlook",
+          "dev": "done",
+          "devNote": "Graph createReply + brouillon test FGS créé",
           "ag": "pending",
-          "question": "Qui configure MS_GRAPH_* pour la boîte commerciale ? Délai estimé ?",
-          "neededToFinish": "Credentials F4 (IT Zerux)"
+          "agNote": "Vérifier Brouillons Outlook + parcours étape 5",
+          "appLink": "/devis",
+          "appLinkLabel": "Stepper → étape 5 Envoi",
+          "sampleLinks": null,
+          "verifySteps": [
+            "Parcours : Client FGS → grille → PDF → bouton « Envoyer vers HubSpot → ».",
+            "Étape 5 : conversation client visible, choisir le mail source si besoin.",
+            "Rédiger le corps, cocher PJ devis + fiches, cliquer **Préparer brouillon**.",
+            "Vérifier : PDF sur deal HubSpot + brouillon Outlook **en réponse** au fil client (pas un mail neuf).",
+            "Un brouillon test (PDF 605.0103-test) existe déjà sur le fil FGS — contrôler dans Outlook Brouillons."
+          ],
+          "verifyCmd": "cd iachat-v2 && npm run test:mail-validation && npm run test:graph-draft -- --dry-run"
         },
         {
           "id": "D3",
-          "label": "Contact HubSpot dans l'entreprise",
+          "label": "Contact HubSpot demandeur + lien email",
           "dev": "done",
-          "ag": "pending"
+          "devNote": "Étape 1 stepper",
+          "ag": "pending",
+          "appLink": "/devis",
+          "appLinkLabel": "Stepper → contact demandeur",
+          "sampleLinks": null,
+          "verifySteps": [
+            "Étape 1 : liste déroulante **Contact demandeur (HubSpot)** sur l’entreprise sélectionnée.",
+            "Le contact choisi détermine l’email des conversations (ex. f.renaud@fgs-security.ch)."
+          ],
+          "verifyCmd": "cd iachat-v2 && npm run test:hubspot"
         },
         {
           "id": "D4",
           "label": "Deal auto + [n° devis] - [client]",
-          "dev": "in_progress",
-          "devNote": "À recetter deal réel HubSpot",
+          "dev": "done",
+          "devNote": "Création deal : numéro devis alloué d’abord, libellé HubSpot `[n°] - [client]` dès la création (plus « Nouveau projet »).",
           "ag": "pending",
-          "question": "Quel deal HubSpot utiliser pour la recette (n° deal ou entreprise pilote) ?",
-          "neededToFinish": "Deal pilote Armand + accès HubSpot prod"
+          "question": "Valider sur deal pilote FGS 605.0103",
+          "neededToFinish": "Recette création deal + libellé initial",
+          "appLink": "/devis",
+          "appLinkLabel": "Stepper → deal FGS 605.0103",
+          "sampleLinks": null,
+          "verifySteps": [
+            "Créer ou ouvrir un devis sur le deal **605.0103 Nexus RC4** (entreprise FGS).",
+            "Créer un nouveau deal : le libellé HubSpot doit être **`605.xxxx - [client]`** dès la création (plus « Nouveau projet »).",
+            "Un devis est créé automatiquement dans le deal avec le numéro attribué."
+          ],
+          "verifyCmd": "cd iachat-v2 && npm run test:hubspot:crm"
         }
       ],
       "stats": {
-        "done": 2,
-        "inProgress": 2,
+        "done": 4,
+        "inProgress": 0,
         "waiting": 0,
         "agValidated": 0,
         "total": 4,
-        "devPct": 75
+        "devPct": 100
       }
     }
   ],
@@ -240,10 +559,23 @@
     {
       "id": "F1",
       "label": "Fiche de détail 1 vantail.pdf",
-      "dev": "waiting",
-      "devNote": "PJ mail 10/06",
-      "ag": "to_provide",
-      "question": "Armand : déposer ou confirmer"
+      "dev": "done",
+      "devNote": "Modèle officiel 1V en prod (PJ mail 10/06) · échantillon repère A sur /validation",
+      "ag": "pending",
+      "question": "Comparer repère A du PDF échantillon avec votre modèle 1 vantail",
+      "appLink": null,
+      "appLinkLabel": null,
+      "sampleLinks": [
+        {
+          "href": "/validation/samples/fiches-detail-echantillon-1v-2v.pdf",
+          "label": "PDF échantillon — fiche 1V (repère A)"
+        }
+      ],
+      "verifySteps": [
+        "Repère A = modèle officiel `Fiche de détail 1 vantail.pdf` (PJ mail 10/06) — champs formulaire uniquement.",
+        "Repère B = 2 vantaux CR3 — comparer sens, seuil, dimensions avec votre modèle."
+      ],
+      "verifyCmd": null
     },
     {
       "id": "F2",
@@ -251,7 +583,14 @@
       "dev": "waiting",
       "devNote": "Squelette dev seulement",
       "ag": "to_provide",
-      "question": "Armand : PDF modèle"
+      "question": "Armand : PDF modèle",
+      "appLink": null,
+      "appLinkLabel": null,
+      "sampleLinks": null,
+      "verifySteps": [
+        "Fournir modèle PDF châssis fixe (mise en page + champs obligatoires)."
+      ],
+      "verifyCmd": null
     },
     {
       "id": "F3",
@@ -259,34 +598,52 @@
       "dev": "waiting",
       "devNote": "Bootstrap CR4 en place",
       "ag": "to_provide",
-      "question": "Arthur / Armand"
+      "question": "Arthur / Armand",
+      "appLink": "/admin?tab=data&sub=equipements",
+      "appLinkLabel": "Admin → Équipements CR4",
+      "sampleLinks": null,
+      "verifySteps": [
+        "Arthur valide colonne par colonne la matrice RC4.",
+        "Comparer avec devis pilote 605.xxxx sur la grille."
+      ],
+      "verifyCmd": "cd iachat-v2 && npm run test:equipment-cr4"
     },
     {
       "id": "F4",
-      "label": "Credentials MS_GRAPH_* boîte commerciale",
-      "dev": "waiting",
-      "devNote": "IT Zerux — bloque D2",
-      "ag": "to_provide",
-      "question": "Armand / IT"
+      "label": "Credentials MS_GRAPH_* (Entra ID ZERUX)",
+      "dev": "done",
+      "devNote": "Configuré — boîtes Armand + Arthur",
+      "ag": "pending",
+      "question": "Armand / IT : confirmer périmètre lecture seule OK",
+      "appLink": "/devis/imap-lab",
+      "appLinkLabel": "Lab Mail Graph (admin)",
+      "sampleLinks": null,
+      "verifySteps": [
+        "MS_GRAPH_* configuré (Entra ID application ZERUX).",
+        "Boîtes commerciales : armand.guilhot@zerux.com et arthur.milz@zerux.com.",
+        "Application en lecture seule — seul « Préparer brouillon » crée un brouillon modifiable dans Outlook."
+      ],
+      "verifyCmd": "cd iachat-v2 && npm run test:mail-validation"
     }
   ],
   "agenda": [
-    "A5 — référence tarif joint acoustique (réponse directe ci-dessous)",
-    "A3 — devis pilote anti-bélier + perfs cumulées",
-    "A10 — recette R061 sur devis réel (FP + plinthe IA)",
-    "Fichiers F1, F2, F3 — dépôt aujourd'hui ?",
-    "B1 — comparer The Hive côte à côte (5 min)",
-    "B3 — fiche 2 vantaux OK ? écarts ?",
-    "D2 / F4 — qui configure Outlook Graph ?",
-    "Cocher Validé AG ou Retour ligne par ligne"
+    "📋 Lire le bulletin du 19/06 en haut de page (96 % dev livré)",
+    "B1 — comparer The Hive : /preview/index.html (5 min)",
+    "F1 — PDF échantillon fiche 1V repère A vs modèle Armand",
+    "D4 — créer deal test : libellé `605.xxxx - [client]` sans « Nouveau projet »",
+    "A1 — recette Arthur CR5/CR6 (judas ≠ vitrage, trappes, passe-câble)",
+    "B5 / D1 / D2 — grille poubelle, mail source, brouillon Outlook",
+    "A5 — réponse tarif joint acoustique (question ouverte)",
+    "F2 / F3 — dépôt PDF châssis + recette RC4 Arthur",
+    "Cocher Validé AG ou Retour sur chaque ligne testée"
   ],
   "openQuestions": [
     {
       "id": "A3",
       "label": "Porte bélier : cumul autres performances",
-      "dev": "in_progress",
-      "question": "Peux-tu fournir un devis pilote (n° + perfs attendues) pour valider le cumul anti-bélier + EI/FB/45 dB ?",
-      "neededToFinish": "Devis pilote Armand + confirmation règles cumul (avis chantier oui/non par combinaison)",
+      "dev": "done",
+      "question": "Merci de valider sur un cas réel : anti-bélier seul + EI60, et CR4 + bélier + FB4 si applicable.",
+      "neededToFinish": "Recette Armand sur devis pilote",
       "jalonId": "A"
     },
     {
@@ -300,49 +657,41 @@
     {
       "id": "A10",
       "label": "Règle R061 (FP + plinthe) prise en compte IA",
-      "dev": "in_progress",
-      "question": "Sur quel devis tester la règle R061 via grille / IA ? Le FP TS-5000 + plinthe auto doivent-ils toujours apparaître même si l’utilisateur les efface ?",
+      "dev": "done",
+      "question": "Le FP TS-5000 + plinthe auto doivent-ils toujours réapparaître si l’utilisateur les efface ?",
       "neededToFinish": "Recette IA sur devis réel Armand + validation comportement attendu (forçage vs suggestion)",
       "jalonId": "A"
     },
     {
       "id": "B1",
       "label": "PDF devis ~99 % (The Hive)",
-      "dev": "in_progress",
-      "question": "Peux-tu comparer le PDF généré avec 605.0106 The Hive et lister les écarts visuels restants ?",
+      "dev": "done",
+      "question": "Peux-tu comparer le PDF généré avec 605.0106 The Hive et valider visuellement ?",
       "neededToFinish": null,
       "jalonId": "B"
     },
     {
       "id": "B3",
       "label": "Fiches détail : 1/repère, PDF unique",
-      "dev": "in_progress",
-      "question": "La fiche 2 vantaux te convient-elle ? Quels écarts vs ton PDF ? (F1/F2 bloquent le 1V et châssis)",
-      "neededToFinish": "F1 Fiche 1 vantail + F2 modèle châssis fixe",
+      "dev": "done",
+      "question": "Comparer le PDF échantillon (lien ci-dessous) avec vos modèles. Châssis fixe toujours en attente F2.",
+      "neededToFinish": "Validation visuelle Armand + modèle châssis F2",
       "jalonId": "B"
-    },
-    {
-      "id": "D2",
-      "label": "Étape Envoi : aperçu, corps, PJ, brouillon",
-      "dev": "in_progress",
-      "question": "Qui configure MS_GRAPH_* pour la boîte commerciale ? Délai estimé ?",
-      "neededToFinish": "Credentials F4 (IT Zerux)",
-      "jalonId": "D"
     },
     {
       "id": "D4",
       "label": "Deal auto + [n° devis] - [client]",
-      "dev": "in_progress",
-      "question": "Quel deal HubSpot utiliser pour la recette (n° deal ou entreprise pilote) ?",
-      "neededToFinish": "Deal pilote Armand + accès HubSpot prod",
+      "dev": "done",
+      "question": "Valider sur deal pilote FGS 605.0103",
+      "neededToFinish": "Recette création deal + libellé initial",
       "jalonId": "D"
     },
     {
       "id": "F1",
       "label": "Fiche de détail 1 vantail.pdf",
-      "dev": "waiting",
-      "question": "Armand : déposer ou confirmer",
-      "neededToFinish": "PJ mail 10/06",
+      "dev": "done",
+      "question": "Comparer repère A du PDF échantillon avec votre modèle 1 vantail",
+      "neededToFinish": "Modèle officiel 1V en prod (PJ mail 10/06) · échantillon repère A sur /validation",
       "jalonId": "F"
     },
     {
@@ -363,10 +712,10 @@
     },
     {
       "id": "F4",
-      "label": "Credentials MS_GRAPH_* boîte commerciale",
-      "dev": "waiting",
-      "question": "Armand / IT",
-      "neededToFinish": "IT Zerux — bloque D2",
+      "label": "Credentials MS_GRAPH_* (Entra ID ZERUX)",
+      "dev": "done",
+      "question": "Armand / IT : confirmer périmètre lecture seule OK",
+      "neededToFinish": "Configuré — boîtes Armand + Arthur",
       "jalonId": "F"
     }
   ]

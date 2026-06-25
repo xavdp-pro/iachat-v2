@@ -39,7 +39,7 @@ const apiProxy = {
   configure: configureForwardedHeaders,
 }
 
-/** Let React handle /validation — static assets stay under public/validation/*. */
+/** SPA route /validation — static assets stay at /validation/samples/* and recette.md */
 function validationAssetsPlugin() {
   return {
     name: 'validation-assets-only',
@@ -55,6 +55,30 @@ function validationAssetsPlugin() {
   }
 }
 
+/**
+ * Serve public/<section>/index.html for /<section> (trailing slash optional).
+ * Without this, Vite falls through to the SPA and React Router redirects to /.
+ */
+function staticPublicSectionPlugin(section) {
+  const base = `/${section}`
+  const indexPath = `${base}/index.html`
+  const attach = (server) => {
+    server.middlewares.use((req, _res, next) => {
+      const path = (req.url || '').split('?')[0]
+      if (path === base || path === `${base}/`) {
+        const qs = (req.url || '').includes('?') ? req.url.slice(req.url.indexOf('?')) : ''
+        req.url = indexPath + qs
+      }
+      next()
+    })
+  }
+  return {
+    name: `static-public-${section}`,
+    configureServer: attach,
+    configurePreviewServer: attach,
+  }
+}
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const publicHost = resolvePublicHost(env)
@@ -63,6 +87,7 @@ export default defineConfig(({ mode }) => {
     plugins: [
       react(),
       tailwindcss(),
+      staticPublicSectionPlugin('preview'),
       validationAssetsPlugin(),
     ],
     // Single React instance for the app + zustand / framer-motion (avoids "Invalid hook call")

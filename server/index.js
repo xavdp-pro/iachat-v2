@@ -25,12 +25,15 @@ import equipmentCatalogRoutes from './routes/equipmentCatalog.js'
 import exchangeRatesRoutes from './routes/exchangeRates.js'
 import quoteAdminRoutes from './routes/quoteAdmin.js'
 import imapRoutes from './routes/imap.js'
+import mailRoutes from './routes/mail.js'
 import outlookRoutes from './routes/outlook.js'
 import validationRoutes from './routes/validation.js'
+import pdfTranslationsRoutes from './routes/pdfTranslations.js'
 import { ensureDbSchema } from './db/ensureSchema.js'
 import { warmupMemory } from './services/memory.js'
 import { getMaintenanceSettings } from './services/appSettings.js'
 import { getClientIpInfo, isIpAllowedByMaintenanceBypass, maintenanceMode } from './middleware/maintenance.js'
+import { startMailCrmSyncScheduler } from './services/mail-crm-sync.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -89,7 +92,9 @@ app.use('/api/equipment-catalog', equipmentCatalogRoutes)
 app.use('/api/exchange-rates', exchangeRatesRoutes)
 app.use('/api/quote-admin', quoteAdminRoutes)
 app.use('/api/imap', imapRoutes)
+app.use('/api/mail', mailRoutes)
 app.use('/api/outlook', outlookRoutes)
+app.use('/api/pdf-translations', pdfTranslationsRoutes)
 app.use('/api/tts', ttsRoutes)
 
 // Health check (capabilities help verify deploy: admin Ollama UI needs GET/PUT /api/admin/ollama-settings)
@@ -107,6 +112,7 @@ ensureDbSchema()
     app.listen(PORT, '127.0.0.1', () => {
       console.log(`🚀 Express API running on :${PORT}`)
       warmupMemory() // pré-charge le modèle d'embedding fastembed
+      startMailCrmSyncScheduler()
     })
   })
   .catch((err) => {

@@ -14,7 +14,7 @@
 import { Router } from 'express'
 import { authenticate } from '../middleware/auth.js'
 import { chatCompletion, fitChatMessages, maxCompletionTokens } from '../services/ollama.js'
-import { getGlobalOllamaModel } from '../services/appSettings.js'
+import { getGlobalOllamaModel, getSetting, KEY_WEIGHT_VITRAGE_KG_M2 } from '../services/appSettings.js'
 import { parseDocument } from '../services/document-parser.js'
 import { analyzeDocument } from '../services/document-analyzer.js'
 import { searchDevisRules, searchExperiences } from '../services/memory.js'
@@ -29,6 +29,13 @@ import {
   isVersionLocked,
 } from '../lib/versionTree.js'
 import { resolveEquipmentCatalogPerformance } from '../lib/equipmentPerformance.js'
+import { collectLinePerformances } from '../lib/performanceCompatibility.js'
+import {
+  filterEquipmentOptionsByArthurRules,
+  injectStaticEquipmentOptions,
+  resolveEquipmentGridColumn,
+  GARN_INT_MIRROR_EXT_REFS,
+} from '../lib/equipment-gamme-rules.js'
 import multer from 'multer'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
@@ -39,7 +46,7 @@ import os from 'os'
 import crypto from 'crypto'
 import { attachGridMetaToRaw } from '../lib/gridRowMeta.js'
 import { persistDevisPdfPaths, saveDevisPdfBuffer } from '../services/devis-pdf-store.js'
-import { auditPerformanceCompatibility, collectLinePerformances } from '../lib/performanceCompatibility.js'
+import { enrichLineWithComputedWeight, formatPdfWeightLine, DEFAULT_WEIGHT_PROFILES } from '../services/weight-calculator.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -91,13 +98,16 @@ const EQUIPMENT_CATALOG_FILES = ['EQUIP-COMMUN.md', 'EQUIP-EI.md', 'EQUIP-FB.md'
 const COMMON_EQUIPMENT_PERFORMANCES = ['BASE', 'CR2', 'CR3', 'CR4', 'CR5', 'CR6', 'EI60', 'EI120']
 const ALL_SECURITY_PERFORMANCES = ['BASE', 'CR2', 'CR3', 'CR4', 'CR5', 'CR6', 'EI30', 'EI60', 'EI120', 'FB4', 'FB6', 'FB7', 'BLAST', 'PRISON', 'ANTI-BELIER', 'EF2']
 const EQUIPMENT_REF_SLOTS = {
-  3301: 'serrure', 4070: 'serrure', 4072: 'serrure', 4074: 'serrure', 4076: 'serrure', 4102: 'serrure', 4120: 'serrure', 4126: 'serrure', 4132: 'serrure', 4140: 'serrure', 4142: 'serrure', 4146: 'serrure', 4148: 'serrure', 4150: 'serrure', 4156: 'serrure', 4172: 'serrure', 4176: 'serrure', 4304: 'serrure',
-  4022: 'garniture', 4023: 'garniture', 4024: 'garniture', 4025: 'garniture', 4026: 'garniture', 4027: 'garniture', 4030: 'garniture', 4032: 'garniture', 4091: 'garniture', 4092: 'garniture', 4093: 'garniture', 4094: 'garniture', 4180: 'garniture', 4181: 'garniture',
-  4182: 'autres', 4185: 'contact', 4086: 'autres', 4088: 'autres',
-  3640: 'fp', 3660: 'fp', 3667: 'fp', 4928: 'fp',
-  4401: 'cremone', 4402: 'cremone',
+  3301: 'serrure', 4070: 'serrure', 4072: 'serrure', 4074: 'serrure', 4076: 'serrure', 4102: 'serrure', 4120: 'serrure', 4126: 'serrure', 4132: 'serrure', 4140: 'serrure', 4142: 'serrure', 4146: 'serrure', 4148: 'serrure', 4150: 'serrure', 4152: 'serrure', 4156: 'serrure', 4172: 'serrure', 4176: 'serrure', 4201: 'serrure', 4203: 'serrure', 4304: 'serrure',
+  4022: 'garniture', 4023: 'garniture', 4024: 'garniture', 4025: 'garniture', 4026: 'garniture', 4027: 'garniture', 4030: 'garniture', 4032: 'garniture', 4091: 'garniture', 4092: 'garniture', 4093: 'garniture', 4094: 'garniture', 4180: 'garniture', 4181: 'garniture', 4182: 'garniture',
+  4086: 'autres', 4088: 'autres',
+  3640: 'fp', 3660: 'fp', 3667: 'fp', 4928: 'fp', 3697: 'fp', 3699: 'fp', 3696: 'fp', 3680: 'fp', 3681: 'fp', 3682: 'fp', 4920: 'fp', 3622: 'fp', 3623: 'fp', 4926: 'fp', 4927: 'fp',
+  4401: 'cremone', 4402: 'cremone', 4337: 'cremone',
   4450: 'judas', 4452: 'judas', 4455: 'judas', 4456: 'judas', 4458: 'judas', 4459: 'judas',
   4472: 'plinthes', 4476: 'plinthes',
+  3921: 'ventouse', 3922: 'ventouse',
+  4496: 'protection', 4497: 'protection',
+  4702: 'trappe', 4705: 'trappe', 4711: 'trappe', 4712: 'trappe',
   4803: 'vitrage', 4806: 'vitrage', 4811: 'vitrage', 4816: 'vitrage', 4822: 'vitrage', 4829: 'vitrage', 4830: 'vitrage', 4847: 'vitrage', 4850: 'vitrage', 4860: 'vitrage',
 }
 const EQUIPMENT_REF_PERFORMANCES = {
@@ -113,7 +123,7 @@ const EQUIPMENT_REF_PERFORMANCES = {
   4172: ['CR6'],
   4176: ['CR6'],
 }
-const INACTIVE_EQUIPMENT_REFS = new Set(['4091', '4092', '4093', '4094'])
+const INACTIVE_EQUIPMENT_REFS = new Set(['4091', '4092', '4093', '4094', '4185', '4405', '4406'])
 
 function appendUniqueEquipmentLabel(items, label) {
   const list = Array.isArray(items) ? [...items] : []
@@ -712,21 +722,48 @@ function buildDevisPdfFilename(devis, versionNumber = null) {
   return `${parts.length ? parts.join(' - ') : 'devis'}.pdf`
 }
 
+function parseJsonValue(value, fallback = null) {
+  if (value == null) return fallback
+  if (typeof value === 'object') return value
+  try { return JSON.parse(value) } catch { return fallback }
+}
+
 function versionLineToPdfLine(row) {
   const grid = parseMaybeJson(row.grid_json, {})
+  const i18n = parseJsonValue(row.designation_pdf_i18n, {})
   const line = {
     ...grid,
     id: row.source_line_id || row.id,
     line_section: row.line_section || grid.line_section || 'products',
     position: row.position ?? grid.position ?? 0,
     total_ligne_ht: row.total_ligne_ht ?? grid.total_ligne_ht,
+    designation_pdf_i18n: i18n,
   }
-  if (row.designation_pdf) line.designation = row.designation_pdf
+  if (row.designation_pdf) line.designation_pdf = row.designation_pdf
+  if (i18n.fr) line.designation = i18n.fr
+  else if (row.designation_pdf) line.designation = row.designation_pdf
   return line
+}
+
+async function loadWeightProfilesForPdf() {
+  const [rows] = await db.query(
+    'SELECT * FROM door_weight_profiles WHERE active = 1 ORDER BY sort_order ASC, id ASC'
+  )
+  return rows
+}
+
+async function enrichPdfLinesWithWeights(lines = []) {
+  if (!lines.length) return lines
+  const dbProfiles = await loadWeightProfilesForPdf()
+  const profiles = dbProfiles.length ? dbProfiles : DEFAULT_WEIGHT_PROFILES
+  const vitrageRaw = await getSetting(KEY_WEIGHT_VITRAGE_KG_M2)
+  const vitrage_kg_m2 = vitrageRaw != null && vitrageRaw !== '' ? Number(vitrageRaw) : null
+  return lines.map((line) => enrichLineWithComputedWeight(line, profiles, { vitrage_kg_m2 }))
 }
 
 async function loadPdfLinesForDevis(devisId, versionId = null) {
   const numericVersionId = Number(versionId || 0)
+  let lines = []
   if (Number.isInteger(numericVersionId) && numericVersionId > 0) {
     const [versionLines] = await db.query(
       `SELECT * FROM devis_version_lines
@@ -734,17 +771,21 @@ async function loadPdfLinesForDevis(devisId, versionId = null) {
        ORDER BY FIELD(line_section, "products", "calculations", "transport"), position ASC, id ASC`,
       [numericVersionId]
     )
-    if (versionLines.length) return versionLines.map(versionLineToPdfLine)
+    if (versionLines.length) lines = versionLines.map(versionLineToPdfLine)
   }
-  const [lines] = await db.query(
-    'SELECT * FROM devis_lines WHERE devis_id = ? ORDER BY FIELD(line_section, "products", "calculations", "transport"), position ASC, id ASC',
-    [devisId]
-  )
-  return lines
+  if (!lines.length) {
+    const [dbLines] = await db.query(
+      'SELECT * FROM devis_lines WHERE devis_id = ? ORDER BY FIELD(line_section, "products", "calculations", "transport"), position ASC, id ASC',
+      [devisId]
+    )
+    lines = dbLines
+  }
+  return enrichPdfLinesWithWeights(lines)
 }
 
-function applyPdfLabelOverrides(lines = [], overrides = []) {
+function applyPdfLabelOverrides(lines = [], overrides = [], pdfLanguage = 'fr') {
   if (!Array.isArray(overrides) || !overrides.length) return lines
+  const lang = String(pdfLanguage || 'fr').trim().toLowerCase().slice(0, 2)
   const byId = new Map(
     overrides
       .filter(item => item?.line_id != null)
@@ -755,7 +796,11 @@ function applyPdfLabelOverrides(lines = [], overrides = []) {
     const lineId = Number(line.id)
     if (!byId.has(lineId)) return line
     const designation = byId.get(lineId)
-    return designation != null ? { ...line, designation } : line
+    const i18n = { ...(line.designation_pdf_i18n || {}) }
+    if (designation != null) i18n[lang] = designation
+    return designation != null
+      ? { ...line, designation_pdf: designation, designation_pdf_i18n: i18n, ...(lang === 'fr' ? { designation } : {}) }
+      : line
   })
 }
 
@@ -1451,6 +1496,7 @@ function designationTargetFacts(line = {}) {
     line.largeur_reservation_mm != null ? `Largeur réservation gros oeuvre : ${line.largeur_reservation_mm} mm` : null,
     line.serrure?.from || line.serrure?.ref || line.serrure_ref ? `Serrure : ${cleanDesignationFact(line.serrure?.from || line.serrure?.ref || line.serrure_ref)}` : null,
     line.ferme_porte?.from || line.ferme_porte?.ref || line.ferme_porte_ref ? `Ferme-porte : ${cleanDesignationFact(line.ferme_porte?.from || line.ferme_porte?.ref || line.ferme_porte_ref)}` : null,
+    line.weight_pdf_line ? line.weight_pdf_line : null,
     optionLabels.length ? `Options / remplissages détectés :\n${optionLabels.map(label => `- ${label}`).join('\n')}` : null,
     equipmentLabels.length ? `Equipements détectés :\n${equipmentLabels.map(label => `- ${label}`).join('\n')}` : null,
     Array.isArray(alerts) && alerts.length ? `Notes techniques utilisables seulement si commerciales :\n${alerts.map(alert => `- ${cleanDesignationFact(alert)}`).join('\n')}` : null,
@@ -1681,6 +1727,12 @@ function composePdfItemDesignation(line = {}) {
     if (reservationWidth != null && reservationHeight != null) lines.push(`Réservation gros-oeuvre prévoir : L ${reservationWidth} H ${reservationHeight}`)
   }
 
+  const weightLine = line.weight_pdf_line
+    || (line.weight_breakdown
+      ? formatPdfWeightLine(line, { ...line.weight_breakdown, total_kg: line.weight_kg })
+      : '')
+  if (weightLine) lines.push(weightLine)
+
   const equipmentLabels = extractPdfEquipmentLabels(line)
   const filling = equipmentLabels.find(label => /vitrage|remplissage|panneau plein/i.test(label))
   const fillingLabel = cleanPdfFillingLabel(filling)
@@ -1829,6 +1881,7 @@ router.post('/export-xlsx', async (req, res) => {
 router.post('/equipment-options', async (req, res) => {
   const row = req.body?.row || {}
   const gridColumn = req.body?.grid_column ? String(req.body.grid_column) : null
+  const catalogColumn = gridColumn ? resolveEquipmentGridColumn(gridColumn) : null
   try {
     const { options: catalog, performances: rowPerformances, source, catalog_performance: catalogPerformance } = await loadEquipmentCatalogForRow(row)
     let options = catalog
@@ -1846,9 +1899,24 @@ router.post('/equipment-options', async (req, res) => {
         section_label: entry.section_label || null,
       }))
       .sort((left, right) => String(left.ref || '').localeCompare(String(right.ref || ''), 'fr') || String(left.label || '').localeCompare(String(right.label || ''), 'fr'))
-    if (gridColumn) {
-      options = options.filter(entry => entry.grid_column === gridColumn || entry.slot === gridColumn)
+    if (catalogColumn) {
+      options = options.filter(entry => {
+        if (catalogColumn === 'passeCable') {
+          return entry.slot === 'passeCable' || /passe[\s-]?c[aâ]ble/i.test(`${entry.label || ''} ${entry.designation || ''}`)
+        }
+        if (catalogColumn === 'judas') {
+          return (entry.grid_column === 'judas' || entry.slot === 'judas')
+            || /judas|oeilleton|œilleton/i.test(`${entry.label || ''} ${entry.designation || ''}`)
+        }
+        if (catalogColumn === 'vitrage') {
+          return (entry.grid_column === 'vitrage' || entry.slot === 'vitrage')
+            || /vitrage|oculus|remplissage/i.test(`${entry.label || ''} ${entry.designation || ''}`)
+        }
+        return entry.grid_column === catalogColumn || entry.slot === catalogColumn || entry.slot === gridColumn || entry.grid_column === gridColumn
+      })
     }
+    options = injectStaticEquipmentOptions(options, row, gridColumn || catalogColumn)
+    options = filterEquipmentOptionsByArthurRules(options, row, gridColumn || catalogColumn)
     res.json({ options, performances: rowPerformances, catalog_performance: catalogPerformance, catalog_source: source })
   } catch (err) {
     res.status(500).json({ error: 'Erreur equipment-options', details: err.message })
@@ -1860,14 +1928,24 @@ router.post('/recompute-row', async (req, res) => {
   const qty = Math.max(1, parseInt(req.body?.qty) || 1)
   if (!Array.isArray(req.body?.row)) return res.status(400).json({ error: 'row (array) requis' })
   while (rowArr.length < 17) rowArr.push(null)
+  const garnIntRef = String(rowArr[13] ?? '').match(/\b([34]\d{3,4})\b/)?.[1]
+  if (garnIntRef && GARN_INT_MIRROR_EXT_REFS.has(garnIntRef)) {
+    const extVal = String(rowArr[14] ?? '').trim()
+    if (!extVal || extVal === '__NONE__') rowArr[14] = rowArr[13]
+  }
   // R061: default ferme-porte + plinthe encastrée when slots are empty (BP only, not chassis/guichet)
+  const equipmentSlots = req.body?.equipment_slots && typeof req.body.equipment_slots === 'object'
+    ? req.body.equipment_slots
+    : {}
+  const plintheSlotCleared = Object.prototype.hasOwnProperty.call(equipmentSlots, 'plinthes')
+    && !String(equipmentSlots.plinthes || '').trim()
   if (isR061EligibleRowType(rowArr[0])) {
     const fpVal = String(rowArr[15] ?? '').trim()
     const fpCleared = isEquipmentCleared(fpVal)
     if (!fpCleared && !fpVal) rowArr[15] = R061_DEFAULT_FERME_PORTE
     const autresVal = String(rowArr[16] ?? '').trim()
     const autresCleared = isEquipmentCleared(autresVal)
-    if (!autresCleared) {
+    if (!autresCleared && !plintheSlotCleared) {
       const plintheMissing = !/plinthe/i.test(autresVal)
       if (plintheMissing) {
         rowArr[16] = autresVal
@@ -2866,15 +2944,41 @@ router.get('/:id', async (req, res) => {
 
 // POST /api/devis — create a new devis
 router.post('/', async (req, res) => {
-  const { deal_id, company_id, client_name, name, source_file } = req.body
+  const {
+    deal_id,
+    company_id,
+    client_name,
+    name,
+    source_file,
+    requester_contact_id,
+    requester_contact_name,
+    source_email_json,
+    no_email_source,
+    email_draft_body,
+  } = req.body
   const conn = await db.getConnection()
   try {
     await conn.beginTransaction()
     const quoteNumber = await nextQuoteNumber(conn)
     const [result] = await conn.query(
-      `INSERT INTO devis (quote_number, deal_id, company_id, client_name, name, source_file, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [quoteNumber, deal_id || null, company_id || null, client_name || null, name || 'Nouveau devis', source_file || null, req.user.id]
+      `INSERT INTO devis (
+        quote_number, deal_id, company_id, client_name, name, source_file, created_by,
+        requester_contact_id, requester_contact_name, source_email_json, no_email_source, email_draft_body
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        quoteNumber,
+        deal_id || null,
+        company_id || null,
+        client_name || null,
+        name || 'Nouveau devis',
+        source_file || null,
+        req.user.id,
+        requester_contact_id || null,
+        requester_contact_name || null,
+        source_email_json != null ? JSON.stringify(source_email_json) : null,
+        no_email_source ? 1 : 0,
+        email_draft_body || null,
+      ]
     )
     const [rows] = await conn.query('SELECT * FROM devis WHERE id = ?', [result.insertId])
     await conn.commit()
@@ -2889,7 +2993,11 @@ router.post('/', async (req, res) => {
 
 // PUT /api/devis/:id — update devis header
 router.put('/:id', async (req, res) => {
-  const allowed = ['deal_id', 'company_id', 'client_name', 'name', 'status', 'source_file', 'analysis_json', 'validation_json', 'total_ht', 'pdf_path', 'hubspot_note_id', 'currency', 'tva_rate', 'commercial_discount_ht', 'commercial_discount_pct', 'exchange_rate', 'exchange_locked', 'requester_contact_id', 'requester_contact_name', 'source_email_json', 'no_email_source', 'email_draft_body']
+  const allowed = ['deal_id', 'company_id', 'client_name', 'name', 'status', 'source_file', 'analysis_json', 'validation_json', 'total_ht', 'pdf_path', 'hubspot_note_id', 'currency', 'pdf_language', 'tva_rate', 'commercial_discount_ht', 'commercial_discount_pct', 'exchange_rate', 'exchange_locked', 'requester_contact_id', 'requester_contact_name', 'source_email_json', 'no_email_source', 'email_draft_body']
+  if (req.body?.pdf_language !== undefined) {
+    req.body.pdf_language = String(req.body.pdf_language || 'fr').trim().toLowerCase().slice(0, 2)
+    if (!['fr', 'en', 'de'].includes(req.body.pdf_language)) req.body.pdf_language = 'fr'
+  }
   const sets = []
   const vals = []
   for (const key of allowed) {
@@ -3066,6 +3174,10 @@ router.post('/:id/sync-grid', async (req, res) => {
       if (meta.currency) {
         metaUpdates.push('currency = ?')
         metaParams.push(String(meta.currency).toUpperCase().slice(0, 3))
+      }
+      if (meta.pdf_language) {
+        metaUpdates.push('pdf_language = ?')
+        metaParams.push(String(meta.pdf_language).trim().toLowerCase().slice(0, 2))
       }
       if (meta.tva_rate != null && Number.isFinite(Number(meta.tva_rate))) {
         metaUpdates.push('tva_rate = ?')
@@ -3284,9 +3396,12 @@ router.post('/:id/pdf-preview', async (req, res) => {
     const [devisRows] = await db.query('SELECT * FROM devis WHERE id = ?', [id])
     if (!devisRows.length) return res.status(404).json({ error: 'Devis introuvable' })
     const devis = devisRows[0]
+    if (req.body?.pdf_language) {
+      devis.pdf_language = String(req.body.pdf_language).trim().toLowerCase().slice(0, 2)
+    }
     const targetVersionId = req.body?.version_id || req.query.version_id || devis.current_version_id
     const rawLines = await loadPdfLinesForDevis(id, targetVersionId)
-    const lines = applyPdfLabelOverrides(rawLines, req.body?.labels)
+    const lines = applyPdfLabelOverrides(rawLines, req.body?.labels, devis.pdf_language)
     const versionNumber = await resolveDevisVersionNumber(id, targetVersionId)
     const pdfFilename = buildDevisPdfFilename(devis, versionNumber)
     const { buildDevisNexusPdf } = await import('../devis-pdf.js')
@@ -3969,33 +4084,40 @@ router.put('/:id/versions/:vId/pdf-labels', async (req, res) => {
   const devisId = Number(req.params.id)
   const vId = Number(req.params.vId)
   const { labels, comment } = req.body
+  const pdfLang = ['fr', 'en', 'de'].includes(String(req.body?.pdf_language || 'fr').toLowerCase())
+    ? String(req.body.pdf_language).toLowerCase().slice(0, 2)
+    : 'fr'
   if (!Array.isArray(labels)) return res.status(400).json({ error: 'labels array requis' })
   try {
     await assertDevisVersionEditable(devisId, vId)
     for (const label of labels) {
       if (!label.line_id) continue
-      // Upsert into devis_version_lines
+      const text = label.designation_pdf ?? label.designation ?? null
       const [existing] = await db.query(
-        'SELECT id FROM devis_version_lines WHERE version_id = ? AND source_line_id = ?',
+        'SELECT id, designation_pdf_i18n FROM devis_version_lines WHERE version_id = ? AND source_line_id = ?',
         [vId, label.line_id]
       )
+      const i18n = parseJsonValue(existing[0]?.designation_pdf_i18n, {})
+      if (text != null) i18n[pdfLang] = text
+      const i18nJson = Object.keys(i18n).length ? JSON.stringify(i18n) : null
       if (existing.length) {
         await db.query(
-          'UPDATE devis_version_lines SET designation_pdf = ? WHERE version_id = ? AND source_line_id = ?',
-          [label.designation_pdf || null, vId, label.line_id]
+          'UPDATE devis_version_lines SET designation_pdf = ?, designation_pdf_i18n = ? WHERE version_id = ? AND source_line_id = ?',
+          [text, i18nJson, vId, label.line_id]
         )
       } else {
         await db.query(
-          `INSERT INTO devis_version_lines (version_id, source_line_id, position, line_section, grid_json, designation_pdf)
-           VALUES (?, ?, ?, ?, '{}', ?)`,
-          [vId, label.line_id, label.position ?? 0, label.line_section || 'products', label.designation_pdf || null]
+          `INSERT INTO devis_version_lines (version_id, source_line_id, position, line_section, grid_json, designation_pdf, designation_pdf_i18n)
+           VALUES (?, ?, ?, ?, '{}', ?, ?)`,
+          [vId, label.line_id, label.position ?? 0, label.line_section || 'products', text, i18nJson]
         )
       }
-      // Also update master devis_lines.designation for immediate reflect
-      await db.query(
-        'UPDATE devis_lines SET designation = ? WHERE id = ? AND devis_id = ?',
-        [label.designation_pdf || null, label.line_id, devisId]
-      )
+      if (pdfLang === 'fr' && text != null) {
+        await db.query(
+          'UPDATE devis_lines SET designation = ? WHERE id = ? AND devis_id = ?',
+          [text, label.line_id, devisId]
+        )
+      }
     }
     if (comment?.trim()) {
       await db.query(
@@ -4136,12 +4258,23 @@ router.post('/:id/send-hubspot', async (req, res) => {
     if (replyInternetMessageId) {
       try {
         const { createReplyDraftWithAttachments, isGraphConfigured } = await import('../services/microsoftGraph.js')
+        const { resolveMailbox } = await import('../services/mailbox.js')
         if (isGraphConfigured()) {
-          outlookDraft = await createReplyDraftWithAttachments({
-            internetMessageId: replyInternetMessageId,
-            bodyText: note_body || body,
-            attachments: filesToAttach.map(file => ({ filename: file.filename, buffer: file.buffer })),
-          })
+          let draftMailbox = null
+          try {
+            const ctx = resolveMailbox(req.user)
+            if (!ctx.read_only) draftMailbox = ctx.mailbox
+          } catch (mbErr) {
+            outlookError = mbErr.message
+          }
+          if (draftMailbox) {
+            outlookDraft = await createReplyDraftWithAttachments({
+              mailbox: draftMailbox,
+              internetMessageId: replyInternetMessageId,
+              bodyText: note_body || body,
+              attachments: filesToAttach.map(file => ({ filename: file.filename, buffer: file.buffer })),
+            })
+          }
         }
       } catch (err) {
         outlookError = err.message || 'Erreur création brouillon Outlook'

@@ -148,7 +148,7 @@ export default function App() {
               <Route path="/prospects" element={<Prospects />} />
               <Route path="/prospects/:id/quotes" element={<ProspectQuotes />} />
 
-              <Route path="/suivi-armand" element={<ValidationArmand />} />
+              <Route path="/suivi-armand" element={<Navigate to="/validation" replace />} />
               <Route path="/validation" element={<ValidationArmand />} />
               <Route path="/devis">
                 <Route index element={<DevisStepper />} />

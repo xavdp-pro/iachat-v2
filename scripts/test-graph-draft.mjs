@@ -34,6 +34,7 @@ if (dryRun) {
 }
 
 const draft = await createReplyDraftWithAttachments({
+  mailbox: process.env.MS_GRAPH_PREVIEW_MAILBOX || process.env.MS_GRAPH_MAILBOX || 'armand.guilhot@zerux.com',
   internetMessageId: messageId,
   bodyText: 'Test brouillon Zerux (script test:graph-draft)',
   attachments: [],

@@ -23,12 +23,18 @@ Couvre : compatibilités perf, matrices équipements, version tree, transport Su
 
 ### A1 — Matrices équipements 14 perfs + filtrage onglet tarif
 
-**Lien app :** [Admin → Équipements](https://devis.zerux.com/admin?tab=data&sub=equipements)
+**Lien app :** [Grille CR6 — équipements](https://devis.zerux.com/devis/grid?prompt=BP+1V+CR6)
 
 **Vérification :**
-- Admin → Données métier → Équipements : sélectionner une perf (ex. CR4, EI60).
-- Vérifier que la matrice affiche les refs filtrées (pas toutes les perfs mélangées).
-- Grille : ouvrir un devis RC4, onglet tarif équipement → options cohérentes avec la perf ligne.
+- CR6 judas : menu propose 4450, 4452, 4455, 4456 (pas les oculus vitrage).
+- CR5 vitrage : menu propose les oculus CR5 (4516, 4517, 4518, 4521, 4616, 4617, 4621, 4666, 4667, 4671).
+- CR4 vitrage : menu propose les oculus CR4 (4511, 4513, 4611, 4661, 4601) — pas mélangés avec CR5.
+- CR5 judas : 4455 et 4456 uniquement (séparés du vitrage).
+- Trappes CR3-CR5 : 4702 à 1 361 € HT, 4705 à 575 € HT.
+- Passe-câble : ref 3998VHB dans la colonne contact / passe-câble.
+- Plinthe 2V : quantité ×2 sur refs 4470/4472/4474/4476 au recalcul.
+- Garniture int. 4024…4219 : recopiée auto sur garniture ext. si vide.
+- Éditer plinthe puis judas : les deux valeurs restent (plus de miroir vitrage).
 
 ```bash
 cd iachat-v2 && npm run test:equipment-matrix && npm run test:equipment-cr4
@@ -51,9 +57,10 @@ cd iachat-v2 && npm run test:performance-compat
 **Lien app :** [Grille anti-bélier](https://devis.zerux.com/devis/grid?prompt=BP+1V+ANTI-BELIER)
 
 **Vérification :**
-- Grille : porte anti-bélier + option EI60 / FB4 / 45 dB selon devis pilote Armand.
-- Vérifier cumul tarif + alertes avis de chantier (feu + pare-balles).
-- Comparer montants avec tarif ANTI-BELIER.md.
+- Anti-bélier seul + EI60 : gamme ANTI-BÉLIER + option EI60 (+1 200 €) — sans avis ni note de calcul.
+- Anti-bélier + FB4 : option FB4 (+1 100 €) ; si feu cumulé → avis de chantier.
+- CR4 + bélier + EI60 : tarif sur gamme CR4 + options feu (pas table anti-bélier seule).
+- FB7 + EI60 sur anti-bélier : alerte incompatible.
 
 ### A4 — Anti-bélier bloqué si BP 2 vantaux
 
@@ -126,14 +133,16 @@ cd iachat-v2 && npm run test:performance-compat
 
 ### B1 — PDF devis ~99 % (The Hive)
 
-**Lien app :** [Stepper → étape PDF](https://devis.zerux.com/devis)
+**Lien app :** [Comparaison face à face (référence vs généré)](https://devis.zerux.com/preview/index.html)
 
 **Vérification :**
-- Nouveau devis ou devis test → étape 4 « Préparer PDF ».
-- Télécharger PDF et comparer visuellement avec 605.0106 The Hive.pdf.
+- Ouvrir la comparaison côte à côte (lien ci-dessus) : référence Armand à gauche, PDF généré à droite.
+- Vérifier en-tête : logo + livraison ligne 1, barres Devis n° / Facturation alignées ligne 2, liserets verticaux fixes.
+- Vérifier tableau : colonnes séparées par traits gris fins (pas épais), fond blanc sur les lignes, position alignée avec l’original.
+- Totaux CHF : Total HT, TVA déductible 8,1 %, Total TTC sur bandeau foncé ; filler bas de page sur dernière section.
 
 ```bash
-cd iachat-v2 && npm run test:hive-pdf /tmp/hive-sample.pdf
+cd iachat-v2 && npm run test:hive-pdf
 ```
 
 ### B2 — Stepper étape 4 : PDF live à droite
@@ -145,14 +154,16 @@ cd iachat-v2 && npm run test:hive-pdf /tmp/hive-sample.pdf
 
 ### B3 — Fiches détail : 1/repère, PDF unique
 
-**Lien app :** [Stepper → fiches détail](https://devis.zerux.com/devis)
+**Lien app :** [Page validation — échantillon PDF](https://devis.zerux.com/validation)
 
 **Vérification :**
-- Étape 4 : générer fiche détail par repère (2V OK).
-- Comparer avec PDF Armand ; 1V et châssis fixe bloqués sans F1/F2.
+- Télécharger le PDF échantillon (lien ci-dessus) — sans parcourir tout le stepper.
+- Repère A = 1 vantail CR4 · Repère B = 2 vantaux CR3.
+- Comparer mise en page, schémas sens d'ouverture, seuil, poids, avec vos modèles.
+- Châssis fixe : modèle provisoire uniquement (F2 en attente).
 
 ```bash
-cd iachat-v2 && npm run test:detail-pdf /tmp/detail-sample.pdf
+cd iachat-v2 && npm run test:detail-pdf
 ```
 
 ### B4 — Poids admin + report détail PDF
@@ -161,14 +172,17 @@ cd iachat-v2 && npm run test:detail-pdf /tmp/detail-sample.pdf
 
 **Vérification :**
 - Admin → Calcul poids : profils importés.
-- Fiche détail PDF : poids approximatif reporté sur la ligne.
+- Générer un PDF devis : ligne produit avec « Poids approximatif - Vantail nu : … kg - Bâti : … kg » (ou 2 vantaux : service + semi-fixe + bâti).
+- Fiche détail PDF : même libellé poids sur la carte Produit.
 
 ### B5 — Lignes fin : Total HT, remise, TVA, TTC
 
 **Lien app :** [Grille totaux](https://devis.zerux.com/devis/grid)
 
 **Vérification :**
-- Grille : section calculs — Total HT, remise, TVA, TTC cohérents.
+- Bas de grille : Total HT, geste commercial (€ HT ou %), TVA, TTC — cohérents avec le PDF devis.
+- Colonne Actions (mode édition) : une seule icône poubelle par ligne — plus d’icônes IA / réanalyser / reset / règle R&D.
+- Zoom ou scroll horizontal : la poubelle reste visible (colonne fixée à droite).
 - PDF devis : mêmes totaux en bas de page.
 
 ## Jalon C — Multi-devise & numérotation
@@ -198,35 +212,43 @@ cd iachat-v2 && npm run test:detail-pdf /tmp/detail-sample.pdf
 
 ## Jalon D — HubSpot, IMAP, Envoi
 
-### D1 — IMAP : 5 mails + « Pas d'email »
+### D1 — Mail client : conversations CRM + « Pas d'email »
 
-**Lien app :** [Lab IMAP](https://devis.zerux.com/devis/imap-lab)
+**Lien app :** [Stepper → étape Client (recette FGS)](https://devis.zerux.com/devis)
 
 **Vérification :**
-- Lab IMAP : 5 mails seed + option « Pas d’email » sur stepper.
+- Étape 1 : entreprise FGS → contact Florent Renaud.
+- Bloc « Conversations email » : les 5 emails les plus récents reçus du contact, sans badge « demande probable ».
+- Bouton « + 5 emails plus anciens » pour charger la suite.
+- Cliquer un email → toast « Email source enregistré ».
+- Cocher « Pas d’email » → bloc masqué.
 
 ```bash
-cd iachat-v2 && npm run test:imap
+cd iachat-v2 && npm run test:mail-validation
 ```
 
-### D2 — Étape Envoi : aperçu, corps, PJ, brouillon
+### D2 — Étape Envoi : conversation, corps, PJ, brouillon Outlook
 
-**Lien app :** [Stepper → étape Envoi](https://devis.zerux.com/devis)
+**Lien app :** [Stepper → étape 5 Envoi](https://devis.zerux.com/devis)
 
 **Vérification :**
-- Étape 5 Envoi : aperçu mail, corps éditable, PJ devis + fiches.
-- Brouillon Outlook réel nécessite MS_GRAPH_* (F4).
+- Parcours : Client FGS → grille → PDF → bouton « Envoyer vers HubSpot → ».
+- Étape 5 : conversation client visible, choisir le mail source si besoin.
+- Rédiger le corps, cocher PJ devis + fiches, cliquer **Préparer brouillon**.
+- Vérifier : PDF sur deal HubSpot + brouillon Outlook **en réponse** au fil client (pas un mail neuf).
+- Un brouillon test (PDF 605.0103-test) existe déjà sur le fil FGS — contrôler dans Outlook Brouillons.
 
 ```bash
-cd iachat-v2 && npm run test:graph-draft
+cd iachat-v2 && npm run test:mail-validation && npm run test:graph-draft -- --dry-run
 ```
 
-### D3 — Contact HubSpot dans l'entreprise
+### D3 — Contact HubSpot demandeur + lien email
 
-**Lien app :** [Stepper → client](https://devis.zerux.com/devis)
+**Lien app :** [Stepper → contact demandeur](https://devis.zerux.com/devis)
 
 **Vérification :**
-- Étape 1 : sélection entreprise HubSpot → contacts de l’entreprise listés.
+- Étape 1 : liste déroulante **Contact demandeur (HubSpot)** sur l’entreprise sélectionnée.
+- Le contact choisi détermine l’email des conversations (ex. f.renaud@fgs-security.ch).
 
 ```bash
 cd iachat-v2 && npm run test:hubspot
@@ -234,11 +256,12 @@ cd iachat-v2 && npm run test:hubspot
 
 ### D4 — Deal auto + [n° devis] - [client]
 
-**Lien app :** [Prospects HubSpot](https://devis.zerux.com/prospects)
+**Lien app :** [Stepper → deal FGS 605.0103](https://devis.zerux.com/devis)
 
 **Vérification :**
-- Créer / ouvrir devis lié deal HubSpot.
-- Titre deal auto : [n° devis] - [client].
+- Créer ou ouvrir un devis sur le deal **605.0103 Nexus RC4** (entreprise FGS).
+- Créer un nouveau deal : le libellé HubSpot doit être **`605.xxxx - [client]`** dès la création (plus « Nouveau projet »).
+- Un devis est créé automatiquement dans le deal avec le numéro attribué.
 
 ```bash
 cd iachat-v2 && npm run test:hubspot:crm
@@ -249,8 +272,8 @@ cd iachat-v2 && npm run test:hubspot:crm
 ### F1 — Fiche de détail 1 vantail.pdf
 
 **Vérification :**
-- Déposer Fiche de détail 1 vantail.pdf dans ressources/ ou confirmer chemin OneDrive.
-- Puis retester B3 génération 1V.
+- Repère A = modèle officiel `Fiche de détail 1 vantail.pdf` (PJ mail 10/06) — champs formulaire uniquement.
+- Repère B = 2 vantaux CR3 — comparer sens, seuil, dimensions avec votre modèle.
 
 ### F2 — Modèle PDF fiche châssis fixe
 
@@ -269,16 +292,17 @@ cd iachat-v2 && npm run test:hubspot:crm
 cd iachat-v2 && npm run test:equipment-cr4
 ```
 
-### F4 — Credentials MS_GRAPH_* boîte commerciale
+### F4 — Credentials MS_GRAPH_* (Entra ID ZERUX)
 
-**Lien app :** [Admin (config IT)](https://devis.zerux.com/admin?tab=maintenance)
+**Lien app :** [Lab Mail Graph (admin)](https://devis.zerux.com/devis/imap-lab)
 
 **Vérification :**
-- IT Zerux : renseigner MS_GRAPH_TENANT_ID, CLIENT_ID, CLIENT_SECRET, MAILBOX dans .env.
-- Puis retester D2 brouillon Outlook.
+- MS_GRAPH_* configuré (Entra ID application ZERUX).
+- Boîtes commerciales : armand.guilhot@zerux.com et arthur.milz@zerux.com.
+- Application en lecture seule — seul « Préparer brouillon » crée un brouillon modifiable dans Outlook.
 
 ```bash
-cd iachat-v2 && npm run test:graph-draft
+cd iachat-v2 && npm run test:mail-validation
 ```
 
 ---

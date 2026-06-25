@@ -13,10 +13,31 @@ import AppBreadcrumbs from '../components/AppBreadcrumbs.jsx'
 import { useAppBreadcrumbs } from '../hooks/useAppBreadcrumbs.js'
 import { useBreadcrumbOverrideEffect } from '../context/BreadcrumbOverrideContext.jsx'
 import { dbLineToGridRow, gridRowToLinePayload } from '../lib/devisLineMappers.js'
+import { PDF_LANGUAGE_OPTIONS, normalizePdfLanguage } from '../lib/pdfLanguages.js'
+import { ZrSelect } from '../ui/ZrSelect.jsx'
 import { buildGridXlsxPayload } from '../lib/gridXlsxPayload.js'
+import { equipmentColumnRecomputePatch, deriveEquipmentSlots, mirrorGarnitureExtPatch } from '../lib/equipmentAutresCompose.js'
 import Select from 'react-select'
 
 const EQUIPMENT_CLEARED_SENTINEL = '__NONE__'
+
+const GRID_CURRENCY_OPTIONS = [
+  { value: 'EUR', label: 'EUR — Euro' },
+  { value: 'CHF', label: 'CHF — Franc suisse' },
+  { value: 'GBP', label: 'GBP — Livre sterling' },
+  { value: 'USD', label: 'USD — Dollar US' },
+]
+
+const GRID_TVA_OPTIONS = [
+  { value: '0.20', label: '20% (France)' },
+  { value: '0.081', label: '8.1% (Suisse)' },
+  { value: '0', label: '0% (HT uniquement)' },
+]
+
+const GESTE_MODE_OPTIONS = [
+  { value: 'amount', label: '€ HT' },
+  { value: 'percent', label: '%' },
+]
 
 function isEquipmentCleared(value) {
   return String(value ?? '').trim() === EQUIPMENT_CLEARED_SENTINEL
@@ -364,6 +385,9 @@ function equipmentMatchesSlot(option, slot) {
     ventouse: /ventouse/i,
     judas: /judas|oeilleton|œilleton|oculus/i,
     paumelle: /paumelle|pivot/i,
+    protection: /protection|isorel/i,
+    divers: /divers|accessoire|but[ée]e|seuil|barre|g[âa]che|anti.?panique/i,
+    trappes: /trappe|passe.?grenade/i,
   }
   return (patterns[normalizedSlot] || /.*/).test(text)
 }
@@ -371,7 +395,7 @@ function equipmentMatchesSlot(option, slot) {
 function equipmentOptionsForSlot(options, slot) {
   const list = Array.isArray(options) ? options : []
   if (slot === 'autres') {
-    const dedicatedSlots = ['serrure', 'garniture', 'fp', 'cremone', 'vitrage', 'contact', 'passeCable', 'plinthes', 'ventouse', 'judas', 'paumelle']
+    const dedicatedSlots = ['serrure', 'garniture', 'fp', 'cremone', 'vitrage', 'contact', 'passeCable', 'plinthes', 'ventouse', 'judas', 'paumelle', 'protection', 'divers', 'trappes']
     return list.filter(option => !dedicatedSlots.some(key => equipmentMatchesSlot(option, key)))
   }
   return list.filter(option => equipmentMatchesSlot(option, slot))
@@ -388,7 +412,12 @@ const EQUIPMENT_FETCH_COLUMNS = {
   plinthe: 'plinthe',
   plinthes: 'plinthe',
   vitrage: 'vitrage',
+  judas: 'judas',
+  passeCable: 'passeCable',
+  ventouse: 'ventouse',
   protection: 'protection',
+  divers: 'autres',
+  trappes: 'trappe',
   options_serrure: 'options_serrure',
   autres: 'autres',
 }
@@ -405,10 +434,12 @@ function useEquipmentOptions(row) {
     gamme: row?.gamme || '',
     vantail: row?.vantail || '',
     ref_base: row?.ref_base || '',
+    haut_mm: row?.haut_mm ?? row?.hauteur_mm ?? row?._raw?.[2] ?? null,
+    hauteur_mm: row?.haut_mm ?? row?.hauteur_mm ?? row?._raw?.[2] ?? null,
     _raw: Array.isArray(row?._raw) ? row._raw : [],
     options: Array.isArray(row?.options) ? row.options : [],
     equip_extra: Array.isArray(row?.equip_extra) ? row.equip_extra : [],
-  }), [row?.type, row?.designation, row?.gamme, row?.vantail, row?.ref_base, row?._raw, row?.options, row?.equip_extra])
+  }), [row?.type, row?.designation, row?.gamme, row?.vantail, row?.ref_base, row?.haut_mm, row?.hauteur_mm, row?._raw, row?.options, row?.equip_extra])
 
   useEffect(() => {
     setCache({})
@@ -434,7 +465,8 @@ function useEquipmentOptions(row) {
       setCache((prev) => ({ ...prev, [key]: normalized }))
       return normalized
     } catch (err) {
-      setError(err?.error || err?.message || 'Erreur de chargement')
+      const message = err?.error || err?.details || err?.message || 'Erreur de chargement'
+      setError(message)
       return []
     } finally {
       setLoadingKey(null)
@@ -462,47 +494,68 @@ function useEquipmentOptions(row) {
   return { getOptions, isLoading, error, catalogSource, catalogPerformance, fetchOptions }
 }
 
-function EditableEquipmentText({ value, onCommit, placeholder = '—', datalistId, fetchOptions, equipmentSlot = null, options = [], loading = false, fontSize = 11, width = '100%' }) {
-  const [v, setV] = useState(value ?? '')
-  const focused = useRef(false)
-  useEffect(() => {
-    let alive = true
-    Promise.resolve().then(() => {
-      if (alive && !focused.current) setV(value ?? '')
-    })
-    return () => { alive = false }
-  }, [value])
+/** Searchable react-select for equipment columns (Arthur: restore « choisir » dropdown). */
+function EditableEquipmentSelect({ value, onCommit, placeholder = '—', fetchOptions, equipmentSlot = null, options = [], loading = false, width = '100%' }) {
+  const [opts, setOpts] = useState(options)
+  const [menuLoading, setMenuLoading] = useState(false)
 
-  const commit = () => {
-    focused.current = false
-    const trimmed = String(v || '').trim()
-    const nextValue = trimmed || EQUIPMENT_CLEARED_SENTINEL
-    const prevTrimmed = String(value ?? '').trim()
-    const prevEffective = prevTrimmed || EQUIPMENT_CLEARED_SENTINEL
-    if (nextValue !== prevEffective) onCommit(nextValue === EQUIPMENT_CLEARED_SENTINEL ? EQUIPMENT_CLEARED_SENTINEL : trimmed)
-  }
+  useEffect(() => {
+    setOpts(options)
+  }, [options])
+
+  const loadOptions = useCallback(async () => {
+    if (!fetchOptions) return
+    setMenuLoading(true)
+    try {
+      const loaded = await fetchOptions(equipmentSlot)
+      if (Array.isArray(loaded)) setOpts(loaded)
+    } finally {
+      setMenuLoading(false)
+    }
+  }, [fetchOptions, equipmentSlot])
+
+  const selectOptions = useMemo(() => {
+    const mapped = opts.map((option) => {
+      const label = formatEquipmentSuggestion(option)
+      return { value: label, label }
+    })
+    const trimmed = String(value || '').trim()
+    if (trimmed && !isEquipmentCleared(trimmed) && !mapped.some((o) => o.value === trimmed)) {
+      mapped.unshift({ value: trimmed, label: trimmed })
+    }
+    return mapped
+  }, [opts, value])
+
+  const selected = useMemo(() => {
+    const trimmed = String(value || '').trim()
+    if (!trimmed || isEquipmentCleared(trimmed)) return null
+    return selectOptions.find((o) => o.value === trimmed)
+      || { value: trimmed, label: mainEquipLabel(trimmed) || trimmed }
+  }, [selectOptions, value])
 
   return (
-    <div style={{ position: 'relative', width }}>
-      <input
-        type="text"
-        list={datalistId}
-        value={v}
-        onChange={e => setV(e.target.value)}
-        onFocus={() => { focused.current = true; fetchOptions?.(equipmentSlot) }}
-        onBlur={commit}
-        onKeyDown={e => { if (e.key === 'Enter') { e.currentTarget.blur() } }}
-        onClick={e => e.stopPropagation()}
+    <div onClick={e => e.stopPropagation()} style={{ width, minWidth: 72 }}>
+      <Select
+        value={selected}
+        options={selectOptions}
+        onChange={(opt) => {
+          if (!opt) onCommit(EQUIPMENT_CLEARED_SENTINEL)
+          else {
+            const trimmed = String(opt.value || '').trim()
+            onCommit(trimmed || EQUIPMENT_CLEARED_SENTINEL)
+          }
+        }}
+        onMenuOpen={loadOptions}
+        isClearable
+        isSearchable
         placeholder={placeholder}
-        style={{ width: '100%', background: 'transparent', border: 'none', outline: 'none', color: 'inherit', font: 'inherit', fontSize, padding: '2px 4px' }}
+        isLoading={loading || menuLoading}
+        styles={selectCellStyles}
+        menuPortalTarget={typeof document !== 'undefined' ? document.body : null}
+        menuPosition="fixed"
+        noOptionsMessage={() => (menuLoading ? 'Chargement…' : (opts.length ? 'Aucun équipement' : 'Aucun équipement — rafraîchir (F5)'))}
+        loadingMessage={() => 'Chargement…'}
       />
-      <datalist id={datalistId}>
-        {options.map((option, idx) => {
-          const label = formatEquipmentSuggestion(option)
-          return <option key={`${datalistId}-${idx}`} value={label} />
-        })}
-      </datalist>
-      {loading && <span style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', fontSize: 10, color: 'var(--color-text-3)' }}>...</span>}
     </div>
   )
 }
@@ -574,8 +627,11 @@ const EQUIPMENT_COLUMNS = [
   { key: 'passeCable', label: 'Passe-câble', minWidth: 96, fields: ['passe_cable'], pattern: /passe.?c[âa]ble|cable|câble/i },
   { key: 'plinthes', label: 'Plinthe', minWidth: 82, fields: ['plinthes'], pattern: /plinthe/i },
   { key: 'ventouse', label: 'Ventouse', minWidth: 86, fields: ['ventouse'], pattern: /ventouse/i },
+  { key: 'protection', label: 'Protection', minWidth: 100, fields: ['protection'], pattern: /protection|isorel/i },
   { key: 'vitrage', label: 'Vitrage', minWidth: 130, fields: ['vitrage', 'notes'], pattern: /remplissage|vitrage/i },
   { key: 'judas', label: 'Judas', minWidth: 82, fields: ['judas'], pattern: /judas|oculus|oeilleton|œilleton/i },
+  { key: 'trappes', label: 'Trappe', minWidth: 90, fields: ['trappe'], pattern: /trappe|passe.?grenade/i },
+  { key: 'divers', label: 'Divers', minWidth: 96, fields: ['divers'], pattern: /divers|accessoire|but[ée]e|seuil|barre|g[âa]che|anti.?panique/i },
   { key: 'paumelle', label: 'Paumelle', minWidth: 90, fields: ['paumelle'], pattern: /paumelle|pivot/i },
 ]
 
@@ -586,17 +642,24 @@ function appendOtherEquipment(rawValue, value) {
   return current ? `${current}, ${next}` : next
 }
 
+function equipmentColumnEditPatch(row, columnKey, value) {
+  if (columnKey === 'fp') return { _raw_15: value }
+  if (['vitrage', 'plinthes', 'judas', 'passeCable', 'ventouse', 'contact', 'protection', 'trappes', 'paumelle', 'divers', 'cremone'].includes(columnKey)) {
+    return equipmentColumnRecomputePatch(row, columnKey, value, EQUIPMENT_CLEARED_SENTINEL)
+  }
+  return { _raw_16: value }
+}
+
 function equipmentAdditionPatch(raw, value) {
   const text = String(value || '').trim()
   if (!text) return null
   const ref = extractRef(text)
   const fpRefs = new Set(['3640', '3660', '3667', '4928'])
-  const raw16Refs = new Set(['4185', '4401', '4402', '4450', '4452', '4455', '4456', '4458', '4459', '4470', '4472', '4474', '4476'])
   if (fpRefs.has(ref)) return { _raw_15: text }
-  if (raw16Refs.has(ref)) return { _raw_16: appendOtherEquipment(raw?.[16], text) }
   const fpColumn = EQUIPMENT_COLUMNS.find(column => column.key === 'fp')
   if (fpColumn?.pattern.test(text)) return { _raw_15: text }
-  return { _raw_16: appendOtherEquipment(raw?.[16], text) }
+  const pseudoRow = { _raw: raw, _equipmentSlots: {} }
+  return equipmentColumnRecomputePatch(pseudoRow, 'divers', text, EQUIPMENT_CLEARED_SENTINEL)
 }
 
 function hasVisibleEquipmentValue(row, column, resolved = resolveRow(row)) {
@@ -634,7 +697,7 @@ function isAcousticValue(value) {
 }
 
 function isDedicatedEquipmentText(value) {
-  return /serrure|garniture|cr[ée]mone|semi.?fixe|\bVAM\b|ferme.?porte|\bts[- ]?\d+|contact|position|reed|passe.?c[âa]ble|cable|câble|plinthe|ventouse|remplissage|vitrage|judas|oculus|oeilleton|œilleton|paumelle|pivot/i.test(String(value || ''))
+  return /serrure|garniture|cr[ée]mone|semi.?fixe|\bVAM\b|ferme.?porte|\bts[- ]?\d+|contact|position|reed|passe.?c[âa]ble|cable|câble|plinthe|ventouse|remplissage|vitrage|judas|oculus|oeilleton|œilleton|paumelle|pivot|protection|isorel|trappe|passe.?grenade/i.test(String(value || ''))
 }
 
 function optionPerformanceKey(option) {
@@ -1012,9 +1075,10 @@ export function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
   const optGarnExt = (r.options || []).find(o => /garniture ext/i.test(o.label))
   const cremone = findExtraEquipment(r, /cr[ée]mone|semi.?fixe|vam/i)
   const plinthe = findExtraEquipment(r, /plinthe/i)
+  const equipmentSlots = r._equipmentSlots || deriveEquipmentSlots(r)
   const equipmentByColumn = Object.fromEntries(EQUIPMENT_COLUMNS.map(column => [column.key, findExtraEquipment(r, column.pattern)]))
   const otherExtras = nonCremoneExtraEquipments(r)
-  const rawVitrage = stripEquipmentDisplayNoise(r._raw?.[16]) || null
+  const rawVitrage = equipmentSlots.vitrage ? stripEquipmentDisplayNoise(equipmentSlots.vitrage) : null
   const vitrageLabel = stripEquipmentDisplayNoise(optVitrage?.label || optVitrage?.designation || optVitrage?.name) || rawVitrage
   const vitrageRef = extractOptionRef(optVitrage) || extractRef(rawVitrage) || extractRef(r.vitrage_ref) || chassisFillingRefFromText(r, vitrageLabel)
   const vitrageNote = stripEquipmentDisplayNoise(optVitrage?.note || optVitrage?.description)
@@ -1065,8 +1129,8 @@ export function resolveRow(r, change = 1, tva = 0.2, multGlobal = 1) {
     _cremoneLabel: cremone?.label || null,
     _cremoneNote: cremone?.note || null,
     _cremonePrix: cremone?.prix ?? null,
-    _plintheRef: extractRef(plinthe?.ref) || extractRef(plinthe?.note) || extractRef(plinthe?.label),
-    _plintheLabel: plinthe?.label || null,
+    _plintheRef: extractRef(plinthe?.ref) || extractRef(plinthe?.note) || extractRef(plinthe?.label) || extractRef(equipmentSlots.plinthes),
+    _plintheLabel: equipmentSlots.plinthes || plinthe?.label || null,
     _plintheNote: plinthe?.note || null,
     _plinthePrix: plinthe?.prix ?? null,
     _otherExtras: otherExtras,
@@ -1357,6 +1421,36 @@ const stickyLocalisationStyle = {
 const stickyLocalisationHeaderStyle = {
   ...stickyLocalisationStyle,
   zIndex: 5,
+}
+
+const stickyActionsColumnStyle = {
+  position: 'sticky',
+  right: 0,
+  zIndex: 3,
+  background: 'var(--color-surface)',
+  boxShadow: '-1px 0 0 var(--color-border)',
+}
+
+const stickyActionsColumnHeaderStyle = {
+  ...stickyActionsColumnStyle,
+  zIndex: 5,
+}
+
+const rowDeleteButtonStyle = {
+  width: 28,
+  height: 28,
+  minWidth: 28,
+  minHeight: 28,
+  flexShrink: 0,
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  border: 'none',
+  background: 'transparent',
+  color: '#a33c3c',
+  cursor: 'pointer',
+  borderRadius: 4,
+  padding: 0,
 }
 
 function amountEuro(value) {
@@ -2103,7 +2197,7 @@ function ValidationSummaryModal({ report, onClose, onReviewLine }) {
 }
 
 // ─── Composant ligne principale ──────────────────────────────────────────────
-function MainRow({ row, index, displayIndex = index, expanded, onToggle, change, tva, multGlobal, editMode, onUpdate, onRecompute, onDelete, onSaveAsRule, onVerifyRules, onReanalyze, onResetOverrides, assistantHighlight = null, validationKnowledge = null, hiddenCols = new Set(), hiddenDimensionCols = new Set(), visibleEquipmentColumns = [], showOtherEquipmentColumn = true, formatMoney = null }) {
+function MainRow({ row, index, displayIndex = index, expanded, onToggle, change, tva, multGlobal, editMode, onUpdate, onRecompute, onDelete, assistantHighlight = null, hiddenCols = new Set(), hiddenDimensionCols = new Set(), visibleEquipmentColumns = [], showOtherEquipmentColumn = true, formatMoney = null }) {
   const [perfPopoverAnchor, setPerfPopoverAnchor] = useState(null)
   const r = resolveRow(row, change, tva, multGlobal)
   const qty = Number.isFinite(r.qty) ? r.qty : 1
@@ -2111,7 +2205,6 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
   const dimensionHiddenStyle = (key) => hiddenDimensionCols.has(key) ? { display: 'none' } : {}
   const ruleSummary = row._ruleCheck?.summary || null
   const ruleIssues = blockingVerdicts(row)
-  const ruleStale = isRuleCheckStale(row._ruleCheck, validationKnowledge)
   const { getOptions, isLoading, catalogSource, catalogPerformance, fetchOptions: fetchEquipmentOptions } = useEquipmentOptions(row)
   const equipmentSuggestions = useMemo(() => ({
     serrure: getOptions('serrure'),
@@ -2421,25 +2514,25 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
       {/* Serrure */}
       <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 80, ...assistantCellStyle('serrure') }}>
         {editMode
-          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentText value={mainEquipLabel(row._raw?.[12] ?? r._serrureLabel ?? '')} onCommit={v => onRecompute?.({ _raw_12: v })} placeholder="serrure…" datalistId={`equipment-suggestions-${displayIndex}-serrure`} equipmentSlot="serrure" fetchOptions={fetchEquipmentOptions} options={equipmentSuggestions.serrure} loading={equipmentOptionsLoading('serrure')} />)
+          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentSelect value={mainEquipLabel(row._raw?.[12] ?? r._serrureLabel ?? '')} onCommit={v => onRecompute?.({ _raw_12: v })} placeholder="serrure…" equipmentSlot="serrure" fetchOptions={fetchEquipmentOptions} options={equipmentSuggestions.serrure} loading={equipmentOptionsLoading('serrure')} />)
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{mainEquipLabel(row._raw?.[12] || r._serrureLabel) || '—'}</span>}
       </Td>
       {/* Garn int */}
       <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 70, ...assistantCellStyle('garniture_int') }}>
         {editMode
-          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentText value={mainEquipLabel(row._raw?.[13] ?? r._garnIntLabel ?? '')} onCommit={v => onRecompute?.({ _raw_13: v })} placeholder="garn. int…" datalistId={`equipment-suggestions-${displayIndex}-garn_int`} equipmentSlot="garniture_int" fetchOptions={fetchEquipmentOptions} options={equipmentSuggestions.garniture_int} loading={equipmentOptionsLoading('garniture_int')} />)
+          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentSelect value={mainEquipLabel(row._raw?.[13] ?? r._garnIntLabel ?? '')} onCommit={v => onRecompute?.({ _raw_13: v, ...mirrorGarnitureExtPatch(v) })} placeholder="garn. int…" equipmentSlot="garniture_int" fetchOptions={fetchEquipmentOptions} options={equipmentSuggestions.garniture_int} loading={equipmentOptionsLoading('garniture_int')} />)
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{mainEquipLabel(row._raw?.[13] || r._garnIntLabel) || '—'}</span>}
       </Td>
       {/* Garn ext */}
       <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 70, ...assistantCellStyle('garniture_ext') }}>
         {editMode
-          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentText value={mainEquipLabel(row._raw?.[14] ?? r._garnExtLabel ?? '')} onCommit={v => onRecompute?.({ _raw_14: v })} placeholder="garn. ext…" datalistId={`equipment-suggestions-${displayIndex}-garn_ext`} equipmentSlot="garniture_ext" fetchOptions={fetchEquipmentOptions} options={equipmentSuggestions.garniture_ext} loading={equipmentOptionsLoading('garniture_ext')} />)
+          ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentSelect value={mainEquipLabel(row._raw?.[14] ?? r._garnExtLabel ?? '')} onCommit={v => onRecompute?.({ _raw_14: v })} placeholder="garn. ext…" equipmentSlot="garniture_ext" fetchOptions={fetchEquipmentOptions} options={equipmentSuggestions.garniture_ext} loading={equipmentOptionsLoading('garniture_ext')} />)
           : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>{mainEquipLabel(row._raw?.[14] || r._garnExtLabel) || '—'}</span>}
       </Td>
       {showOtherEquipmentColumn && (
         <Td palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: 140, ...assistantCellStyle('autres') }}>
           {editMode
-            ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentText value="" onCommit={v => { const patch = equipmentAdditionPatch(row._raw, v); if (patch) onRecompute?.(patch) }} placeholder="ajouter équip…" datalistId={`equipment-suggestions-${displayIndex}-autres`} equipmentSlot="autres" fetchOptions={fetchEquipmentOptions} options={equipmentSuggestions.autres} loading={equipmentOptionsLoading('autres')} />)
+            ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentSelect value="" onCommit={v => { const patch = equipmentAdditionPatch(row._raw, v); if (patch) onRecompute?.(patch) }} placeholder="ajouter équip…" equipmentSlot="autres" fetchOptions={fetchEquipmentOptions} options={equipmentSuggestions.autres} loading={equipmentOptionsLoading('autres')} />)
             : (row._overrideAutres !== undefined
                 ? (row._overrideAutres ? <span style={{ fontSize: 11, padding: '2px 4px', display: 'inline-block', fontWeight: 600, color: 'var(--color-text-2)' }}>{row._overrideAutres}</span> : <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', color: 'var(--color-text-2)' }}>—</span>)
                 : (r._otherExtras?.length ? (
@@ -2461,12 +2554,20 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
         const label = column.key === 'vitrage' ? r._vitrageLabel : column.key === 'fp' ? (row._raw?.[15] || r._fpLabel) : column.key === 'cremone' ? r._cremoneLabel : column.key === 'plinthes' ? r._plintheLabel : equipment?.label
         const note = column.key === 'vitrage' ? r._vitrageNote : column.key === 'fp' ? r._fpLabel : column.key === 'cremone' ? r._cremoneNote : column.key === 'plinthes' ? r._plintheNote : equipment?.note
         const price = column.key === 'vitrage' ? r._vitragePrix : column.key === 'fp' ? r._optFP?.prix : column.key === 'cremone' ? r._cremonePrix : column.key === 'plinthes' ? r._plinthePrix : equipment?.prix
-        const editValue = column.key === 'fp' ? mainEquipLabel(row._raw?.[15] ?? r._fpLabel ?? '') : column.key === 'vitrage' ? (stripEquipmentDisplayNoise(row._raw?.[16]) || mainEquipLabel(r._vitrageLabel) || '') : mainEquipLabel(label || '')
+        const editValue = column.key === 'fp'
+          ? mainEquipLabel(row._raw?.[15] ?? r._fpLabel ?? '')
+          : column.key === 'vitrage'
+            ? mainEquipLabel(row._equipmentSlots?.vitrage || r._vitrageLabel || '')
+            : column.key === 'plinthes'
+              ? mainEquipLabel(row._equipmentSlots?.plinthes || r._plintheLabel || '')
+              : column.key === 'judas'
+                ? mainEquipLabel(row._equipmentSlots?.judas || label || '')
+                : mainEquipLabel(label || '')
         const hasValue = hasVisibleEquipmentValue(row, column, r)
         return (
           <Td key={column.key} palette={editMode ? 'yellow' : 'normal'} style={{ padding: 0, minWidth: column.minWidth, ...assistantCellStyle(...column.fields) }}>
             {editMode
-              ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentText value={editValue} onCommit={v => onRecompute?.(column.key === 'fp' ? { _raw_15: v } : { _raw_16: v })} placeholder={column.label.toLowerCase()} datalistId={`equipment-suggestions-${displayIndex}-${column.key}`} equipmentSlot={column.key} fetchOptions={fetchEquipmentOptions} options={equipmentSuggestionsForColumn(column.key)} loading={equipmentOptionsLoading(column.key)} />)
+              ? (isAmountSection ? <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block' }}>—</span> : <EditableEquipmentSelect value={editValue} onCommit={v => onRecompute?.(equipmentColumnEditPatch(row, column.key, v))} placeholder={column.label.toLowerCase()} equipmentSlot={column.key} fetchOptions={fetchEquipmentOptions} options={equipmentSuggestionsForColumn(column.key)} loading={equipmentOptionsLoading(column.key)} />)
               : (hasValue ? (
                 <Popover content={note || label || ''}>
                   <span style={{ fontSize: 11, padding: '2px 6px', display: 'inline-block', fontWeight: 600, color: 'var(--color-text-2)' }}>
@@ -2503,62 +2604,16 @@ function MainRow({ row, index, displayIndex = index, expanded, onToggle, change,
       <Td palette="blue" style={{ textAlign: 'right', fontWeight: 800, whiteSpace: 'nowrap', fontSize: 12, ...FINAL_AMOUNT_COLUMNS.total }}>
         {r._pu > 0 ? (formatMoney ? formatMoney(r._totalHt) : `${r._totalHt.toLocaleString('fr-FR')} €`) : '—'}
       </Td>
-      <Td style={{ width: editMode ? 96 : FINAL_AMOUNT_COLUMNS.actions.width, minWidth: editMode ? 96 : FINAL_AMOUNT_COLUMNS.actions.minWidth, textAlign: 'center', padding: 0 }}>
-        {(editMode || !isAmountSection) && (
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2 }}>
-            {!isAmountSection && (
-              <>
-                <Popover content={rulePopoverSummary(row, validationKnowledge)} maxWidth={260}>
-                  <button
-                    type="button"
-                    onClick={e => { e.stopPropagation(); onVerifyRules?.() }}
-                    title={ruleStale ? 'Analyse IA à mettre à jour' : 'Voir l’analyse IA de cette ligne'}
-                    style={{ width: 22, height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 'none', background: ruleStale ? 'rgba(220,38,38,0.10)' : 'transparent', color: ruleStale ? '#dc2626' : 'var(--color-primary)', cursor: 'pointer', borderRadius: 3 }}
-                  >
-                    {row._ruleChecking ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <ShieldCheck size={12} />}
-                  </button>
-                </Popover>
-                {editMode && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={e => { e.stopPropagation(); onReanalyze?.() }}
-                      title="Réanalyser cette ligne (conserve les saisies manuelles)"
-                      style={{ width: 22, height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 'none', background: 'transparent', color: 'var(--color-primary)', cursor: 'pointer', borderRadius: 3 }}
-                    >
-                      {row._recomputing ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <RefreshCw size={12} />}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={e => { e.stopPropagation(); onResetOverrides?.() }}
-                      title="Réinitialiser la ligne (efface les surcharges utilisateur)"
-                      style={{ width: 22, height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 'none', background: 'transparent', color: '#b45309', cursor: 'pointer', borderRadius: 3 }}
-                    >
-                      <RotateCcw size={12} />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={e => { e.stopPropagation(); onSaveAsRule?.() }}
-                      title="Enregistrer comme règle R&D"
-                      style={{ width: 22, height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 'none', background: 'transparent', color: '#0f766e', cursor: 'pointer', borderRadius: 3 }}
-                    >
-                      <BookOpen size={12} />
-                    </button>
-                  </>
-                )}
-              </>
-            )}
-            {editMode && (
-              <button
-                type="button"
-                onClick={e => { e.stopPropagation(); onDelete?.() }}
-                title="Supprimer la ligne"
-                style={{ width: 22, height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 'none', background: 'transparent', color: '#a33c3c', cursor: 'pointer', borderRadius: 3 }}
-              >
-                <Trash2 size={13} />
-              </button>
-            )}
-          </div>
+      <Td style={{ ...FINAL_AMOUNT_COLUMNS.actions, ...stickyActionsColumnStyle, textAlign: 'center', padding: 0 }}>
+        {editMode && (
+          <button
+            type="button"
+            onClick={e => { e.stopPropagation(); onDelete?.() }}
+            title="Supprimer la ligne"
+            style={rowDeleteButtonStyle}
+          >
+            <Trash2 size={12} />
+          </button>
         )}
       </Td>
     </tr>
@@ -2579,7 +2634,7 @@ function AmountSectionColumns({ section, gridTotalCols }) {
       <td style={{ ...amountHeaderCellStyle, ...CELL.yellow, ...FINAL_AMOUNT_COLUMNS.remise, textAlign: 'center' }}>Remise</td>
       <td style={{ ...amountHeaderCellStyle, ...CELL.yellow, ...FINAL_AMOUNT_COLUMNS.qty, textAlign: 'center' }}>Q.</td>
       <td style={{ ...amountHeaderCellStyle, ...CELL.blue, ...FINAL_AMOUNT_COLUMNS.total, textAlign: 'right', whiteSpace: 'nowrap' }}>Total HT</td>
-      <td style={{ ...amountHeaderCellStyle, ...FINAL_AMOUNT_COLUMNS.actions }}></td>
+      <td style={{ ...amountHeaderCellStyle, ...FINAL_AMOUNT_COLUMNS.actions, ...stickyActionsColumnHeaderStyle }}></td>
     </tr>
   )
 }
@@ -2669,15 +2724,15 @@ function AmountRow({ row, index, displayIndex = index, change, tva, multGlobal, 
       <Td palette="blue" style={{ textAlign: 'right', fontWeight: 800, whiteSpace: 'nowrap', fontSize: 12, ...FINAL_AMOUNT_COLUMNS.total }}>
         {formatMoney ? formatMoney(r._totalHt) : amountEuro(r._totalHt)}
       </Td>
-      <Td style={{ textAlign: 'center', padding: 0, ...FINAL_AMOUNT_COLUMNS.actions }}>
+      <Td style={{ ...FINAL_AMOUNT_COLUMNS.actions, ...stickyActionsColumnStyle, textAlign: 'center', padding: 0 }}>
         {editMode && (
           <button
             type="button"
             onClick={event => { event.stopPropagation(); onDelete?.() }}
             title="Supprimer la ligne"
-            style={{ width: '100%', height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 'none', background: 'transparent', color: '#a33c3c', cursor: 'pointer' }}
+            style={rowDeleteButtonStyle}
           >
-            <Trash2 size={13} />
+            <Trash2 size={12} />
           </button>
         )}
       </Td>
@@ -3314,7 +3369,7 @@ function normalizeCalculationRows(rows) {
       nextRows.push(cleanRow)
       for (const alert of cleanRow.alertes || []) {
         if (/avis de chantier|avis chantier/i.test(alert)) addBucket('avis_chantier', 'Avis de chantier', 3700, alert, rowIndex)
-        if (/note de calcul|calcul explosion|hors zone bleue/i.test(alert) && !/non requise|NON requise/i.test(alert)) {
+        if (/note de calcul|calcul explosion/i.test(alert) && !/non requise|NON requise/i.test(alert)) {
           addBucket('note_calcul_explosion', 'Note de calcul explosion (non remisable)', 9300, alert, rowIndex)
         }
       }
@@ -3987,11 +4042,12 @@ function ModeSwitch({ value, onChange }) {
 }
 
 // ─── Modal Paramètres du devis ───────────────────────────────────────────────
-function SettingsModal({ change, multGlobal, tva, currency, gesteCommercial, changeLocked = false, onClose, onApply }) {
+function SettingsModal({ change, multGlobal, tva, currency, pdfLanguage, gesteCommercial, changeLocked = false, onClose, onApply }) {
   const [c, setC] = useState(String(change))
   const [m, setM] = useState(String(multGlobal))
   const [t, setT] = useState(tva)
   const [cur, setCur] = useState(currency || 'EUR')
+  const [lang, setLang] = useState(normalizePdfLanguage(pdfLanguage || 'fr'))
   const [geste, setGeste] = useState(String(gesteCommercial ?? 0))
   const [locked, setLocked] = useState(changeLocked)
   const [fxRates, setFxRates] = useState(null)
@@ -4009,6 +4065,7 @@ function SettingsModal({ change, multGlobal, tva, currency, gesteCommercial, cha
       multGlobal: Number.isFinite(mn) && mn > 0 ? mn : 1,
       tva: selected ? Number(selected.tva_rate) : (Number.isFinite(t) ? t : 0.2),
       currency: cur,
+      pdf_language: lang,
       gesteCommercial: Number.isFinite(gn) ? gn : 0,
       changeLocked: locked,
     })
@@ -4027,25 +4084,34 @@ function SettingsModal({ change, multGlobal, tva, currency, gesteCommercial, cha
         <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-2)' }}>Devise d&apos;affichage</span>
-            <select value={cur} onChange={e => {
-              const next = e.target.value
-              setCur(next)
-              if (locked) return
-              const selected = fxRates?.rates?.find(r => r.currency === next)
-              if (selected) {
-                setC(String(selected.rate_to_eur))
-                setT(Number(selected.tva_rate))
-              }
-            }}
-              style={{ fontSize: 13, padding: '6px 10px', background: 'var(--color-bg)', border: '1px solid var(--color-border)', borderRadius: 6, color: 'var(--color-text)' }}>
-              <option value="EUR">EUR — Euro</option>
-              <option value="CHF">CHF — Franc suisse</option>
-              <option value="GBP">GBP — Livre sterling</option>
-              <option value="USD">USD — Dollar US</option>
-            </select>
+            <ZrSelect
+              fullWidth
+              ariaLabel="Devise d'affichage"
+              value={cur}
+              options={GRID_CURRENCY_OPTIONS}
+              onChange={(next) => {
+                setCur(next)
+                if (locked) return
+                const selected = fxRates?.rates?.find(r => r.currency === next)
+                if (selected) {
+                  setC(String(selected.rate_to_eur))
+                  setT(Number(selected.tva_rate))
+                }
+              }}
+            />
             {fxRates?.alert_active && (
               <span style={{ fontSize: 10, color: '#dc2626', fontWeight: 700 }}>Taux à valider (1er janv. / 1er juin) — voir Admin → Taux de change</span>
             )}
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-2)' }}>Langue du PDF devis</span>
+            <ZrSelect
+              fullWidth
+              ariaLabel="Langue du PDF devis"
+              value={lang}
+              options={PDF_LANGUAGE_OPTIONS}
+              onChange={(next) => setLang(normalizePdfLanguage(next))}
+            />
           </label>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-2)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -4080,12 +4146,13 @@ function SettingsModal({ change, multGlobal, tva, currency, gesteCommercial, cha
           </label>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-2)' }}>TVA</span>
-            <select value={t} onChange={e => setT(parseFloat(e.target.value))}
-              style={{ fontSize: 13, padding: '6px 10px', background: 'var(--color-bg)', border: '1px solid var(--color-border)', borderRadius: 6, color: 'var(--color-text)' }}>
-              <option value={0.20}>20% (France)</option>
-              <option value={0.081}>8.1% (Suisse)</option>
-              <option value={0}>0% (HT uniquement)</option>
-            </select>
+            <ZrSelect
+              fullWidth
+              ariaLabel="Taux de TVA"
+              value={t === 0.081 ? '0.081' : t === 0 ? '0' : '0.20'}
+              options={GRID_TVA_OPTIONS}
+              onChange={(next) => setT(parseFloat(next))}
+            />
           </label>
         </div>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', padding: '10px 16px', borderTop: '1px solid var(--color-border)' }}>
@@ -4192,6 +4259,9 @@ export function DevisGridWorkspace({
   const [currency, setCurrency] = useState(() => {
     try { return localStorage.getItem('devisGridCurrency') || 'EUR' } catch { return 'EUR' }
   })
+  const [pdfLanguage, setPdfLanguage] = useState(() => {
+    try { return normalizePdfLanguage(localStorage.getItem('devisGridPdfLanguage') || 'fr') } catch { return 'fr' }
+  })
   const [gesteCommercial, setGesteCommercial] = useState(() => {
     try { const v = parseFloat(localStorage.getItem('devisGridGesteCommercial')); return Number.isFinite(v) ? v : 0 } catch { return 0 }
   })
@@ -4222,6 +4292,7 @@ export function DevisGridWorkspace({
   useEffect(() => { try { localStorage.setItem('devisGridTva', String(tva)) } catch { /* noop */ } }, [tva])
   useEffect(() => { try { localStorage.setItem('devisGridMultGlobal', String(multGlobal)) } catch { /* noop */ } }, [multGlobal])
   useEffect(() => { try { localStorage.setItem('devisGridCurrency', currency) } catch { /* noop */ } }, [currency])
+  useEffect(() => { try { localStorage.setItem('devisGridPdfLanguage', pdfLanguage) } catch { /* noop */ } }, [pdfLanguage])
   useEffect(() => { try { localStorage.setItem('devisGridGesteCommercial', String(gesteCommercial)) } catch { /* noop */ } }, [gesteCommercial])
   useEffect(() => { try { localStorage.setItem('devisGridGesteMode', gesteCommercialMode) } catch { /* noop */ } }, [gesteCommercialMode])
   useEffect(() => { try { localStorage.setItem('devisGridGestePct', String(gesteCommercialPct)) } catch { /* noop */ } }, [gesteCommercialPct])
@@ -4235,6 +4306,7 @@ export function DevisGridWorkspace({
       api.get('/exchange-rates/status').catch(() => null),
     ]).then(([devis, fx]) => {
       if (devis?.currency) setCurrency(devis.currency)
+      if (devis?.pdf_language) setPdfLanguage(normalizePdfLanguage(devis.pdf_language))
       if (devis?.tva_rate != null) setTva(Number(devis.tva_rate))
       if (devis?.commercial_discount_pct != null && Number(devis.commercial_discount_pct)) {
         setGesteCommercialMode('percent')
@@ -4266,6 +4338,7 @@ export function DevisGridWorkspace({
   useEffect(() => {
     onMetaChange?.({
       currency,
+      pdf_language: pdfLanguage,
       tva_rate: tva,
       commercial_discount_ht: gesteCommercialMode === 'amount' ? gesteCommercial : 0,
       commercial_discount_pct: gesteCommercialMode === 'percent' ? gesteCommercialPct : null,
@@ -4274,12 +4347,13 @@ export function DevisGridWorkspace({
       exchange_locked: changeLocked,
       version_id: versionId || undefined,
     })
-  }, [change, changeLocked, currency, gesteCommercial, gesteCommercialMode, gesteCommercialPct, onMetaChange, tva, versionId])
+  }, [change, changeLocked, currency, gesteCommercial, gesteCommercialMode, gesteCommercialPct, onMetaChange, pdfLanguage, tva, versionId])
   useEffect(() => {
     if (!devisId || hydratedDevisSettingsRef.current !== String(devisId)) return
     const timer = window.setTimeout(() => {
       api.put(`/devis/${devisId}`, {
         currency,
+        pdf_language: pdfLanguage,
         tva_rate: tva,
         commercial_discount_ht: gesteCommercialMode === 'amount' ? gesteCommercial : 0,
         commercial_discount_pct: gesteCommercialMode === 'percent' ? gesteCommercialPct : null,
@@ -4288,7 +4362,7 @@ export function DevisGridWorkspace({
       }).catch(() => {})
     }, 400)
     return () => window.clearTimeout(timer)
-  }, [change, changeLocked, currency, devisId, gesteCommercial, gesteCommercialMode, gesteCommercialPct, tva])
+  }, [change, changeLocked, currency, devisId, gesteCommercial, gesteCommercialMode, gesteCommercialPct, pdfLanguage, tva])
   const refreshValidationKnowledge = useCallback(async () => {
     if (!hasAuthToken()) return null
     try {
@@ -4901,12 +4975,17 @@ export function DevisGridWorkspace({
       ...(patch.larg_mm != null ? { larg_mm: patch.larg_mm } : {}),
       ...(perfOverrides ? { _perfOverrides: perfOverrides } : {}),
       ...thermolaquageOverride,
+      ...(patch._equipmentSlots ? { _equipmentSlots: patch._equipmentSlots } : {}),
       _raw: raw,
       _recomputing: true,
     } : r))
     // Appel API — hors de tout updater → jamais dupliqué par Strict Mode
     const qtyInt = Number.isFinite(qty) && qty > 0 ? Math.round(qty) : 1
-    api.post('/devis/recompute-row', { row: raw, qty: qtyInt }, { timeout: 30000 })
+    api.post('/devis/recompute-row', {
+      row: raw,
+      qty: qtyInt,
+      equipment_slots: patch._equipmentSlots ?? cur._equipmentSlots ?? null,
+    }, { timeout: 30000 })
       .then(res => {
         const result = res?.result
         if (!result) return
@@ -4924,8 +5003,11 @@ export function DevisGridWorkspace({
           change_override,
           ...(perfOverrides ? { _perfOverrides: perfOverrides } : {}),
           ...thermolaquageOverride,
+          ...(patch._equipmentSlots ? { _equipmentSlots: patch._equipmentSlots } : {}),
           _recomputing: false,
         }
+        const resolvedSlots = deriveEquipmentSlots(recomputedRow)
+        if (Object.keys(resolvedSlots).length) recomputedRow._equipmentSlots = { ...resolvedSlots, ...recomputedRow._equipmentSlots }
         const nextRows = normalizeCalculationRows(splitCalculationOptions(rowsRef.current.map((r, idx) => idx === i ? {
           ...recomputedRow,
         } : r)))
@@ -5719,7 +5801,7 @@ export function DevisGridWorkspace({
                   <Th style={{ ...CELL.yellow, ...FINAL_AMOUNT_COLUMNS.remise, textAlign: 'center' }}>Remise</Th>
                   <Th style={{ ...CELL.yellow, ...FINAL_AMOUNT_COLUMNS.qty, textAlign: 'center' }}>Q.</Th>
                   <Th style={{ ...CELL.blue, ...FINAL_AMOUNT_COLUMNS.total, textAlign: 'right', whiteSpace: 'nowrap' }}>Total HT</Th>
-                  <Th style={FINAL_AMOUNT_COLUMNS.actions}></Th>
+                  <Th style={{ ...FINAL_AMOUNT_COLUMNS.actions, ...stickyActionsColumnHeaderStyle }}></Th>
                 </tr>
               </thead>
               <tbody>
@@ -5768,7 +5850,7 @@ export function DevisGridWorkspace({
                   }
                   return (
                   <Fragment key={`row-${i}-${entryIndex}`}>
-                    <MainRow row={row} index={i} displayIndex={entry.displayIndex} expanded={expandedRows.has(i)} onToggle={() => toggleRow(i)} change={change} tva={tva} multGlobal={multGlobal} editMode={editMode} onUpdate={(patch) => updateRow(i, patch)} onRecompute={(patch) => recomputeRow(i, patch)} onDelete={() => deleteRow(i)} onSaveAsRule={() => handleSaveAsRule(i)} onVerifyRules={() => handleVerifyRules(i)} onReanalyze={() => reanalyzeRowAtIndex(i)} onResetOverrides={() => resetRowOverrides(i)} assistantHighlight={(assistantHighlightIds.has(String(row._lineId)) || assistantHighlightIndexes.has(i)) ? effectiveAssistantHighlights : null} validationKnowledge={validationKnowledge} hiddenCols={hiddenCols} hiddenDimensionCols={hiddenDimensionCols} visibleEquipmentColumns={visibleEquipmentColumns} showOtherEquipmentColumn={showOtherEquipmentColumn} formatMoney={formatGridMoney} />
+                    <MainRow row={row} index={i} displayIndex={entry.displayIndex} expanded={expandedRows.has(i)} onToggle={() => toggleRow(i)} change={change} tva={tva} multGlobal={multGlobal} editMode={editMode} onUpdate={(patch) => updateRow(i, patch)} onRecompute={(patch) => recomputeRow(i, patch)} onDelete={() => deleteRow(i)} assistantHighlight={(assistantHighlightIds.has(String(row._lineId)) || assistantHighlightIndexes.has(i)) ? effectiveAssistantHighlights : null} hiddenCols={hiddenCols} hiddenDimensionCols={hiddenDimensionCols} visibleEquipmentColumns={visibleEquipmentColumns} showOtherEquipmentColumn={showOtherEquipmentColumn} formatMoney={formatGridMoney} />
                     {expandedRows.has(i) && (
                       <Fragment>
                         <SubRowRefs row={row} editMode={editMode} onRefCommit={(colIdx, ref) => handleRefCommit(i, colIdx, ref)} hiddenCols={hiddenCols} visibleDimensionCount={visibleDimensionCount} visibleEquipmentColumns={visibleEquipmentColumns} showOtherEquipmentColumn={showOtherEquipmentColumn} />
@@ -5824,14 +5906,16 @@ export function DevisGridWorkspace({
                 <tr style={{ background: 'var(--color-surface)' }}>
                   <td colSpan={gridTotalCols - 5} style={{ padding: '6px 16px', fontWeight: 600, fontSize: 11, color: 'var(--color-text-2)' }}>
                     Geste commercial
-                    <select
-                      value={gesteCommercialMode}
-                      onChange={e => setGesteCommercialMode(e.target.value)}
-                      style={{ marginLeft: 8, fontSize: 10, padding: '2px 6px', borderRadius: 4, border: '1px solid var(--color-border)', background: 'var(--color-bg)' }}
-                    >
-                      <option value="amount">€ HT</option>
-                      <option value="percent">%</option>
-                    </select>
+                    <span style={{ marginLeft: 8, display: 'inline-block', verticalAlign: 'middle', minWidth: 72 }}>
+                      <ZrSelect
+                        size="sm"
+                        ariaLabel="Mode geste commercial"
+                        value={gesteCommercialMode}
+                        options={GESTE_MODE_OPTIONS}
+                        minWidth={72}
+                        onChange={setGesteCommercialMode}
+                      />
+                    </span>
                   </td>
                   <td colSpan={4} style={{ padding: '4px 12px', textAlign: 'right', background: CELL.yellow.background }}>
                     {gesteCommercialMode === 'percent'
@@ -5899,6 +5983,7 @@ export function DevisGridWorkspace({
           multGlobal={multGlobal}
           tva={tva}
           currency={currency}
+          pdfLanguage={pdfLanguage}
           gesteCommercial={gesteCommercial}
           changeLocked={changeLocked}
           onClose={() => setShowSettings(false)}
@@ -5907,6 +5992,7 @@ export function DevisGridWorkspace({
             setMultGlobal(v.multGlobal)
             setTva(v.tva)
             if (v.currency) setCurrency(v.currency)
+            if (v.pdf_language) setPdfLanguage(normalizePdfLanguage(v.pdf_language))
             if (v.gesteCommercial != null) setGesteCommercial(v.gesteCommercial)
             if (v.changeLocked != null) setChangeLocked(Boolean(v.changeLocked))
             showToast('Paramètres mis à jour', 'success')

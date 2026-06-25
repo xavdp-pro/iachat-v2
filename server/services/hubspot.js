@@ -437,6 +437,123 @@ export async function getCompanyDetail(companyId) {
   }
 }
 
+const INTERNAL_EMAIL_DOMAINS = new Set(
+  String(process.env.MAIL_INTERNAL_DOMAINS || 'zerux.com,doortal.fr')
+    .split(',')
+    .map((d) => d.trim().toLowerCase())
+    .filter(Boolean),
+)
+
+export function isInternalCrmEmail(email) {
+  const normalized = String(email || '').trim().toLowerCase()
+  if (!normalized.includes('@')) return true
+  const domain = normalized.split('@').pop()
+  return INTERNAL_EMAIL_DOMAINS.has(domain)
+}
+
+function isValidExternalContactEmail(email) {
+  const normalized = String(email || '').trim().toLowerCase()
+  if (!normalized || !normalized.includes('@')) return false
+  return !isInternalCrmEmail(normalized)
+}
+
+/**
+ * Paginated HubSpot contacts with email (for CRM mail index).
+ */
+export async function listContactsForMailIndex({ after, limit = 100 } = {}) {
+  const lim = Math.min(Math.max(Number(limit) || 100, 1), 100)
+  const query = {
+    limit: lim,
+    archived: 'false',
+    properties: [...CONTACT_PROPS],
+    associations: ['companies'],
+  }
+  if (after) query.after = after
+  return hubspotFetch('/crm/v3/objects/contacts', { query })
+}
+
+/**
+ * Search HubSpot contacts by name or email token.
+ */
+export async function searchCrmContacts({ q, limit = 25 } = {}) {
+  const term = String(q || '').trim().slice(0, 200)
+  if (!term) return { results: [], total: 0 }
+
+  const lim = Math.min(Math.max(Number(limit) || 25, 1), 100)
+  const body = {
+    filterGroups: [
+      {
+        filters: [
+          { propertyName: 'email', operator: 'CONTAINS_TOKEN', value: term },
+        ],
+      },
+      {
+        filters: [
+          { propertyName: 'firstname', operator: 'CONTAINS_TOKEN', value: term },
+        ],
+      },
+      {
+        filters: [
+          { propertyName: 'lastname', operator: 'CONTAINS_TOKEN', value: term },
+        ],
+      },
+    ],
+    properties: CONTACT_PROPS,
+    limit: lim,
+  }
+  const data = await hubspotFetch('/crm/v3/objects/contacts/search', { method: 'POST', body })
+  return {
+    results: (data.results || []).filter((c) => isValidExternalContactEmail(c.properties?.email)),
+    total: data.total || 0,
+  }
+}
+
+/**
+ * Live lookup — contact exists in HubSpot with this email.
+ */
+export async function findContactByEmail(email) {
+  const normalized = String(email || '').trim().toLowerCase()
+  if (!isValidExternalContactEmail(normalized)) return null
+
+  const body = {
+    filterGroups: [{
+      filters: [{
+        propertyName: 'email',
+        operator: 'EQ',
+        value: normalized,
+      }],
+    }],
+    properties: CONTACT_PROPS,
+    limit: 1,
+  }
+  const data = await hubspotFetch('/crm/v3/objects/contacts/search', { method: 'POST', body })
+  return data.results?.[0] || null
+}
+
+/**
+ * Walk all external CRM contacts (generator).
+ */
+export async function* iterateExternalCrmContacts({ pageSize = 100 } = {}) {
+  let after = undefined
+  for (;;) {
+    const page = await listContactsForMailIndex({ after, limit: pageSize })
+    const contacts = (page.results || []).filter((c) => isValidExternalContactEmail(c.properties?.email))
+    if (contacts.length) yield contacts
+    after = page.paging?.next?.after
+    if (!after) break
+  }
+}
+
+/**
+ * Batch-read company names by HubSpot company ids.
+ */
+export async function getCompanyNamesByIds(companyIds = []) {
+  const ids = [...new Set((companyIds || []).map((id) => String(id)).filter(Boolean))]
+  if (!ids.length) return new Map()
+  const res = await batchReadObjects('companies', ids, ['name'])
+  return new Map((res.results || []).map((c) => [String(c.id), c.properties?.name || null]))
+}
+
 export function isHubspotConfigured() {
   return Boolean(getToken())
 }

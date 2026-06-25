@@ -23,9 +23,17 @@ const render = spawnSync('node', ['scripts/render-hive-sample-pdf.mjs', pdfOut],
 })
 if (render.status !== 0) process.exit(render.status || 1)
 
-if (existsSync(refPdfSrc) && !existsSync(join(previewDir, 'reference-the-hive.pdf'))) {
+const validationSample = join(root, 'public', 'validation', 'samples', 'hive-the-hive-sample.pdf')
+const validationRef = join(root, 'public', 'validation', 'samples', 'hive-reference-605.0106.pdf')
+mkdirSync(dirname(validationSample), { recursive: true })
+copyFileSync(pdfOut, validationSample)
+console.log(`Synced validation sample → ${validationSample}`)
+
+if (existsSync(refPdfSrc)) {
   copyFileSync(refPdfSrc, refPdfDst)
-  console.log(`Copied reference PDF → ${refPdfDst}`)
+  copyFileSync(refPdfSrc, validationRef)
+  console.log(`Synced reference PDF → ${refPdfDst}`)
+  console.log(`Synced validation reference → ${validationRef}`)
 }
 
 for (const [pdf, prefix] of [
@@ -45,3 +53,8 @@ for (const [pdf, prefix] of [
 }
 
 console.log(`Preview synced → ${previewDir}`)
+
+const compare = spawnSync('node', ['scripts/compare-hive-pdf.mjs'], { cwd: root, stdio: 'inherit' })
+if (compare.status === 2) {
+  console.warn('Hive PDF layout drift detected — see public/preview/compare/')
+}

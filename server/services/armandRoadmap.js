@@ -6,7 +6,10 @@ import {
   JALONS,
   FILES_BLOCKERS,
   MEETING_AGENDA,
+  STATUS_BULLETIN,
+  VALIDATION_DOWNLOADS,
   jalonStats,
+  openQuestions,
 } from '../../src/data/armandValidationRoadmap.js'
 import { enrichItemWithGuide } from '../../src/data/armandValidationGuide.js'
 import { buildValidationActivityLog, groupActivityByActor } from '../lib/validationActivity.js'
@@ -55,6 +58,9 @@ export function buildRoadmapPayload(feedbackMap = {}) {
 
   return {
     meta: ROADMAP_META,
+    statusBulletin: STATUS_BULLETIN,
+    validationDownloads: VALIDATION_DOWNLOADS,
+    openQuestions: openQuestions(),
     jalons,
     files,
     agenda: MEETING_AGENDA,
@@ -66,6 +72,8 @@ export function buildRoadmapPayload(feedbackMap = {}) {
       agReturn,
       agRecheck,
       total: allIds.length,
+      devDone: allIds.filter((i) => i.dev === 'done').length,
+      devBlocked: allIds.filter((i) => i.dev === 'waiting' || i.dev === 'question').length,
     },
   }
 }

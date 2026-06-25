@@ -3,6 +3,10 @@
  * Stepper-based quote workflow: Client → Versions → Grid → PDF → HubSpot
  */
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
+import { PDF_LANGUAGE_OPTIONS, normalizePdfLanguage } from '../lib/pdfLanguages.js'
+import { useDevisPdfPreview } from '../hooks/useDevisPdfPreview.js'
+import { ZrSelect } from '../ui/ZrSelect.jsx'
+import { ZrSearchableSelect } from '../ui/ZrSearchableSelect.jsx'
 import { useNavigate } from 'react-router-dom'
 import {
   Upload, FileSpreadsheet, Loader2, ChevronDown, ChevronUp,
@@ -43,6 +47,19 @@ const SUGGESTIONS = [
   'Génère une ligne de devis formatée',
   'Quel est le délai de pose estimé ?',
 ]
+
+/** Try opening Outlook desktop via protocol handler (Classic first). */
+function openOutlookDesktopDraft(urls) {
+  const list = (Array.isArray(urls) ? urls : [urls]).filter(Boolean)
+  if (!list.length) return false
+  const link = document.createElement('a')
+  link.href = list[0]
+  link.style.display = 'none'
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  return true
+}
 
 const prixFmt = (v) => v != null ? `${Number(v).toLocaleString('fr-FR')} €` : null
 const CALCULATION_OPTION_RE = /note de calcul|avis de chantier|avis chantier|calcul explosion/i
@@ -188,6 +205,13 @@ function sortDevisByQuoteNumber(items = [], direction = 'desc') {
   })
 }
 
+/** HubSpot deal title: `[quote_number] - [client]` (Armand D4). */
+function buildDealLabel(quoteNumber, clientName) {
+  const num = String(quoteNumber || '').trim()
+  const client = String(clientName || '').trim() || 'Client'
+  return num ? `${num} - ${client}` : client
+}
+
 function safePdfFilePart(value) {
   return String(value || '')
     .trim()
@@ -210,6 +234,20 @@ function devisDisplayName({ quoteNumber, clientName, versionNumber }) {
     .map(safePdfFilePart)
     .filter(Boolean)
   return parts.length ? parts.join(' - ') : 'devis'
+}
+
+function buildDefaultEmailDraft({ prospectName, pdfLanguage = 'fr' } = {}) {
+  const lang = normalizePdfLanguage(pdfLanguage)
+  const name = String(prospectName || '').trim()
+  const greeting = name
+    ? (lang === 'en' ? `Dear ${name},` : lang === 'de' ? `Guten Tag ${name},` : `Bonjour ${name},`)
+    : (lang === 'en' ? 'Dear Sir or Madam,' : lang === 'de' ? 'Guten Tag,' : 'Bonjour,')
+  const body = lang === 'en'
+    ? 'Please find attached our quotation.\n\nBest regards,'
+    : lang === 'de'
+      ? 'Anbei erhalten Sie unser Angebot.\n\nMit freundlichen Grüßen,'
+      : 'Veuillez trouver ci-joint notre proposition.\n\nCordialement,'
+  return `${greeting}\n\n${body}`
 }
 
 function contentDispositionFilename(header) {
@@ -562,7 +600,7 @@ function normalizeCalculationRows(rows) {
       nextRows.push(cleanRow)
       for (const alert of cleanRow.alertes || []) {
         if (/avis de chantier|avis chantier/i.test(alert)) addBucket('avis_chantier', 'Avis de chantier', 3700, alert, rowIndex)
-        if (/note de calcul|calcul explosion|hors zone bleue/i.test(alert) && !/non requise|NON requise/i.test(alert)) addBucket('note_calcul_explosion', 'Note de calcul explosion (non remisable)', 9300, alert, rowIndex)
+        if (/note de calcul|calcul explosion/i.test(alert) && !/non requise|NON requise/i.test(alert)) addBucket('note_calcul_explosion', 'Note de calcul explosion (non remisable)', 9300, alert, rowIndex)
       }
       continue
     }
@@ -1251,7 +1289,7 @@ function CompactDevisHeader({
 // ══════════════════════════════════════════════════════════════════════════════
 const companyDetailCache = new Map()
 
-function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, onSelectDeal, onCreateDeal, onNewDevis, onOpenDevis, onDeleteDevis, detailRefreshKey = 0, onUpdateDeal }) {
+function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, onSelectDeal, onCreateDeal, onNewDevis, onOpenDevis, onDeleteDevis, detailRefreshKey = 0, onUpdateDeal, pendingEmailContext, onEmailContextChange, onDevisEmailPatch }) {
   const [query, setQuery] = useState('')
   const [companies, setCompanies] = useState([])
   const [loading, setLoading] = useState(false)
@@ -1340,7 +1378,7 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
   }, [selectedCompanyId, detailRefreshKey])
 
   useEffect(() => {
-    api.get('/imap/status').then(data => {
+    api.get('/mail/status').then(data => {
       setImapConfigured(Boolean(data?.configured))
       setImapTestMode(data?.mode === 'dovecot-test')
     }).catch(() => setImapConfigured(false))
@@ -1352,11 +1390,42 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
     || selectedCompany?.properties?.email
     || ''
 
+  useEffect(() => {
+    const activeDevis = (existingDevis || []).find(d => String(d.deal_id) === String(selectedDeal?.id))
+    if (activeDevis) {
+      if (activeDevis.requester_contact_id) {
+        setRequesterContactId(String(activeDevis.requester_contact_id))
+      }
+      setNoEmailSource(Boolean(Number(activeDevis.no_email_source)))
+      if (activeDevis.source_email_json) {
+        try {
+          const parsed = typeof activeDevis.source_email_json === 'string'
+            ? JSON.parse(activeDevis.source_email_json)
+            : activeDevis.source_email_json
+          if (parsed) setSelectedSourceEmail(parsed)
+        } catch { /* noop */ }
+      }
+      return
+    }
+    if (!pendingEmailContext) return
+    if (pendingEmailContext.requester_contact_id) {
+      setRequesterContactId(String(pendingEmailContext.requester_contact_id))
+    }
+    if (pendingEmailContext.no_email_source != null) {
+      setNoEmailSource(Boolean(Number(pendingEmailContext.no_email_source)))
+    }
+    if (pendingEmailContext.source_email_json) {
+      setSelectedSourceEmail(pendingEmailContext.source_email_json)
+    }
+  }, [selectedDeal?.id, existingDevis, pendingEmailContext])
+
   const persistEmailContext = async (patch) => {
+    onEmailContextChange?.(selectedDeal?.id || null, patch)
     const activeDevis = (existingDevis || []).find(d => String(d.deal_id) === String(selectedDeal?.id))
     if (!activeDevis?.id) return
     try {
-      await api.put(`/devis/${activeDevis.id}`, patch)
+      const updated = await api.put(`/devis/${activeDevis.id}`, patch)
+      onDevisEmailPatch?.(updated)
     } catch { /* non-blocking */ }
   }
 
@@ -1412,7 +1481,6 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
     try {
       const createdDeal = await onCreateDeal?.({
         companyId: selectedCompany.id,
-        dealname: `Nouveau projet — ${selectedCompany.name}`,
       })
       if (createdDeal?.id) {
         onSelectDeal?.({
@@ -1717,10 +1785,17 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
             <div style={{ marginBottom: 14, padding: '12px', borderRadius: 10, border: '1px solid var(--color-border)', background: 'var(--color-surface)' }}>
               <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 8 }}>Contact demandeur (HubSpot)</div>
               {contacts.length ? (
-                <select
-                  value={requesterContactId || contacts[0]?.id || ''}
-                  onChange={async (e) => {
-                    const id = e.target.value
+                <ZrSearchableSelect
+                  fullWidth
+                  ariaLabel="Contact demandeur HubSpot"
+                  value={String(requesterContactId || contacts[0]?.id || '')}
+                  options={contacts.map((contact) => ({
+                    value: String(contact.id),
+                    label: [contact.properties?.firstname, contact.properties?.lastname].filter(Boolean).join(' ')
+                      || contact.properties?.email
+                      || `Contact #${contact.id}`,
+                  }))}
+                  onChange={async (id) => {
                     setRequesterContactId(id)
                     const contact = contacts.find(c => String(c.id) === String(id))
                     await persistEmailContext({
@@ -1728,14 +1803,7 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
                       requester_contact_name: [contact?.properties?.firstname, contact?.properties?.lastname].filter(Boolean).join(' ') || contact?.properties?.email || null,
                     })
                   }}
-                  style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-bg)', fontSize: 12 }}
-                >
-                  {contacts.map(contact => (
-                    <option key={contact.id} value={contact.id}>
-                      {[contact.properties?.firstname, contact.properties?.lastname].filter(Boolean).join(' ') || contact.properties?.email || `Contact #${contact.id}`}
-                    </option>
-                  ))}
-                </select>
+                />
               ) : (
                 <div style={{ fontSize: 11, color: 'var(--color-text-3)' }}>Aucun contact HubSpot — synchronisez le client.</div>
               )}
@@ -1745,9 +1813,9 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
                 <div style={{ fontSize: 12, fontWeight: 800 }}>Conversations email (demande client)</div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  {imapTestMode && (
+                  {imapConfigured && (
                     <a href="/devis/imap-lab" style={{ fontSize: 10, fontWeight: 700, color: 'var(--color-primary)', display: 'inline-flex', alignItems: 'center', gap: 4, textDecoration: 'none' }}>
-                      <FlaskConical size={12} /> Lab IMAP
+                      <FlaskConical size={12} /> Lab Mail
                     </a>
                   )}
                   <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
@@ -1765,7 +1833,7 @@ function StepClient({ onSelect, selectedCompany, selectedDeal, existingDevis, on
                 <>
                   {imapConfigured === false && (
                     <div style={{ fontSize: 11, color: '#b45309', marginBottom: 8 }}>
-                      IMAP non configuré — lancez <code style={{ fontSize: 10 }}>npm run imap:test:up</code>
+                      Mail non configuré — vérifier MS_GRAPH_* sur le serveur
                     </div>
                   )}
                   <EmailConversationViewer
@@ -2471,19 +2539,29 @@ function StepVersions({ devisId, currentVersionId, currentDevis = null, selected
             <div style={{ padding: 16, display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 10, alignItems: 'end' }}>
               <label style={{ display: 'grid', gap: 4, fontSize: 11, fontWeight: 700 }}>
                 Version A
-                <select value={compareA || ''} onChange={(e) => setCompareA(Number(e.target.value) || null)} style={{ padding: '7px 8px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-input-bg)', fontSize: 12 }}>
-                  {versions.map(v => (
-                    <option key={v.id} value={v.id}>{v.number || versionNumberById.get(v.id) || v.version_label} — {versionDisplayName(v)}</option>
-                  ))}
-                </select>
+                <ZrSearchableSelect
+                  fullWidth
+                  ariaLabel="Version A"
+                  value={String(compareA || '')}
+                  options={versions.map(v => ({
+                    value: String(v.id),
+                    label: `${v.number || versionNumberById.get(v.id) || v.version_label} — ${versionDisplayName(v)}`,
+                  }))}
+                  onChange={(next) => setCompareA(Number(next) || null)}
+                />
               </label>
               <label style={{ display: 'grid', gap: 4, fontSize: 11, fontWeight: 700 }}>
                 Version B
-                <select value={compareB || ''} onChange={(e) => setCompareB(Number(e.target.value) || null)} style={{ padding: '7px 8px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-input-bg)', fontSize: 12 }}>
-                  {versions.map(v => (
-                    <option key={v.id} value={v.id}>{v.number || versionNumberById.get(v.id) || v.version_label} — {versionDisplayName(v)}</option>
-                  ))}
-                </select>
+                <ZrSearchableSelect
+                  fullWidth
+                  ariaLabel="Version B"
+                  value={String(compareB || '')}
+                  options={versions.map(v => ({
+                    value: String(v.id),
+                    label: `${v.number || versionNumberById.get(v.id) || v.version_label} — ${versionDisplayName(v)}`,
+                  }))}
+                  onChange={(next) => setCompareB(Number(next) || null)}
+                />
               </label>
               <button type="button" onClick={runVersionCompare} disabled={compareLoading} style={{ ...ghostBtn(), color: 'var(--color-primary)', borderColor: 'var(--color-primary)', height: 34 }}>
                 {compareLoading ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Columns2 size={13} />}
@@ -3198,8 +3276,9 @@ function StepEditor({
 // ══════════════════════════════════════════════════════════════════════════════
 // ── STEP 4: PDF GENERATION ──────────────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════════════════
-function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, onSendHubSpot }) {
+function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, onSendHubSpot, pdfLanguage: initialPdfLanguage = 'fr', onPdfLanguageChange }) {
   const [copied, setCopied] = useState(false)
+  const [pdfLanguage, setPdfLanguage] = useState(normalizePdfLanguage(initialPdfLanguage))
   const [draftLines, setDraftLines] = useState(lines)
   const [savingId, setSavingId] = useState(null)
   const [suggestingId, setSuggestingId] = useState(null)
@@ -3210,16 +3289,46 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
   const [activePreviewKey, setActivePreviewKey] = useState(null)
   const [pdfPreviewUrl, setPdfPreviewUrl] = useState(null)
   const [pdfPreviewLoading, setPdfPreviewLoading] = useState(false)
+  const [pdfFocusMode, setPdfFocusMode] = useState(false)
+  const [i18nDraft, setI18nDraft] = useState({})
   const previewRefs = useRef(new Map())
 
+  useEffect(() => { setPdfLanguage(normalizePdfLanguage(initialPdfLanguage)) }, [initialPdfLanguage])
+
   useEffect(() => { setDraftLines(lines.map(withRequiredPdfDesignationFacts)) }, [lines])
+
+  const designationForPreview = useCallback((line) => {
+    if (!line?.id) return line?.designation || ''
+    if (pdfLanguage === 'fr') return line.designation || ''
+    return i18nDraft[line.id] ?? (line.designation || '')
+  }, [i18nDraft, pdfLanguage])
+
+  useEffect(() => {
+    if (pdfLanguage === 'fr' || !draftLines.length) return undefined
+    let alive = true
+    api.post('/pdf-translations/translate', {
+      language: pdfLanguage,
+      items: draftLines.filter((line) => line?.id).map((line) => ({
+        line_id: line.id,
+        designation: line.designation || '',
+      })),
+    }, { timeout: 60000 }).then((data) => {
+      if (!alive) return
+      const next = {}
+      for (const item of data?.items || []) {
+        if (item?.line_id != null) next[item.line_id] = item.designation || ''
+      }
+      setI18nDraft((prev) => ({ ...next, ...prev }))
+    }).catch(() => {})
+    return () => { alive = false }
+  }, [pdfLanguage, draftLines.map((line) => line.id).join('|')])
 
   const previewLabels = useMemo(
     () => draftLines.filter(line => line?.id).map(line => ({
       line_id: line.id,
-      designation_pdf: line.designation || null,
+      designation_pdf: designationForPreview(line) || null,
     })),
-    [draftLines]
+    [draftLines, designationForPreview]
   )
   const previewLabelsKey = useMemo(() => JSON.stringify(previewLabels), [previewLabels])
 
@@ -3232,6 +3341,7 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
       api.post(`/devis/${devisId}/pdf-preview`, {
         version_id: versionId || null,
         labels: previewLabels,
+        pdf_language: pdfLanguage,
       }, {
         responseType: 'blob',
         headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -3251,7 +3361,17 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
       window.clearTimeout(timer)
       setPdfPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null })
     }
-  }, [devisId, previewLabelsKey, versionId])
+  }, [devisId, pdfLanguage, previewLabelsKey, versionId])
+
+  const handlePdfLanguageChange = async (nextLanguage) => {
+    const lang = normalizePdfLanguage(nextLanguage)
+    setPdfLanguage(lang)
+    if (!devisId) return
+    try {
+      await api.put(`/devis/${devisId}`, { pdf_language: lang })
+      onPdfLanguageChange?.(lang)
+    } catch { /* preview still uses local state */ }
+  }
 
   const getLineKey = useCallback((line, index) => String(line?.id ?? `line-${index}`), [])
 
@@ -3275,7 +3395,11 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
   const grandTotal = draftLines.reduce((s, l) => s + (Number(l.total_ligne_ht) || 0), 0)
 
   const updateDraftDesignation = (lineId, designation) => {
-    setDraftLines(prev => prev.map(line => line.id === lineId ? { ...line, designation } : line))
+    if (pdfLanguage === 'fr') {
+      setDraftLines(prev => prev.map(line => line.id === lineId ? { ...line, designation } : line))
+      return
+    }
+    setI18nDraft((prev) => ({ ...prev, [lineId]: designation }))
   }
 
   const pdfLabelPayload = (line) => ({
@@ -3286,9 +3410,9 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
     designation_pdf: line.designation || null,
   })
 
-  const persistPdfLabels = async (labels, comment = null) => {
+  const persistPdfLabels = async (labels, comment = null, language = pdfLanguage) => {
     if (versionId) {
-      const result = await api.put(`/devis/${devisId}/versions/${versionId}/pdf-labels`, { labels, comment })
+      const result = await api.put(`/devis/${devisId}/versions/${versionId}/pdf-labels`, { labels, comment, pdf_language: language })
       if (Array.isArray(result.lines)) {
         setDraftLines(result.lines)
         setLines?.(result.lines)
@@ -3310,7 +3434,10 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
     if (!devisId || !line?.id) return
     setSavingId(line.id); setStatusMsg('')
     try {
-      await persistPdfLabels([pdfLabelPayload(line)], 'Libellé PDF modifié en pré-édition')
+      await persistPdfLabels([{
+        ...pdfLabelPayload(line),
+        designation_pdf: designationForPreview(line),
+      }], 'Libellé PDF modifié en pré-édition', pdfLanguage)
       setStatusMsg('Libellé enregistré')
     } catch (err) {
       setStatusMsg(err?.error || err?.message || 'Erreur enregistrement')
@@ -3323,8 +3450,12 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
     setSavingId('all'); setStatusMsg('')
     try {
       await persistPdfLabels(
-        draftLines.filter(item => item.id).map(pdfLabelPayload),
-        'Pré-édition PDF enregistrée'
+        draftLines.filter(item => item.id).map((line) => ({
+          ...pdfLabelPayload(line),
+          designation_pdf: designationForPreview(line),
+        })),
+        'Pré-édition PDF enregistrée',
+        pdfLanguage
       )
       setStatusMsg('Textes PDF enregistrés')
     } catch (err) {
@@ -3510,6 +3641,8 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
   }
 
   const mdText = buildMarkdown()
+  const activeLineIndex = Math.max(0, draftLines.findIndex((line, index) => getLineKey(line, index) === activePreviewKey))
+  const activeLine = draftLines[activeLineIndex] || draftLines[0] || null
 
   const copyText = () => {
     navigator.clipboard.writeText(mdText)
@@ -3527,10 +3660,27 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
           <FileText size={16} color="var(--color-primary)" />
           <div>
             <div style={{ fontWeight: 700, fontSize: '14px' }}>Édition PDF avant impression</div>
-            <div style={{ fontSize: 10, color: 'var(--color-text-3)' }}>Modifier les libellés commerciaux, puis générer le PDF définitif</div>
+            <div style={{ fontSize: 10, color: 'var(--color-text-3)' }}>
+              {pdfFocusMode
+                ? 'Éditez le texte dans la langue choisie directement au-dessus de l’aperçu PDF'
+                : 'Modifier les libellés à gauche, aperçu PDF live à droite'}
+            </div>
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--color-text-2)' }}>
+            <span style={{ fontWeight: 700 }}>Langue PDF</span>
+            <ZrSelect
+              ariaLabel="Langue du PDF"
+              value={pdfLanguage}
+              options={PDF_LANGUAGE_OPTIONS}
+              minWidth={130}
+              onChange={handlePdfLanguageChange}
+            />
+          </label>
+          <button onClick={() => setPdfFocusMode((value) => !value)} style={ghostBtn()}>
+            {pdfFocusMode ? 'Mode classique' : 'Mode aperçu PDF'}
+          </button>
           {statusMsg && <span style={{ alignSelf: 'center', fontSize: 11, color: statusMsg.toLowerCase().includes('erreur') ? '#dc2626' : 'var(--color-text-2)' }}>{statusMsg}</span>}
           <button onClick={suggestAllDesignations} disabled={isSuggestingAll} style={ghostBtn()}>
             {isSuggestingAll ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Sparkles size={13} />} Auto-Générer Tout (IA)
@@ -3562,7 +3712,15 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
           <span style={{ color: 'var(--color-text-3)' }}>{checkReport.rules_count || 0} règle(s) + expériences</span>
         </div>
       )}
-      <div style={{ flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: 'minmax(360px, 0.95fr) minmax(420px, 1.05fr)', overflow: 'hidden' }}>
+      <div style={{
+        flex: 1,
+        minHeight: 0,
+        display: pdfFocusMode ? 'flex' : 'grid',
+        flexDirection: pdfFocusMode ? 'column' : undefined,
+        gridTemplateColumns: pdfFocusMode ? undefined : 'minmax(360px, 0.95fr) minmax(420px, 1.05fr)',
+        overflow: 'hidden',
+      }}>
+        {!pdfFocusMode && (
         <div style={{ minHeight: 0, overflowY: 'auto', borderRight: '1px solid var(--color-border)', padding: '14px', background: 'var(--color-surface)', scrollbarGutter: 'stable' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {draftLines.map((line, index) => {
@@ -3571,6 +3729,7 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
               const isActive = activePreviewKey === lineKey
               const auditLine = line.id != null ? checkLineById.get(Number(line.id)) : null
               const auditIssues = (auditLine?.verdicts || []).filter(v => v.status === 'warning' || v.status === 'violation')
+              const displayDesignation = designationForPreview(line)
               return (
                 <div key={lineKey} style={{ border: `1px solid ${isActive ? 'var(--color-primary)' : 'var(--color-border)'}`, borderRadius: 8, background: 'var(--color-bg)', overflow: 'hidden', boxShadow: isActive ? '0 0 0 1px color-mix(in srgb, var(--color-primary) 35%, transparent)' : 'none' }}>
                   <div
@@ -3591,45 +3750,31 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
                       <div style={{ fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{line.gamme || line.type_porte || line.line_section || 'Ligne'}</div>
                       <div style={{ fontSize: 10, color: 'var(--color-text-3)' }}>HT H {line.hauteur_mm || '?'} × L {line.largeur_mm || '?'} mm</div>
                       {line.localisation && <div style={{ fontSize: 10, color: 'var(--color-primary)', fontWeight: 800 }}>Localisation : {line.localisation}</div>}
-                      <div style={{ fontSize: 10, color: 'var(--color-text-3)' }}>{passageDimensionText(line)}</div>
-                      <div style={{ fontSize: 10, color: 'var(--color-text-3)' }}>{reservationDimensionText(line)}</div>
                     </div>
-                    {auditLine && (
-                      <span style={{ fontSize: 10, fontWeight: 800, color: auditIssues.some(v => v.status === 'violation') ? '#a33c3c' : auditIssues.length ? '#a06a2c' : '#228b54' }}>
-                        {auditIssues.length ? `${auditIssues.length} règle(s)` : 'Règles OK'}
-                      </span>
-                    )}
                     {isProduct && (
-                      <button type="button" onClick={() => suggestDesignation(line, index)} disabled={suggestingId === line.id} style={ghostBtn()}>
+                      <button type="button" onClick={(e) => { e.stopPropagation(); suggestDesignation(line, index) }} disabled={suggestingId === line.id} style={ghostBtn()}>
                         {suggestingId === line.id ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Sparkles size={12} />} IA
                       </button>
                     )}
-                    <button type="button" onClick={() => saveDesignation(line)} disabled={savingId === line.id} style={ghostBtn()}>
+                    <button type="button" onClick={(e) => { e.stopPropagation(); saveDesignation(line) }} disabled={savingId === line.id} style={ghostBtn()}>
                       {savingId === line.id ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Check size={12} />} OK
                     </button>
                   </div>
                   <textarea
-                    value={line.designation || ''}
+                    value={displayDesignation}
                     onChange={e => updateDraftDesignation(line.id, e.target.value)}
-                    rows={Math.max(4, Math.min(12, String(line.designation || '').split('\n').length + 1))}
+                    onBlur={() => saveDesignation(line)}
+                    rows={Math.max(4, Math.min(12, String(displayDesignation || '').split('\n').length + 1))}
                     style={{ width: '100%', boxSizing: 'border-box', border: 'none', resize: 'vertical', padding: 10, background: 'transparent', color: 'var(--color-text)', fontSize: 12, lineHeight: 1.45, fontFamily: 'var(--font-body)', outline: 'none' }}
-                    placeholder="Libellé imprimé sur le PDF…"
+                    placeholder={pdfLanguage === 'fr' ? 'Libellé imprimé sur le PDF…' : `Libellé PDF (${pdfLanguage.toUpperCase()})…`}
                   />
                   {auditIssues.length > 0 && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '0 10px 10px' }}>
-                      {auditIssues.slice(0, 6).map((issue, issueIndex) => {
-                        const isViolation = issue.status === 'violation'
-                        return (
-                          <div key={`${issue.rule_id || issue.rule_code || issueIndex}`} style={{ fontSize: 10, lineHeight: 1.35, color: isViolation ? '#a33c3c' : '#a06a2c', background: isViolation ? 'rgba(239,68,68,0.08)' : 'rgba(245,158,11,0.09)', borderRadius: 6, padding: '5px 7px' }}>
-                            <strong>{issue.rule_code ? `${issue.rule_code} — ` : ''}{issue.rule_title || 'Règle / expérience'}</strong>
-                            {issue.reason ? ` : ${issue.reason}` : ''}
-                            {issue.fix ? <span style={{ display: 'block', color: 'var(--color-text-2)', marginTop: 2 }}>Correctif : {issue.fix}</span> : null}
-                          </div>
-                        )
-                      })}
-                      {auditIssues.length > 6 && (
-                        <div style={{ fontSize: 10, color: 'var(--color-text-3)' }}>+ {auditIssues.length - 6} autre(s) alerte(s)</div>
-                      )}
+                      {auditIssues.slice(0, 3).map((issue, issueIndex) => (
+                        <div key={`${issue.rule_id || issue.rule_code || issueIndex}`} style={{ fontSize: 10, lineHeight: 1.35, color: '#a06a2c', borderRadius: 6, padding: '5px 7px', background: 'rgba(245,158,11,0.09)' }}>
+                          <strong>{issue.rule_code ? `${issue.rule_code} — ` : ''}{issue.rule_title || 'Règle'}</strong>
+                        </div>
+                      ))}
                     </div>
                   )}
                 </div>
@@ -3637,14 +3782,66 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
             })}
           </div>
         </div>
-        <div style={{ minHeight: 0, overflow: 'hidden', background: '#525659', display: 'flex', flexDirection: 'column' }}>
-          <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--color-border)', background: 'var(--color-surface)', fontSize: 11, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+        )}
+        <div style={{ minHeight: 0, overflow: 'hidden', background: '#525659', display: 'flex', flexDirection: 'column', flex: pdfFocusMode ? 1 : undefined }}>
+          {pdfFocusMode && (
+            <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--color-border)', background: 'var(--color-surface)', display: 'grid', gap: 8 }}>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {draftLines.map((line, index) => {
+                  const lineKey = getLineKey(line, index)
+                  const active = activePreviewKey === lineKey
+                  return (
+                    <button
+                      key={lineKey}
+                      type="button"
+                      onClick={() => setActivePreviewKey(lineKey)}
+                      style={{
+                        minWidth: 30, height: 28, borderRadius: 6, border: `1px solid ${active ? 'var(--color-primary)' : 'var(--color-border)'}`,
+                        background: active ? 'color-mix(in srgb, var(--color-primary) 12%, var(--color-surface))' : 'var(--color-bg)',
+                        color: active ? 'var(--color-primary)' : 'var(--color-text)', fontWeight: 800, fontSize: 11, cursor: 'pointer',
+                      }}
+                    >
+                      {repLetter(index)}
+                    </button>
+                  )
+                })}
+              </div>
+              {activeLine && (
+                <div style={{ display: 'grid', gap: 6 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-2)' }}>
+                    Repère {repLetter(activeLineIndex)} — édition {pdfLanguage === 'fr' ? 'français' : pdfLanguage === 'en' ? 'anglais' : 'allemand'}
+                  </div>
+                  <textarea
+                    value={designationForPreview(activeLine)}
+                    onChange={(e) => updateDraftDesignation(activeLine.id, e.target.value)}
+                    onBlur={() => saveDesignation(activeLine)}
+                    rows={Math.max(5, Math.min(14, String(designationForPreview(activeLine) || '').split('\n').length + 1))}
+                    style={{ width: '100%', boxSizing: 'border-box', border: '1px solid var(--color-border)', borderRadius: 8, resize: 'vertical', padding: 10, background: 'var(--color-bg)', color: 'var(--color-text)', fontSize: 12, lineHeight: 1.45, fontFamily: 'var(--font-body)' }}
+                    placeholder={`Texte PDF (${pdfLanguage.toUpperCase()}) — enregistrement à la sortie du champ`}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+          <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--color-border)', background: 'var(--color-surface)', fontSize: 11, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
             <span>Aperçu PDF live</span>
-            {pdfPreviewLoading && (
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 10, color: 'var(--color-text-3)', fontWeight: 600 }}>
-                <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> Mise à jour…
-              </span>
-            )}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--color-text-2)', fontWeight: 600 }}>
+                <span style={{ fontWeight: 800, color: 'var(--color-text)' }}>Langue PDF</span>
+                <ZrSelect
+                  ariaLabel="Langue du PDF"
+                  value={pdfLanguage}
+                  options={PDF_LANGUAGE_OPTIONS}
+                  minWidth={130}
+                  onChange={handlePdfLanguageChange}
+                />
+              </label>
+              {pdfPreviewLoading && (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 10, color: 'var(--color-text-3)', fontWeight: 600 }}>
+                  <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> Mise à jour…
+                </span>
+              )}
+            </div>
           </div>
           {pdfPreviewUrl ? (
             <iframe title="Aperçu PDF devis" src={pdfPreviewUrl} style={{ flex: 1, width: '100%', border: 'none', background: '#525659' }} />
@@ -3662,7 +3859,17 @@ function StepPDF({ devisId, versionId, lines, setLines, clientName, dealName, on
 // ══════════════════════════════════════════════════════════════════════════════
 // ── STEP 6: HUBSPOT SEND ─────────────────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════════════════
-function StepEnvoi({ devisId, versionId, selectedCompany, selectedDeal, onGoStep, onCreateNewVersion }) {
+function StepEnvoi({
+  devisId,
+  versionId,
+  lines = [],
+  selectedCompany,
+  selectedDeal,
+  onGoStep,
+  onCreateNewVersion,
+  pdfLanguage: initialPdfLanguage = 'fr',
+  onPdfLanguageChange,
+}) {
   const [devisInfo, setDevisInfo] = useState(null)   // { name, status, hubspot_note_id }
   const [versionInfo, setVersionInfo] = useState(null) // { version_label, title, branch_label, hubspot_note_id, hubspot_file_id }
   const [versionsInfo, setVersionsInfo] = useState([])
@@ -3672,23 +3879,61 @@ function StepEnvoi({ devisId, versionId, selectedCompany, selectedDeal, onGoStep
   const [result, setResult] = useState(null) // { fileId, fileUrl, noteId, filename }
   const [error, setError] = useState('')
   const [emailBody, setEmailBody] = useState('')
+  const [hasSavedEmailDraft, setHasSavedEmailDraft] = useState(false)
+  const [emailBodyEdited, setEmailBodyEdited] = useState(false)
   const [attachDevis, setAttachDevis] = useState(true)
   const [attachDetailSheets, setAttachDetailSheets] = useState(true)
   const [sourceEmail, setSourceEmail] = useState(null)
   const [contactEmailForThread, setContactEmailForThread] = useState('')
+  const [prospectContactName, setProspectContactName] = useState('')
   const [hubspotOk, setHubspotOk] = useState(null)
   const [outlookStatus, setOutlookStatus] = useState(null)
+  const [mailConfigured, setMailConfigured] = useState(null)
+  const [emailHint, setEmailHint] = useState('')
+  const {
+    pdfLanguage,
+    setPdfLanguage,
+    pdfPreviewUrl,
+    pdfPreviewLoading,
+  } = useDevisPdfPreview({
+    devisId,
+    versionId,
+    lines,
+    pdfLanguage: initialPdfLanguage,
+  })
+
+  const parseSourceEmail = (raw) => {
+    if (!raw) return null
+    try {
+      return typeof raw === 'string' ? JSON.parse(raw) : raw
+    } catch {
+      return null
+    }
+  }
+
+  const persistSourceEmail = async (msg) => {
+    setSourceEmail(msg)
+    setEmailHint('')
+    if (!devisId) return
+    try {
+      await api.put(`/devis/${devisId}`, { source_email_json: msg, no_email_source: 0 })
+      setEmailHint('Mail source enregistré — le brouillon Outlook répondra à ce message.')
+    } catch {
+      setEmailHint('Impossible d\'enregistrer le mail source sur le devis.')
+    }
+  }
 
   useEffect(() => {
     if (!devisId) return
     api.get(`/devis/${devisId}`).then((devis) => {
-      if (devis?.email_draft_body) setEmailBody(devis.email_draft_body)
-      if (devis?.source_email_json) {
-        try {
-          const parsed = typeof devis.source_email_json === 'string' ? JSON.parse(devis.source_email_json) : devis.source_email_json
-          setSourceEmail(parsed)
-        } catch { /* noop */ }
+      if (devis?.email_draft_body) {
+        setEmailBody(devis.email_draft_body)
+        setHasSavedEmailDraft(true)
+      } else {
+        setHasSavedEmailDraft(false)
       }
+      const parsed = parseSourceEmail(devis?.source_email_json)
+      if (parsed) setSourceEmail(parsed)
     }).catch(() => {})
   }, [devisId])
   useEffect(() => {
@@ -3707,8 +3952,32 @@ function StepEnvoi({ devisId, versionId, selectedCompany, selectedDeal, onGoStep
     ]).then(([devis, version]) => {
       setDevisInfo(devis)
       setVersionInfo(version)
+      if (devis?.email_draft_body) {
+        setEmailBody(devis.email_draft_body)
+        setHasSavedEmailDraft(true)
+      } else {
+        setHasSavedEmailDraft(false)
+      }
+      const parsed = parseSourceEmail(devis?.source_email_json)
+      if (parsed) setSourceEmail(parsed)
     }).finally(() => setLoadingMeta(false))
   }, [devisId, versionId])
+
+  useEffect(() => {
+    if (hasSavedEmailDraft || emailBodyEdited) return
+    const name = prospectContactName || devisInfo?.requester_contact_name || ''
+    setEmailBody(buildDefaultEmailDraft({ prospectName: name, pdfLanguage }))
+  }, [hasSavedEmailDraft, emailBodyEdited, prospectContactName, devisInfo?.requester_contact_name, pdfLanguage])
+
+  const handlePdfLanguageChange = async (nextLanguage) => {
+    const lang = normalizePdfLanguage(nextLanguage)
+    setPdfLanguage(lang)
+    if (!devisId) return
+    try {
+      await api.put(`/devis/${devisId}`, { pdf_language: lang })
+      onPdfLanguageChange?.(lang)
+    } catch { /* local preview still updates */ }
+  }
 
   // Check HubSpot availability without exposing the technical destination UI.
   useEffect(() => {
@@ -3724,9 +3993,15 @@ function StepEnvoi({ devisId, versionId, selectedCompany, selectedDeal, onGoStep
   }, [selectedCompany?.id])
 
   useEffect(() => {
-    api.get('/outlook/status')
-      .then(setOutlookStatus)
-      .catch(() => setOutlookStatus({ configured: false, mode: 'mailto' }))
+    api.get('/mail/status')
+      .then((st) => {
+        setOutlookStatus(st)
+        setMailConfigured(Boolean(st?.configured))
+      })
+      .catch(() => {
+        setOutlookStatus({ configured: false, mode: 'mailto' })
+        setMailConfigured(false)
+      })
   }, [])
 
   useEffect(() => {
@@ -3743,9 +4018,17 @@ function StepEnvoi({ devisId, versionId, selectedCompany, selectedDeal, onGoStep
           : contacts[0]
         const email = match?.properties?.email || contacts[0]?.properties?.email || ''
         setContactEmailForThread(String(email || '').trim())
+        const name = [
+          match?.properties?.firstname,
+          match?.properties?.lastname,
+        ].filter(Boolean).join(' ').trim()
+        setProspectContactName(name || String(devisInfo?.requester_contact_name || '').trim())
       })
-      .catch(() => setContactEmailForThread(''))
-  }, [selectedCompany?.id, devisInfo?.requester_contact_id])
+      .catch(() => {
+        setContactEmailForThread('')
+        setProspectContactName(String(devisInfo?.requester_contact_name || '').trim())
+      })
+  }, [selectedCompany?.id, devisInfo?.requester_contact_id, devisInfo?.requester_contact_name])
 
   // Compute version display name (same logic as StepVersions.versionDisplayName)
   const versionDisplayLabel = versionInfo
@@ -3824,12 +4107,12 @@ function StepEnvoi({ devisId, versionId, selectedCompany, selectedDeal, onGoStep
         reply_to_message_id: sourceEmail?.message_id || undefined,
       })
       setResult(data)
-      const graphLink = data?.outlook_draft?.webLink
-      const draftUrl = graphLink || data?.mailto_url || mailDraftUrl
-      if (graphLink) {
-        window.open(graphLink, '_blank', 'noopener,noreferrer')
-      } else if (draftUrl) {
-        window.open(draftUrl, '_blank', 'noopener,noreferrer')
+      const graphDraft = data?.outlook_draft
+      const desktopUrls = graphDraft?.desktopLinks || (graphDraft?.desktopLink ? [graphDraft.desktopLink] : [])
+      if (openOutlookDesktopDraft(desktopUrls)) {
+        // Classic/desktop handler only — do not auto-open OWA (Outlook New)
+      } else if (data?.mailto_url || mailDraftUrl) {
+        window.open(data?.mailto_url || mailDraftUrl, '_blank', 'noopener,noreferrer')
       }
       // Refresh version info to reflect new hubspot_note_id
       if (versionId) {
@@ -3860,22 +4143,53 @@ function StepEnvoi({ devisId, versionId, selectedCompany, selectedDeal, onGoStep
   }
 
   return (
-    <div style={{ flex: 1, overflowY: 'auto', padding: '28px 32px', maxWidth: 760, margin: '0 auto', width: '100%', boxSizing: 'border-box' }}>
+    <div style={{ flex: 1, overflowY: 'auto', padding: '28px 32px', maxWidth: 1180, margin: '0 auto', width: '100%', boxSizing: 'border-box' }}>
       <h2 style={{ margin: '0 0 4px', fontSize: 18, fontWeight: 800 }}>Envoi client</h2>
       <p style={{ margin: '0 0 24px', fontSize: 13, color: 'var(--color-text-3)' }}>
-        Préparez la réponse email au client, sélectionnez les pièces jointes et créez le brouillon Outlook en réponse au mail source.
+        Consultez la conversation client, choisissez la langue du PDF, rédigez la réponse et créez le brouillon Outlook avec le PDF.
       </p>
 
-      {sourceEmail && contactEmailForThread && (
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(300px, 400px)', gap: 24, alignItems: 'start' }}>
+        <div>
+
+      {mailConfigured === false && (
+        <div style={{ fontSize: 12, color: '#b45309', marginBottom: 16, padding: '10px 12px', borderRadius: 8, border: '1px solid #fbbf24', background: 'rgba(251,191,36,0.1)' }}>
+          Mail Graph non configuré — seul HubSpot sera mis à jour (pas de brouillon Outlook).
+        </div>
+      )}
+
+      {contactEmailForThread && mailConfigured !== false ? (
         <div style={{ marginBottom: 20 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-3)', marginBottom: 8, textTransform: 'uppercase' }}>Conversation email client</div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-3)', marginBottom: 8, textTransform: 'uppercase' }}>
+            Conversation email client
+            {selectedDeal?.name ? (
+              <span style={{ fontWeight: 600, textTransform: 'none', marginLeft: 6, color: 'var(--color-text-2)' }}>
+                · {selectedDeal.name}
+              </span>
+            ) : null}
+          </div>
+          {!sourceEmail && (
+            <div style={{ fontSize: 11, color: '#b45309', marginBottom: 10, lineHeight: 1.5 }}>
+              Cliquez sur l&apos;email client à utiliser comme source du devis, puis préparez le brouillon.
+            </div>
+          )}
           <EmailConversationViewer
             contactEmail={contactEmailForThread}
             selectedMessage={sourceEmail}
             height={340}
+            onSelectMessage={persistSourceEmail}
           />
+          {emailHint ? (
+            <div style={{ fontSize: 11, marginTop: 8, color: emailHint.startsWith('Impossible') ? '#dc2626' : '#166534', fontWeight: 600 }}>
+              {emailHint}
+            </div>
+          ) : null}
         </div>
-      )}
+      ) : !contactEmailForThread ? (
+        <div style={{ marginBottom: 20, padding: '12px 14px', borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-surface)', fontSize: 12, color: 'var(--color-text-3)' }}>
+          Aucun contact email HubSpot — retournez à l&apos;étape <button type="button" onClick={() => onGoStep?.(1)} style={{ border: 'none', background: 'none', color: 'var(--color-primary)', fontWeight: 700, cursor: 'pointer', padding: 0 }}>Client</button> pour sélectionner un contact.
+        </div>
+      ) : null}
 
       {sourceEmail && !contactEmailForThread && (
         <div style={{ marginBottom: 20, padding: '12px 14px', borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-surface)' }}>
@@ -3888,7 +4202,13 @@ function StepEnvoi({ devisId, versionId, selectedCompany, selectedDeal, onGoStep
 
       <div style={{ marginBottom: 20 }}>
         <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-3)', marginBottom: 8, textTransform: 'uppercase' }}>Corps de la réponse</div>
-        <textarea value={emailBody} onChange={e => setEmailBody(e.target.value)} rows={8} placeholder="Bonjour,&#10;&#10;Veuillez trouver ci-joint notre proposition…" style={{ width: '100%', boxSizing: 'border-box', padding: 12, borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-bg)', color: 'var(--color-text)', fontSize: 13, lineHeight: 1.5 }} />
+        <textarea
+          value={emailBody}
+          onChange={(e) => { setEmailBodyEdited(true); setEmailBody(e.target.value) }}
+          rows={8}
+          placeholder="Bonjour Jean Dupont,&#10;&#10;Veuillez trouver ci-joint notre proposition…"
+          style={{ width: '100%', boxSizing: 'border-box', padding: 12, borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-bg)', color: 'var(--color-text)', fontSize: 13, lineHeight: 1.5 }}
+        />
       </div>
 
       <div style={{ marginBottom: 20, display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -3940,10 +4260,19 @@ function StepEnvoi({ devisId, versionId, selectedCompany, selectedDeal, onGoStep
             <div style={{ fontSize: 12, color: '#166534', marginBottom: 4 }}>{result.filename}</div>
           ) : null}
           {result.version_label && <div style={{ fontSize: 11, color: '#166534', opacity: 0.8 }}>Version : {result.version_label}</div>}
-          {result.outlook_mode === 'graph' && result.outlook_draft?.webLink && (
-            <a href={result.outlook_draft.webLink} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginTop: 8, color: '#166534', fontSize: 12, fontWeight: 600 }}>
-              <ExternalLink size={11} /> Ouvrir le brouillon Outlook
-            </a>
+          {result.outlook_mode === 'graph' && (result.outlook_draft?.desktopLink || result.outlook_draft?.webLink) && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8 }}>
+              {result.outlook_draft.desktopLink && (
+                <a href={result.outlook_draft.desktopLink} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: '#166534', fontSize: 12, fontWeight: 700 }}>
+                  <ExternalLink size={11} /> Ouvrir dans Outlook (bureau)
+                </a>
+              )}
+              {(result.outlook_draft.composeWebLink || result.outlook_draft.webLink) && (
+                <a href={result.outlook_draft.composeWebLink || result.outlook_draft.webLink} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: '#166534', fontSize: 11, fontWeight: 600, opacity: 0.85 }}>
+                  <ExternalLink size={11} /> Version navigateur (secours)
+                </a>
+              )}
+            </div>
           )}
           {result.outlook_mode === 'mailto' && result.mailto_url && (
             <a href={result.mailto_url} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginTop: 8, color: '#166534', fontSize: 12, fontWeight: 600 }}>
@@ -3986,6 +4315,7 @@ function StepEnvoi({ devisId, versionId, selectedCompany, selectedDeal, onGoStep
           <button
             onClick={handleSend}
             disabled={sending || !selectedDeal?.id || hubspotOk === false}
+            title={!sourceEmail ? 'HubSpot sera mis à jour ; sélectionnez un mail source pour un brouillon Outlook en réponse' : undefined}
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 8, padding: '10px 22px',
               borderRadius: 8, border: 'none', background: 'var(--color-primary)', color: '#fff',
@@ -4008,6 +4338,54 @@ function StepEnvoi({ devisId, versionId, selectedCompany, selectedDeal, onGoStep
           )}
         </div>
       )}
+        </div>
+
+        <div style={{ position: 'sticky', top: 12 }}>
+          <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-3)', textTransform: 'uppercase' }}>Aperçu PDF</div>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--color-text-2)' }}>
+              <span style={{ fontWeight: 700 }}>Langue</span>
+              <ZrSelect
+                ariaLabel="Langue du PDF"
+                value={pdfLanguage}
+                options={PDF_LANGUAGE_OPTIONS}
+                minWidth={130}
+                onChange={handlePdfLanguageChange}
+              />
+            </label>
+          </div>
+          <div style={{
+            border: '1px solid var(--color-border)',
+            borderRadius: 10,
+            background: 'var(--color-surface)',
+            minHeight: 420,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            overflow: 'hidden',
+          }}>
+            {pdfPreviewLoading ? (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--color-text-3)' }}>
+                <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} />
+                Génération de l&apos;aperçu…
+              </span>
+            ) : pdfPreviewUrl ? (
+              <iframe
+                title="Aperçu PDF devis"
+                src={pdfPreviewUrl}
+                style={{ width: '100%', height: 520, border: 'none', background: '#fff' }}
+              />
+            ) : (
+              <span style={{ fontSize: 12, color: 'var(--color-text-3)', padding: 16, textAlign: 'center' }}>
+                {devisId ? 'Aperçu indisponible' : 'Chargez un devis pour prévisualiser le PDF'}
+              </span>
+            )}
+          </div>
+          <div style={{ marginTop: 8, fontSize: 10, color: 'var(--color-text-3)', lineHeight: 1.45 }}>
+            Titres, colonnes, totaux et libellés des lignes sont traduits selon la langue choisie. Vous pouvez éditer le texte directement en EN/DE avant enregistrement. Dictionnaire admin : Données métier → Traductions PDF.
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
@@ -4073,6 +4451,44 @@ export default function DevisStepper() {
   const selectedCompanyId = selectedCompany?.id
   const [companyDetailRefreshKey, setCompanyDetailRefreshKey] = useState(0)
   const restoringUrlRef = useRef(false)
+  const [emailContextPending, setEmailContextPending] = useState({})
+  const [emailContextByDeal, setEmailContextByDeal] = useState({})
+
+  const handleEmailContextChange = useCallback((dealId, patch) => {
+    setEmailContextPending((prev) => ({ ...prev, ...patch }))
+    if (!dealId) return
+    const key = String(dealId)
+    setEmailContextByDeal((prev) => ({
+      ...prev,
+      [key]: { ...(prev[key] || {}), ...patch },
+    }))
+  }, [])
+
+  const buildEmailPayloadForDeal = useCallback((dealId) => {
+    const dealCtx = dealId ? (emailContextByDeal[String(dealId)] || {}) : {}
+    const merged = { ...emailContextPending, ...dealCtx }
+    const payload = {}
+    if (merged.requester_contact_id != null && merged.requester_contact_id !== '') {
+      payload.requester_contact_id = merged.requester_contact_id
+    }
+    if (merged.requester_contact_name != null && merged.requester_contact_name !== '') {
+      payload.requester_contact_name = merged.requester_contact_name
+    }
+    if (merged.source_email_json != null) {
+      payload.source_email_json = merged.source_email_json
+    }
+    if (merged.no_email_source != null) {
+      payload.no_email_source = merged.no_email_source ? 1 : 0
+    }
+    return payload
+  }, [emailContextByDeal, emailContextPending])
+
+  const handleDevisEmailPatch = useCallback((updated) => {
+    if (!updated?.id) return
+    setExistingDevis((prev) => prev.map((d) => (
+      String(d.id) === String(updated.id) ? { ...d, ...updated } : d
+    )))
+  }, [])
   const lastUrlRef = useRef('')
   // Ref to read current selectedCompany inside restoreFromUrl without creating
   // a reactive dependency that would re-run the restore on every company change.
@@ -4635,13 +5051,27 @@ export default function DevisStepper() {
     const deal = targetDeal || selectedDeal
     if (!selectedCompany || !deal) return
     try {
+      const emailPayload = buildEmailPayloadForDeal(deal.id)
       const devis = await api.post('/devis', {
         company_id: selectedCompany.id,
         client_name: selectedCompany.name,
         deal_id: deal.id,
         name: `Devis ${selectedCompany.name} — ${new Date().toLocaleDateString('fr-FR')}`,
+        ...emailPayload,
       })
+      const dealTitle = deal.name || deal.properties?.dealname || ''
+      if (/^nouveau projet/i.test(dealTitle) && devis.quote_number) {
+        const quoteLabel = buildDealLabel(devis.quote_number, selectedCompany.name)
+        await api.patch(`/prospects/deals/${deal.id}`, { dealname: quoteLabel })
+        if (targetDeal) targetDeal = { ...targetDeal, name: quoteLabel }
+        else setSelectedDeal((prev) => (prev?.id === deal.id ? { ...prev, name: quoteLabel } : prev))
+      }
       if (targetDeal) setSelectedDeal(targetDeal)
+      setEmailContextByDeal((prev) => {
+        const next = { ...prev }
+        delete next[String(deal.id)]
+        return next
+      })
       setExistingDevis((prev) => [devis, ...prev.filter((d) => d.id !== devis.id)])
       setCurrentDevisId(devis.id)
       setCurrentVersionId(devis.current_version_id || devis.current_version?.id || null)
@@ -4674,29 +5104,45 @@ export default function DevisStepper() {
     }
     setSelectedCompany(company)
   }
-  const handleCreateDeal = async ({ companyId, dealname, amount, pipeline, dealstage }) => {
-    const createdDeal = await api.post(`/prospects/companies/${companyId}/deals`, {
-      dealname: dealname || `Nouveau projet — ${selectedCompany?.name || 'Client'}`,
-      amount,
-      pipeline,
-      dealstage,
-    })
-    const newDevis = await api.post('/devis', {
-      deal_id: createdDeal?.id || null,
-      company_id: companyId,
-      client_name: selectedCompany?.name || null,
-    })
-    const quoteLabel = `${newDevis.quote_number || newDevis.name} — ${selectedCompany?.name || 'Client'}`
-    if (createdDeal?.id) {
-      await api.patch(`/prospects/deals/${createdDeal.id}`, { dealname: quoteLabel })
+  const handleCreateDeal = async ({ companyId, amount, pipeline, dealstage }) => {
+    const clientName = selectedCompany?.name || 'Client'
+    const emailPayload = buildEmailPayloadForDeal(null)
+    let newDevis = null
+    let createdDeal = null
+    try {
+      newDevis = await api.post('/devis', {
+        company_id: companyId,
+        client_name: clientName,
+        ...emailPayload,
+      })
+      const quoteLabel = buildDealLabel(newDevis.quote_number, clientName)
+      createdDeal = await api.post(`/prospects/companies/${companyId}/deals`, {
+        dealname: quoteLabel,
+        amount,
+        pipeline,
+        dealstage,
+      })
+      newDevis = await api.put(`/devis/${newDevis.id}`, { deal_id: createdDeal?.id || null })
+      if (createdDeal?.id) {
+        setEmailContextByDeal((prev) => {
+          const next = { ...prev }
+          delete next[String(createdDeal.id)]
+          return next
+        })
+      }
       createdDeal.properties = { ...(createdDeal.properties || {}), dealname: quoteLabel }
       createdDeal.dealname = quoteLabel
+      setExistingDevis(prev => [newDevis, ...(prev || [])])
+      setCurrentDevisId(newDevis.id)
+      setCurrentVersionId(newDevis.current_version_id || null)
+      setCompanyDetailRefreshKey((value) => value + 1)
+      return { ...createdDeal, devis: newDevis, dealname: quoteLabel }
+    } catch (err) {
+      if (newDevis?.id && !createdDeal?.id) {
+        await api.delete(`/devis/${newDevis.id}`).catch(() => {})
+      }
+      throw err
     }
-    setExistingDevis(prev => [newDevis, ...(prev || [])])
-    setCurrentDevisId(newDevis.id)
-    setCurrentVersionId(newDevis.current_version_id || null)
-    setCompanyDetailRefreshKey((value) => value + 1)
-    return { ...createdDeal, devis: newDevis, dealname: quoteLabel }
   }
 
   const handleUpdateDeal = async ({ dealId, dealname, amount, pipeline, dealstage }) => {
@@ -4987,6 +5433,9 @@ export default function DevisStepper() {
               onOpenDevis={handleOpenDevis}
               onDeleteDevis={handleDeleteDevis}
               detailRefreshKey={companyDetailRefreshKey}
+              pendingEmailContext={emailContextPending}
+              onEmailContextChange={handleEmailContextChange}
+              onDevisEmailPatch={handleDevisEmailPatch}
             />
           )}
           {step === 2 && (
@@ -5017,17 +5466,30 @@ export default function DevisStepper() {
               devisId={currentDevisId} versionId={currentVersionId} lines={lines} setLines={setLines}
               clientName={selectedCompany?.name} dealName={selectedDeal?.name}
               onSendHubSpot={handleSendHubSpot}
+              pdfLanguage={currentDevis?.pdf_language || 'fr'}
+              onPdfLanguageChange={(lang) => {
+                setExistingDevis((prev) => prev.map((item) => (
+                  String(item.id) === String(currentDevisId) ? { ...item, pdf_language: lang } : item
+                )))
+              }}
             />
           )}
           {step === 5 && (
             <StepEnvoi
               devisId={currentDevisId}
               versionId={currentVersionId}
+              lines={lines}
               selectedCompany={selectedCompany}
               selectedDeal={selectedDeal}
               onDealChange={handleSelectDeal}
               onGoStep={goStep}
               onCreateNewVersion={handleCreateVersionAfterHubSpot}
+              pdfLanguage={currentDevis?.pdf_language || 'fr'}
+              onPdfLanguageChange={(lang) => {
+                setExistingDevis((prev) => prev.map((item) => (
+                  String(item.id) === String(currentDevisId) ? { ...item, pdf_language: lang } : item
+                )))
+              }}
             />
           )}
         </div>

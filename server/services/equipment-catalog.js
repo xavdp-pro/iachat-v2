@@ -22,6 +22,8 @@ export const GRID_COLUMNS = [
   { id: 'plinthe', label: 'Plinthe' },
   { id: 'vitrage', label: 'Vitrage' },
   { id: 'protection', label: 'Protection' },
+  { id: 'divers', label: 'Divers' },
+  { id: 'trappe', label: 'Trappe' },
   { id: 'options_serrure', label: 'Options serrure' },
   { id: 'autres', label: 'Autre équipement' },
 ]
@@ -30,7 +32,7 @@ export function slotFromGridColumn(gridColumn = '') {
   const col = String(gridColumn || '')
   if (col === 'garniture_int' || col === 'garniture_ext') return 'garniture'
   if (col === 'plinthe') return 'plinthes'
-  if (col === 'protection' || col === 'options_serrure' || col === 'autres') return 'autres'
+  if (col === 'protection' || col === 'divers' || col === 'trappe' || col === 'options_serrure' || col === 'autres') return 'autres'
   return col
 }
 
@@ -60,6 +62,9 @@ COLUMN_MAP = {
     'plinthe': 'plinthe',
     'vitrage': 'vitrage',
     'protection': 'protection',
+    'divers': 'divers',
+    'trappe': 'trappe',
+    'trappes': 'trappe',
     'options serrure': 'options_serrure',
     'autre equipement': 'autres',
     'autre équipement': 'autres',
