@@ -28,7 +28,7 @@ import {
   versionDisplayLabel,
   isVersionLocked,
 } from '../lib/versionTree.js'
-import { resolveEquipmentCatalogPerformance } from '../lib/equipmentPerformance.js'
+import { resolveEquipmentCatalogPerformance, EQUIPMENT_CATALOG_PRIORITY, EQUIPMENT_MATRIX_ALIASES, resolveGammePrimaryPerformance } from '../lib/equipmentPerformance.js'
 import { collectLinePerformances } from '../lib/performanceCompatibility.js'
 import {
   filterEquipmentOptionsByArthurRules,
@@ -642,24 +642,44 @@ async function listDbEquipmentPerformances() {
 async function loadEquipmentCatalogForRow(row = {}) {
   const rowPerformances = detectRowPerformances(row)
   const availablePerformances = await listDbEquipmentPerformances()
-  const perf = resolveEquipmentCatalogPerformance(rowPerformances, availablePerformances, row.gamme || row.gamme_label || '')
-  if (perf) {
-    const dbRows = await loadDbEquipmentCatalog({ performance: perf })
+  const available = new Set(availablePerformances.map(p => String(p).toUpperCase()))
+  const gammeText = row.gamme || row.gamme_label || ''
+  const candidatePerfs = []
+  const pushCandidate = (perf) => {
+    const key = String(perf || '').toUpperCase().replace(/^RC/, 'CR')
+    if (key && !candidatePerfs.includes(key)) candidatePerfs.push(key)
+  }
+  const gammePrimary = resolveGammePrimaryPerformance(gammeText)
+  if (gammePrimary) pushCandidate(gammePrimary)
+  for (const perf of EQUIPMENT_CATALOG_PRIORITY) {
+    if (rowPerformances.includes(perf)) pushCandidate(perf)
+  }
+  for (const perf of rowPerformances) pushCandidate(perf)
+
+  for (const perf of candidatePerfs) {
+    let matrixPerf = perf
+    if (!available.has(matrixPerf)) {
+      const alias = EQUIPMENT_MATRIX_ALIASES[matrixPerf]
+      if (alias && available.has(alias)) matrixPerf = alias
+      else continue
+    }
+    const dbRows = await loadDbEquipmentCatalog({ performance: matrixPerf })
     const dbEntries = dbRowsToCatalogEntries(dbRows)
     if (dbEntries.length) {
       return {
         options: dbEntries,
         performances: rowPerformances,
-        catalog_performance: perf,
-        source: `matrix:${perf}`,
+        catalog_performance: matrixPerf,
+        source: `matrix:${matrixPerf}`,
       }
     }
   }
+
   const catalog = await loadEquipmentCatalog()
   return {
     options: catalog.filter(entry => equipmentCompatibleWithRow(entry, rowPerformances)),
     performances: rowPerformances,
-    catalog_performance: perf || null,
+    catalog_performance: resolveEquipmentCatalogPerformance(rowPerformances, availablePerformances, gammeText) || null,
     source: 'tarif',
   }
 }

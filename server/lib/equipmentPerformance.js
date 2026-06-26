@@ -10,6 +10,12 @@ export const EQUIPMENT_CATALOG_PRIORITY = [
   'BLAST', 'PRISON', 'ANTI-BELIER', 'EF2',
 ]
 
+/** Matrix tabs missing from DB import — use closest available catalog. */
+export const EQUIPMENT_MATRIX_ALIASES = {
+  EI90: 'EI60',
+  FB5: 'FB6',
+}
+
 export function normalizeCatalogPerformance(value = '') {
   return String(value || '').trim().toUpperCase().replace(/^RC/, 'CR')
 }
@@ -49,27 +55,47 @@ export function resolveGammePrimaryPerformance(gamme = '') {
  * Pick the catalog performance key for a row, preferring the base tariff tab
  * that has an imported matrix in DB when `availablePerformances` is provided.
  */
+function resolveAvailableMatrixPerformance(perf, available) {
+  const key = normalizeCatalogPerformance(perf)
+  if (!key) return null
+  if (!available || available.has(key)) return key
+  const alias = EQUIPMENT_MATRIX_ALIASES[key]
+  if (alias && available.has(normalizeCatalogPerformance(alias))) {
+    return normalizeCatalogPerformance(alias)
+  }
+  return null
+}
+
 export function resolveEquipmentCatalogPerformance(rowPerformances = [], availablePerformances = null, gamme = '') {
-  const normalized = [...new Set((rowPerformances || []).map(normalizeCatalogPerformance).filter(Boolean))]
+  const normalized = [...new Set(
+    (Array.isArray(rowPerformances) ? rowPerformances : [...(rowPerformances || [])])
+      .map(normalizeCatalogPerformance)
+      .filter(Boolean),
+  )]
   const available = availablePerformances
     ? new Set(availablePerformances.map(normalizeCatalogPerformance).filter(Boolean))
     : null
 
   const gammePrimary = resolveGammePrimaryPerformance(gamme)
   if (gammePrimary) {
-    const perf = normalizeCatalogPerformance(gammePrimary)
-    if (normalized.includes(perf) && (!available || available.has(perf))) return perf
+    const perf = resolveAvailableMatrixPerformance(gammePrimary, available)
+    if (perf && normalized.includes(normalizeCatalogPerformance(gammePrimary))) return perf
+    if (perf && !normalized.length) return perf
   }
 
   for (const perf of EQUIPMENT_CATALOG_PRIORITY) {
     if (!normalized.includes(perf)) continue
-    if (available && !available.has(perf)) continue
-    return perf
+    const resolved = resolveAvailableMatrixPerformance(perf, available)
+    if (resolved) return resolved
   }
 
   if (available) {
-    const fallback = normalized.find(perf => available.has(perf))
-    if (fallback) return fallback
+    for (const perf of normalized) {
+      const resolved = resolveAvailableMatrixPerformance(perf, available)
+      if (resolved) return resolved
+    }
   }
-  return normalized[0] || null
+  const primary = gammePrimary ? resolveAvailableMatrixPerformance(gammePrimary, available) : null
+  if (primary) return primary
+  return normalized[0] ? resolveAvailableMatrixPerformance(normalized[0], available) : null
 }

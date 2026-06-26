@@ -383,7 +383,7 @@ function equipmentMatchesSlot(option, slot) {
     passeCable: /passe.?c[âa]ble|cable|câble/i,
     plinthes: /plinthe/i,
     ventouse: /ventouse/i,
-    judas: /judas|oeilleton|œilleton|oculus/i,
+    judas: /judas|oeilleton|œilleton/i,
     paumelle: /paumelle|pivot/i,
     protection: /protection|isorel/i,
     divers: /divers|accessoire|but[ée]e|seuil|barre|g[âa]che|anti.?panique/i,
@@ -434,12 +434,18 @@ function useEquipmentOptions(row) {
     gamme: row?.gamme || '',
     vantail: row?.vantail || '',
     ref_base: row?.ref_base || '',
+    rc: row?.rc ?? row?._raw?.[3] ?? null,
+    pb: row?.pb ?? row?._raw?.[4] ?? null,
+    cf: row?.cf ?? row?._raw?.[5] ?? null,
+    blast: row?.blast ?? row?._raw?.[6] ?? null,
+    belier: row?.belier ?? row?._raw?.[7] ?? null,
+    prison: row?.prison ?? row?._raw?.[8] ?? null,
     haut_mm: row?.haut_mm ?? row?.hauteur_mm ?? row?._raw?.[2] ?? null,
     hauteur_mm: row?.haut_mm ?? row?.hauteur_mm ?? row?._raw?.[2] ?? null,
     _raw: Array.isArray(row?._raw) ? row._raw : [],
     options: Array.isArray(row?.options) ? row.options : [],
     equip_extra: Array.isArray(row?.equip_extra) ? row.equip_extra : [],
-  }), [row?.type, row?.designation, row?.gamme, row?.vantail, row?.ref_base, row?.haut_mm, row?.hauteur_mm, row?._raw, row?.options, row?.equip_extra])
+  }), [row?.type, row?.designation, row?.gamme, row?.vantail, row?.ref_base, row?.rc, row?.pb, row?.cf, row?.blast, row?.belier, row?.prison, row?.haut_mm, row?.hauteur_mm, row?._raw, row?.options, row?.equip_extra])
 
   useEffect(() => {
     setCache({})

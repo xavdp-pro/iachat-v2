@@ -96,7 +96,7 @@ function whitelistFor(gamme, gridColumn, heightHt) {
     if (col === 'garniture_ext') return set() // série — bouclier anti-meuleuse inclus
     if (col === 'cremone') return set()
     if (col === 'judas') return set(...CR6_JUDAS)
-    if (col === 'vitrage') return set() // no oculus on CR6
+    if (col === 'vitrage') return set(...CR4_VITRAGE) // matrix CR6 xlsx — oculus CR4
     if (col === 'divers' || col === 'autres') return set()
     if (col === 'passeCable' || col === 'passe_cable') return set('3998VHB')
     if (col === 'ventouse') return set('3921', '3922')
@@ -144,11 +144,12 @@ function whitelistFor(gamme, gridColumn, heightHt) {
     if (col === 'garniture_ext') return set(...FB_GARN_INT)
     if (col === 'fp') return set(...FB_FP)
     if (col === 'judas') return set('4455', '4456', '4458', '4459')
+    if (col === 'vitrage') return set(...CR4_VITRAGE)
     if (col === 'ventouse') return set('3921', '3922')
     if (col === 'protection') return set('4496', '4497')
   }
 
-  if (gamme === 'EI60' || gamme === 'EI90' || gamme === 'EI120') {
+  if (gamme === 'EI30' || gamme === 'EI60' || gamme === 'EI90' || gamme === 'EI120') {
     if (col === 'garniture_int' || col === 'garniture_ext') {
       const base = set('4024', '4025', '4026', '4027', '4022', '4023', '4095', '4096', '4097', '4098', '4018', '4019', '4211', '4219')
       if (tall) ['4192', '4193', '4194', '4195'].forEach((r) => base.add(r))
@@ -166,6 +167,7 @@ function whitelistFor(gamme, gridColumn, heightHt) {
     if (col === 'garniture_int') return set('4181', '4032')
     if (col === 'garniture_ext') return set('4032')
     if (col === 'cremone') return set('4401', '4402') // 4405/4406 removed
+    if (col === 'vitrage') return set(...CR4_VITRAGE)
     if (col === 'ventouse') return set('3921', '3922')
     if (col === 'protection') return set('4496', '4497')
   }
